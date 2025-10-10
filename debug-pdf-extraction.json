@@ -1,0 +1,44 @@
+{
+  "timestamp": "2025-10-10T03:44:02.236Z",
+  "textoCompleto": "\n\nARABICA SPA\n Giro: IMPORTACION, DISTRIBUCION Y VENTA\nDE CAFÉ E INFUSIONES\nH DE AGUIRRE 162 OF 304- PROVIDENCIA\neMail : jnhaddad@uc.cl Telefono : 950113181\n TIPO DE VENTA: DEL GIRO\nSEÑOR(ES):BIOMA COFFEE ROASTERS SPA\nR.U.T.:78.015.129- 3\nGIRO:VENTA AL POR MENOR POR CORREO, POR I\nDIRECCION:CAM A FARELLONES 15635 LTB 1 BA\nCOMUNALAS CONDESCIUDAD:stgo\nCONTACTO:Jorge González\nTIPO DE\nCOMPRA:\nDEL GIRO\nR.U.T.:77.368.986- 5\nFACTURA ELECTRONICA\nNº3735\nS.I.I. - PROVIDENCIA\nFecha Emision:06 de Octubre del 2025\nCodigoDescripcionCantidadPrecio\n%Impto\nAdic.*\n%Desc.Valor\n-Café Verde kaypacha30kg9.600288.000\n-Café Verde CR30kg13.000390.000\n-Cafe Verde Guatemala30kg11.900357.000\n-despacho camino farellone1  ida14.00014.000\n-Café verde brasil30kg10.900327.000\nPagos:\n2025-11-05$ 818.72050% 30 días\n2025-11-15$ 818.72050% 40 días\nForma de Pago:Crédito\nTimbre Electrónico SII\nRes.99 de 2014 Verifique documento: www.sii.cl\nMONTO NETO$1.376.000\nI.V.A. 19%$261.440\nIMPUESTO ADICIONAL$0\nTOTAL$1.637.440\n\nARABICA SPA\n Giro: IMPORTACION, DISTRIBUCION Y VENTA\nDE CAFÉ E INFUSIONES\nH DE AGUIRRE 162 OF 304- PROVIDENCIA\neMail : jnhaddad@uc.cl Telefono : 950113181\n TIPO DE VENTA: DEL GIRO\nSEÑOR(ES):BIOMA COFFEE ROASTERS SPA\nR.U.T.:78.015.129- 3\nGIRO:VENTA AL POR MENOR POR CORREO, POR I\nDIRECCION:CAM A FARELLONES 15635 LTB 1 BA\nCOMUNALAS CONDESCIUDAD:stgo\nCONTACTO:Jorge González\nTIPO DE\nCOMPRA:\nDEL GIRO\nR.U.T.:77.368.986- 5\nFACTURA ELECTRONICA\nNº3735\nS.I.I. - PROVIDENCIA\nFecha Emision:06 de Octubre del 2025\nCodigoDescripcionCantidadPrecio\n%Impto\nAdic.*\n%Desc.Valor\n-Café Verde kaypacha30kg9.600288.000\n-Café Verde CR30kg13.000390.000\n-Cafe Verde Guatemala30kg11.900357.000\n-despacho camino farellone1  ida14.00014.000\n-Café verde brasil30kg10.900327.000\nPagos:\n2025-11-05$ 818.72050% 30 días\n2025-11-15$ 818.72050% 40 días\nForma de Pago:Crédito\nTimbre Electrónico SII\nRes.99 de 2014 Verifique documento: www.sii.cl\nMONTO NETO$1.376.000\nI.V.A. 19%$261.440\nIMPUESTO ADICIONAL$0\nTOTAL$1.637.440\nNombre: ________________________ RUT: ______________ Fecha:____________ Recinto:________________ Firma_________________\n\" El acuse de recibo que se declara en este acto, de acuerdo a lo dispuesto en la letra b) del Art. 4°, y la letra c) del Art. 5° de la Ley 19.983,\nacredita que la entrega de mercaderías o servicio(s) prestado(s) ha(n) sido recibido(s) \"\nCEDIBLE",
+  "lineasConDolar": [
+    "2025-11-05$ 818.72050% 30 días",
+    "2025-11-15$ 818.72050% 40 días",
+    "MONTO NETO$1.376.000",
+    "I.V.A. 19%$261.440",
+    "IMPUESTO ADICIONAL$0",
+    "TOTAL$1.637.440",
+    "2025-11-05$ 818.72050% 30 días",
+    "2025-11-15$ 818.72050% 40 días",
+    "MONTO NETO$1.376.000",
+    "I.V.A. 19%$261.440",
+    "IMPUESTO ADICIONAL$0",
+    "TOTAL$1.637.440"
+  ],
+  "lineasConPorcentaje": [
+    "%Impto",
+    "%Desc.Valor",
+    "2025-11-05$ 818.72050% 30 días",
+    "2025-11-15$ 818.72050% 40 días",
+    "I.V.A. 19%$261.440",
+    "%Impto",
+    "%Desc.Valor",
+    "2025-11-05$ 818.72050% 30 días",
+    "2025-11-15$ 818.72050% 40 días",
+    "I.V.A. 19%$261.440"
+  ],
+  "lineasConAmbos": [
+    "2025-11-05$ 818.72050% 30 días",
+    "2025-11-15$ 818.72050% 40 días",
+    "I.V.A. 19%$261.440",
+    "2025-11-05$ 818.72050% 30 días",
+    "2025-11-15$ 818.72050% 40 días",
+    "I.V.A. 19%$261.440"
+  ],
+  "patronesEncontrados": [
+    "$ 818.72050%",
+    "$ 818.72050%",
+    "$ 818.72050%",
+    "$ 818.72050%"
+  ]
+}

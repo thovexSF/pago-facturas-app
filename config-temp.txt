@@ -1,0 +1,21 @@
+# Configuración de Shopify
+SHOPIFY_API_KEY=tu_api_key_aqui
+SHOPIFY_API_SECRET=tu_api_secret_aqui
+SHOPIFY_APP_URL=https://1aef3bcefdaa.ngrok-free.app
+
+# Configuración de Base de Datos
+DATABASE_URL=sqlite:///database.sqlite
+
+# Configuración de Email
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USER=tu-email@gmail.com
+EMAIL_PASSWORD=tu-password-de-aplicacion
+
+# Configuración de Mercado Pago
+MERCADOPAGO_ACCESS_TOKEN=tu_access_token_aqui
+
+# Configuración del Servidor
+PORT=3000
+NODE_ENV=development
+

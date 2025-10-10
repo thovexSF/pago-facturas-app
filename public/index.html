@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestión de Facturas SII - Shopify App</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://unpkg.com/@shopify/app-bridge@3"></script>
+    <script src="https://unpkg.com/@shopify/app-bridge-utils@3"></script>
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <h1>📄 Gestión de Facturas SII</h1>
+            <p>Administra tus facturas por pagar de forma inteligente</p>
+        </header>
+
+        <main class="app-main">
+            <!-- Dashboard Principal -->
+            <div class="dashboard-container">
+                <!-- Estadísticas -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">📋</div>
+                        <div class="stat-content">
+                            <h3 id="total-facturas">0</h3>
+                            <p>Total Facturas</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">⏰</div>
+                        <div class="stat-content">
+                            <h3 id="facturas-pendientes">0</h3>
+                            <p>Pendientes</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">💰</div>
+                        <div class="stat-content">
+                            <h3 id="monto-total">$0</h3>
+                            <p>Monto Total</p>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">⚠️</div>
+                        <div class="stat-content">
+                            <h3 id="facturas-vencidas">0</h3>
+                            <p>Vencidas</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Acciones Rápidas -->
+                <div class="quick-actions">
+                    <h3>⚡ Acciones Rápidas</h3>
+                    <div class="action-buttons">
+                        <button class="btn btn-primary" onclick="showUploadForm()">📄 Subir PDF</button>
+                        <button class="btn btn-secondary" onclick="handleSiiSync()">🔄 Sincronizar SII</button>
+                        <button class="btn btn-info" onclick="showConfig()">⚙️ Configuración</button>
+                    </div>
+                </div>
+
+                <!-- Formulario de Subida de PDF (oculto por defecto) -->
+                <div id="upload-section" class="upload-section" style="display: none;">
+                    <div class="upload-container">
+                        <h3>📄 Subir Facturas PDF</h3>
+                        <p>Sube archivos PDF de facturas para extraer automáticamente fechas de vencimiento y montos.</p>
+                        
+                        <form id="pdf-upload-form" class="upload-form" enctype="multipart/form-data">
+                            <div class="form-group">
+                                <label for="pdf-file">Seleccionar archivo PDF:</label>
+                                <input type="file" id="pdf-file" name="pdf" accept=".pdf" required>
+                                <small>Formato soportado: PDF</small>
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary">Procesar PDF</button>
+                                <button type="button" class="btn btn-secondary" onclick="hideUploadForm()">Cancelar</button>
+                            </div>
+                        </form>
+
+                        <div id="upload-status" class="upload-status" style="display: none;">
+                            <!-- Se mostrará el estado del procesamiento -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Configuración (oculta por defecto) -->
+                <div id="config-section" class="config-section" style="display: none;">
+                    <div class="config-container">
+                        <h3>⚙️ Configuración</h3>
+                        
+                        <form id="config-form">
+                            <div class="form-group">
+                                <label for="sii-rut">RUT Empresa:</label>
+                                <input type="text" id="sii-rut" name="sii-rut" placeholder="12.345.678-9" required>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="sii-clave">Clave SII:</label>
+                                <input type="password" id="sii-clave" name="sii-clave" required>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="email-notificaciones">Email para notificaciones:</label>
+                                <input type="email" id="email-notificaciones" name="email-notificaciones" required>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="mercado-pago-token">Token Mercado Pago:</label>
+                                <input type="text" id="mercado-pago-token" name="mercado-pago-token" placeholder="APP_USR-...">
+                            </div>
+                            
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary">💾 Guardar Configuración</button>
+                                <button type="button" class="btn btn-secondary" onclick="hideConfig()">Cancelar</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Lista de Facturas -->
+                <div class="facturas-section">
+                    <div class="facturas-header">
+                        <h3>📋 Facturas Registradas</h3>
+                        <div class="header-actions">
+                            <div class="sort-buttons">
+                                <button class="btn btn-sort" onclick="sortFacturas('fecha', 'asc')" title="Ordenar por fecha ascendente">
+                                    📅↑ Fecha
+                                </button>
+                                <button class="btn btn-sort" onclick="sortFacturas('fecha', 'desc')" title="Ordenar por fecha descendente">
+                                    📅↓ Fecha
+                                </button>
+                            </div>
+                            <button class="btn btn-primary" onclick="showUploadForm()">+ Subir Nueva Factura</button>
+                        </div>
+                    </div>
+                    <div id="facturas-list" class="facturas-list drop-zone" 
+                         ondrop="handleDrop(event)" 
+                         ondragover="handleDragOver(event)" 
+                         ondragenter="handleDragEnter(event)" 
+                         ondragleave="handleDragLeave(event)">
+                        <!-- Las facturas se cargarán aquí -->
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
