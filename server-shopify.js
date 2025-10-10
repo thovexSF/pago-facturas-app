@@ -1,7 +1,7 @@
 const express = require('express');
 const { shopifyApi, LATEST_API_VERSION } = require('@shopify/shopify-api');
 const { shopifyApp } = require('@shopify/shopify-app-express');
-const sqlite3 = require('sqlite3').verbose();
+const { Pool } = require('pg');
 const multer = require('multer');
 const pdf = require('pdf-parse');
 const cors = require('cors');
@@ -16,6 +16,12 @@ const PORT = process.env.PORT || 3000;
 if (!fs.existsSync('uploads')) {
   fs.mkdirSync('uploads');
 }
+
+// Configuración de PostgreSQL
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://localhost:5432/facturas',
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 
 // Configuración de Shopify
 const shopify = shopifyApi({
