@@ -2,9 +2,9 @@
   "name": "pago-facturas-railway",
   "version": "1.0.0",
   "description": "App de gestión de facturas para Shopify",
-  "main": "server-minimal.js",
+  "main": "server-postgres.js",
   "scripts": {
-    "start": "node server-minimal.js",
+    "start": "node server-postgres.js",
     "dev": "node server-simple.js",
     "minimal": "node server-minimal.js",
     "test": "node server-test-railway.js",
