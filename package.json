@@ -8,7 +8,8 @@
     "dev": "node server-simple.js",
     "minimal": "node server-minimal.js",
     "test": "node server-test-railway.js",
-    "shopify": "node server-shopify.js"
+    "shopify": "node server-shopify.js",
+    "migrate": "node migrate-db.js"
   },
   "dependencies": {
     "express": "^4.18.2",
