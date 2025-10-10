@@ -158,7 +158,7 @@ async function extraerDatosPDF(buffer) {
 }
 
 // Ruta para subir PDF
-app.post('/api/upload', upload.single('pdf'), async (req, res) => {
+app.post('/api/subir-pdf', upload.single('pdf'), async (req, res) => {
   try {
     console.log('📤 Archivo recibido:', req.file.originalname);
     
