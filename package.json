@@ -15,7 +15,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "@shopify/shopify-api": "^7.7.0",
-    "@shopify/shopify-app-express": "^2.3.0"
+    "@shopify/shopify-app-express": "^2.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
