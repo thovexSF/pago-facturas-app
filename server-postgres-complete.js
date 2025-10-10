@@ -59,7 +59,7 @@ async function extraerDatosPDF(buffer) {
     console.log('🏢 Emisor:', nombreEmisor);
     
     // Extraer fecha de emisión
-    let fechaEmision = null;
+    let fechaEmision = new Date().toISOString().split('T')[0]; // Fecha actual por defecto
     const fechaEmisionMatch = texto.match(/Fecha Emision:\s*(\d{2}\/\d{2}\/\d{2})/);
     if (fechaEmisionMatch) {
       const fechaStr = fechaEmisionMatch[1];
@@ -91,9 +91,23 @@ async function extraerDatosPDF(buffer) {
           const monto = parseFloat(montoStr.replace(/\./g, ''));
           const porcentajeFinal = parseInt(montoMatch[2]);
           
-          // Buscar fecha de vencimiento
-          const fechaMatch = linea.match(/(\d{2}\/\d{2}\/\d{4})/);
-          const fechaVencimiento = fechaMatch ? fechaMatch[1] : null;
+          // Buscar fecha de vencimiento - buscar diferentes formatos
+          let fechaVencimiento = '01/01/2025'; // Fecha por defecto
+          
+          // Buscar formato DD/MM/YYYY
+          const fechaMatch1 = linea.match(/(\d{2}\/\d{2}\/\d{4})/);
+          if (fechaMatch1) {
+            fechaVencimiento = fechaMatch1[1];
+          } else {
+            // Buscar formato DD/MM/YY
+            const fechaMatch2 = linea.match(/(\d{2}\/\d{2}\/\d{2})/);
+            if (fechaMatch2) {
+              const fechaStr = fechaMatch2[1];
+              const [dia, mes, año] = fechaStr.split('/');
+              const añoCompleto = parseInt(año) + 2000;
+              fechaVencimiento = `${dia}/${mes}/${añoCompleto}`;
+            }
+          }
           
           // Calcular días
           let dias = 0;
