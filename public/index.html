@@ -1,151 +1,152 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gestión de Facturas SII - Shopify App</title>
-    <link rel="stylesheet" href="styles.css">
-    <script src="https://unpkg.com/@shopify/app-bridge@3"></script>
-    <script src="https://unpkg.com/@shopify/app-bridge-utils@3"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Facturas por Pagar — Bioma</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css" />
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-    <div class="app-container">
-        <header class="app-header">
-            <h1>📄 Gestión de Facturas SII</h1>
-            <p>Administra tus facturas por pagar de forma inteligente</p>
-        </header>
+  <div class="app">
 
-        <main class="app-main">
-            <!-- Dashboard Principal -->
-            <div class="dashboard-container">
-                <!-- Estadísticas -->
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-icon">📋</div>
-                        <div class="stat-content">
-                            <h3 id="total-facturas">0</h3>
-                            <p>Total Facturas</p>
-                        </div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">⏰</div>
-                        <div class="stat-content">
-                            <h3 id="facturas-pendientes">0</h3>
-                            <p>Pendientes</p>
-                        </div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">💰</div>
-                        <div class="stat-content">
-                            <h3 id="monto-total">$0</h3>
-                            <p>Monto Total</p>
-                        </div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon">⚠️</div>
-                        <div class="stat-content">
-                            <h3 id="facturas-vencidas">0</h3>
-                            <p>Vencidas</p>
-                        </div>
-                    </div>
-                </div>
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <h1>Facturas por Pagar</h1>
+        <span class="empresa">Bioma Coffee · 78015129-3</span>
+      </div>
+      <div class="header-right">
+        <button class="btn btn-sync" id="btn-sync">
+          <span class="sync-icon">↻</span> Sincronizar SII
+        </button>
+      </div>
+    </header>
 
-                <!-- Acciones Rápidas -->
-                <div class="quick-actions">
-                    <h3>⚡ Acciones Rápidas</h3>
-                    <div class="action-buttons">
-                        <button class="btn btn-primary" onclick="showUploadForm()">📄 Subir PDF</button>
-                        <button class="btn btn-secondary" onclick="handleSiiSync()">🔄 Sincronizar SII</button>
-                        <button class="btn btn-info" onclick="showConfig()">⚙️ Configuración</button>
-                    </div>
-                </div>
-
-                <!-- Formulario de Subida de PDF (oculto por defecto) -->
-                <div id="upload-section" class="upload-section" style="display: none;">
-                    <div class="upload-container">
-                        <h3>📄 Subir Facturas PDF</h3>
-                        <p>Sube archivos PDF de facturas para extraer automáticamente fechas de vencimiento y montos.</p>
-                        
-                        <form id="pdf-upload-form" class="upload-form" enctype="multipart/form-data">
-                            <div class="form-group">
-                                <label for="pdf-file">Seleccionar archivo PDF:</label>
-                                <input type="file" id="pdf-file" name="pdf" accept=".pdf" required>
-                                <small>Formato soportado: PDF</small>
-                            </div>
-                            <div class="form-actions">
-                                <button type="submit" class="btn btn-primary">Procesar PDF</button>
-                                <button type="button" class="btn btn-secondary" onclick="hideUploadForm()">Cancelar</button>
-                            </div>
-                        </form>
-
-                        <div id="upload-status" class="upload-status" style="display: none;">
-                            <!-- Se mostrará el estado del procesamiento -->
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Configuración (oculta por defecto) -->
-                <div id="config-section" class="config-section" style="display: none;">
-                    <div class="config-container">
-                        <h3>⚙️ Configuración</h3>
-                        
-                        <form id="config-form">
-                            <div class="form-group">
-                                <label for="sii-rut">RUT Empresa:</label>
-                                <input type="text" id="sii-rut" name="sii-rut" placeholder="12.345.678-9" required>
-                            </div>
-                            
-                            <div class="form-group">
-                                <label for="sii-clave">Clave SII:</label>
-                                <input type="password" id="sii-clave" name="sii-clave" required>
-                            </div>
-                            
-                            <div class="form-group">
-                                <label for="email-notificaciones">Email para notificaciones:</label>
-                                <input type="email" id="email-notificaciones" name="email-notificaciones" required>
-                            </div>
-                            
-                            <div class="form-group">
-                                <label for="mercado-pago-token">Token Mercado Pago:</label>
-                                <input type="text" id="mercado-pago-token" name="mercado-pago-token" placeholder="APP_USR-...">
-                            </div>
-                            
-                            <div class="form-actions">
-                                <button type="submit" class="btn btn-primary">💾 Guardar Configuración</button>
-                                <button type="button" class="btn btn-secondary" onclick="hideConfig()">Cancelar</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-
-                <!-- Lista de Facturas -->
-                <div class="facturas-section">
-                    <div class="facturas-header">
-                        <h3>📋 Facturas Registradas</h3>
-                        <div class="header-actions">
-                            <div class="sort-buttons">
-                                <button class="btn btn-sort" onclick="sortFacturas('fecha', 'asc')" title="Ordenar por fecha ascendente">
-                                    📅↑ Fecha
-                                </button>
-                                <button class="btn btn-sort" onclick="sortFacturas('fecha', 'desc')" title="Ordenar por fecha descendente">
-                                    📅↓ Fecha
-                                </button>
-                            </div>
-                            <button class="btn btn-primary" onclick="showUploadForm()">+ Subir Nueva Factura</button>
-                        </div>
-                    </div>
-                    <div id="facturas-list" class="facturas-list drop-zone" 
-                         ondrop="handleDrop(event)" 
-                         ondragover="handleDragOver(event)" 
-                         ondragenter="handleDragEnter(event)" 
-                         ondragleave="handleDragLeave(event)">
-                        <!-- Las facturas se cargarán aquí -->
-                    </div>
-                </div>
-            </div>
-        </main>
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-value" id="stat-total">—</div>
+        <div class="stat-label">Total pendientes</div>
+      </div>
+      <div class="stat stat-warning">
+        <div class="stat-value" id="stat-vencidas">—</div>
+        <div class="stat-label">Vencidas</div>
+      </div>
+      <div class="stat stat-amount">
+        <div class="stat-value" id="stat-monto">—</div>
+        <div class="stat-label">Monto total</div>
+      </div>
+      <div class="stat stat-success">
+        <div class="stat-value" id="stat-pagadas">—</div>
+        <div class="stat-label">Pagadas este mes</div>
+      </div>
     </div>
 
-    <script src="app.js"></script>
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" data-tab="calendario">Calendario</button>
+      <button class="tab" data-tab="lista">Lista</button>
+    </div>
+
+    <!-- Calendario -->
+    <div class="tab-content active" id="tab-calendario">
+      <div id="calendar"></div>
+    </div>
+
+    <!-- Lista -->
+    <div class="tab-content" id="tab-lista">
+      <div class="filter-bar">
+        <select id="filter-estado">
+          <option value="">Todos</option>
+          <option value="pendiente">Pendientes</option>
+          <option value="pagada">Pagadas</option>
+        </select>
+      </div>
+      <table class="facturas-table">
+        <thead>
+          <tr>
+            <th>Emisor</th>
+            <th>Folio</th>
+            <th>Emisión</th>
+            <th>Vencimiento</th>
+            <th>Monto</th>
+            <th>Estado</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="facturas-tbody"></tbody>
+      </table>
+      <div id="empty-state" class="empty-state" style="display:none">
+        <p>No hay facturas. Haz clic en <strong>Sincronizar SII</strong> para cargar.</p>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Modal factura -->
+  <div class="modal-overlay" id="modal" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="modal-titulo">Factura</h2>
+        <button class="modal-close" id="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="factura-detail">
+          <div class="detail-row">
+            <span class="detail-label">Emisor</span>
+            <span class="detail-value" id="modal-emisor">—</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">RUT Emisor</span>
+            <span class="detail-value" id="modal-rut">—</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Folio</span>
+            <span class="detail-value" id="modal-folio">—</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Fecha Emisión</span>
+            <span class="detail-value" id="modal-fecha-emision">—</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Vencimiento</span>
+            <span class="detail-value" id="modal-vencimiento">—</span>
+          </div>
+          <div class="detail-row highlight">
+            <span class="detail-label">Monto</span>
+            <span class="detail-value" id="modal-monto">—</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Estado SII</span>
+            <span class="detail-value" id="modal-estado-sii">—</span>
+          </div>
+        </div>
+
+        <div class="pago-info" id="pago-info">
+          <h3>Datos para transferencia</h3>
+          <p class="pago-instruccion">Realiza la transferencia a tu banco con los datos del emisor. Luego marca como pagada.</p>
+          <div class="copy-row">
+            <span id="pago-rut-copy">—</span>
+            <button class="btn-copy" onclick="copiarTexto('pago-rut-copy')">Copiar RUT</button>
+          </div>
+          <div class="copy-row">
+            <span id="pago-monto-copy">—</span>
+            <button class="btn-copy" onclick="copiarTexto('pago-monto-copy')">Copiar monto</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer" id="modal-footer">
+        <button class="btn btn-pay" id="btn-pagar">✓ Marcar como pagada</button>
+        <button class="btn btn-secondary" id="modal-cancel">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
