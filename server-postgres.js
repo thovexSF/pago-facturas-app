@@ -359,85 +359,110 @@ async function fetchFacturasRecibidas(http, cookies, opts = {}) {
     periodos.push(`${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`);
   }
 
-  // Extraer TOKEN de las cookies
-  const token = extractToken(cookies);
   const cookieHeader = cookies;
 
+  // Tipos de documento a consultar: 33=Factura Afecta, 34=Factura Exenta, 46=Liquidación
+  const TIPOS_DOC = [
+    { codigo: '33', nombre: 'Factura Electrónica Afecta' },
+    { codigo: '34', nombre: 'Factura Electrónica Exenta' },
+    { codigo: '46', nombre: 'Liquidación Factura Electrónica' },
+  ];
+
   for (const periodo of periodos) {
-    console.log(`[SII RCV] Consultando período ${periodo}...`);
-    try {
-      const dataObj = {
-        ptributario: periodo,
-        operacion: 'COMPRA',
-        estadoContab: 'REGISTRO',
-        codTipoDoc: '0',
-        accionRecaptcha: 'RCV_DETC',
-        tokenRecaptcha: 'c3',
-      };
+    for (const tipo of TIPOS_DOC) {
+      console.log(`[SII RCV] Consultando período ${periodo} tipo ${tipo.codigo}...`);
+      try {
+        // Generar conversationId único para esta solicitud
+        const convId = `APP${Date.now()}${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
 
-      const body = {
-        metaData: {
-          namespace: 'cl.sii.sdi.lob.diii.consdcv.data.api.interfaces.FacadeService/getDetalleCompra',
-          conversationId: token || '0',
-          transactionId: '0',
-          page: null,
-        },
-        data: dataObj,
-      };
-
-      const res = await http.post(
-        'https://www4.sii.cl/consdcvinternetui/services/data/facadeService/getDetalleCompra',
-        JSON.stringify(body),
-        {
-          headers: {
-            ...BASE_HEADERS,
-            'Content-Type': 'application/json; charset=utf-8',
-            'Accept': '*/*',
-            Cookie: cookieHeader,
-            Referer: 'https://www4.sii.cl/consdcvinternetui/',
-            Origin: 'https://www4.sii.cl',
+        const body = {
+          metaData: {
+            namespace: 'cl.sii.sdi.lob.diii.consdcv.data.api.interfaces.FacadeService/getDetalleCompra',
+            conversationId: convId,
+            transactionId: '0',
+            page: null,
           },
-          responseType: 'arraybuffer',
+          data: {
+            ptributario: periodo,
+            operacion: 'COMPRA',
+            estadoContab: 'REGISTRO',
+            codTipoDoc: tipo.codigo,
+            accionRecaptcha: 'RCV_DETC',
+            tokenRecaptcha: 'c3',
+          },
+        };
+
+        const res = await http.post(
+          'https://www4.sii.cl/consdcvinternetui/services/data/facadeService/getDetalleCompra',
+          JSON.stringify(body),
+          {
+            headers: {
+              ...BASE_HEADERS,
+              'Content-Type': 'application/json; charset=utf-8',
+              'Accept': '*/*',
+              Cookie: cookieHeader,
+              Referer: 'https://www4.sii.cl/consdcvinternetui/',
+              Origin: 'https://www4.sii.cl',
+            },
+            responseType: 'arraybuffer',
+          }
+        );
+
+        const rawText = decodeSiiHtml(res.data);
+        console.log(`[SII RCV] ${periodo}/${tipo.codigo} status: ${res.status}, snippet: ${rawText.substring(0, 250)}`);
+
+        let parsed;
+        try { parsed = JSON.parse(rawText); } catch {
+          console.warn(`[SII RCV] No JSON ${periodo}/${tipo.codigo}:`, rawText.substring(0, 200));
+          continue;
         }
-      );
 
-      const rawText = decodeSiiHtml(res.data);
-      console.log(`[SII RCV] Período ${periodo} status: ${res.status}, bytes: ${rawText.length}, snippet: ${rawText.substring(0, 200)}`);
-      let data;
-      try { data = JSON.parse(rawText); } catch { console.warn('[SII RCV] Respuesta no es JSON:', rawText.substring(0, 300)); continue; }
+        // Verificar errores de la API
+        const errors = parsed?.metaData?.errors || [];
+        if (errors.length > 0) {
+          console.log(`[SII RCV] Errores ${periodo}/${tipo.codigo}:`, errors.map(e => e.descripcion).join(', '));
+        }
+        if (parsed?.respEstado?.codRespuesta === 2) {
+          console.log(`[SII RCV] Sin datos ${periodo}/${tipo.codigo}: ${parsed?.respEstado?.codError}`);
+          continue;
+        }
 
-      // La respuesta viene en data.data o data.listaDetalle
-      const lista = data?.data?.listaDetalle || data?.listaDetalle || data?.data || [];
-      if (!Array.isArray(lista)) {
-        console.log(`[SII RCV] Sin lista para período ${periodo}:`, JSON.stringify(data).slice(0, 300));
-        continue;
+        // La respuesta viene en data.listaDetalle
+        const lista = parsed?.data?.listaDetalle || parsed?.data || [];
+        if (!Array.isArray(lista) || lista.length === 0) {
+          console.log(`[SII RCV] Lista vacía ${periodo}/${tipo.codigo}`);
+          continue;
+        }
+
+        console.log(`[SII RCV] ${lista.length} documentos en ${periodo}/${tipo.codigo}`);
+
+        for (const item of lista) {
+          const rutEmisor = item.rutDoc ? `${item.rutDoc}-${item.dvDoc || ''}` :
+                            item.rutEmisor ? `${item.rutEmisor}-${item.dvEmisor || ''}` : null;
+          const fecha = (item.fchDoc || item.fechaDoc || item.fecha || '').substring(0, 10) || null;
+          const monto = parseInt(item.mntTotal || item.montoTotal || item.monto || '0', 10);
+          const folio = parseInt(item.folio || item.nroDoc || '0', 10);
+          const codigo = `${periodo}-${tipo.codigo}-${rutEmisor}-${folio}`;
+
+          facturas.push({
+            codigo,
+            rutEmisor,
+            razonSocial: item.razonSocial || item.rznSoc || item.nombreEmisor || '',
+            tipoDocumento: tipo.nombre,
+            tipoCodigo: parseInt(tipo.codigo, 10),
+            folio,
+            fechaEmision: fecha,
+            fechaVencimiento: fecha ? calcularVencimiento(fecha, 30) : null,
+            monto,
+            estadoSii: item.estadoContab || item.estado || 'REGISTRO',
+          });
+        }
+      } catch (err) {
+        console.warn(`[SII RCV] Error ${periodo}/${tipo.codigo}:`, err.message);
       }
 
-      for (const item of lista) {
-        const rutEmisor = item.rutEmisor ? `${item.rutEmisor}-${item.dvEmisor || ''}` : null;
-        const fecha = item.fchDoc ? item.fchDoc.substring(0, 10) : null;
-        const monto = parseInt(item.mntTotal || item.monto || '0', 10);
-        const folio = parseInt(item.folio || item.nroDoc || '0', 10);
-        const codigo = `${periodo}-${rutEmisor}-${folio}`;
-
-        facturas.push({
-          codigo,
-          rutEmisor,
-          razonSocial: item.razonSocial || item.rznSoc || '',
-          tipoDocumento: 'Factura Electrónica',
-          tipoCodigo: 33,
-          folio,
-          fechaEmision: fecha,
-          fechaVencimiento: fecha ? calcularVencimiento(fecha, 30) : null,
-          monto,
-          estadoSii: item.estadoContab || item.estado || 'REGISTRO',
-        });
-      }
-    } catch (err) {
-      console.warn(`[SII RCV] Error período ${periodo}:`, err.message);
+      await new Promise(r => setTimeout(r, 300));
     }
-
-    await new Promise(r => setTimeout(r, 400));
   }
 
   return facturas;
@@ -565,10 +590,12 @@ app.get('/debug/sii-recibidas', async (req, res) => {
     const rutEmp = empParts[0] || '';
     const dvEmp = empParts[1] || '';
 
+    const codTipoDoc = req.query.tipo || '33';
+    const convId = `DBG${Date.now()}`;
     const body = {
       metaData: {
         namespace: 'cl.sii.sdi.lob.diii.consdcv.data.api.interfaces.FacadeService/getDetalleCompra',
-        conversationId: token || '0',
+        conversationId: convId,
         transactionId: '0',
         page: null,
       },
@@ -576,7 +603,7 @@ app.get('/debug/sii-recibidas', async (req, res) => {
         ptributario: periodo,
         operacion: 'COMPRA',
         estadoContab: 'REGISTRO',
-        codTipoDoc: '0',
+        codTipoDoc,
         accionRecaptcha: 'RCV_DETC',
         tokenRecaptcha: 'c3',
       },
