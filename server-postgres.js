@@ -482,6 +482,29 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// ─── Debug: ver HTML crudo que retorna el SII ─────────────────────────────────
+
+app.get('/debug/sii-recibidas', async (req, res) => {
+  const rut = process.env.SII_RUT;
+  const password = process.env.SII_PASSWORD;
+  const empresaRut = process.env.SII_EMPRESA_RUT;
+  try {
+    const { http, cookies } = await siiLogin(rut, password, empresaRut);
+    const params = new URLSearchParams({
+      RUT_EMIT: '', FOLIO: '', RZN_SOC: '',
+      FEC_DESDE: '', FEC_HASTA: '', TPO_DOC: '', ESTADO: '', ORDEN: '', NUM_PAG: '1',
+    });
+    const rawRes = await http.get(`${SII_URLS.listadoRecibidos}?${params}`, {
+      headers: { ...BASE_HEADERS, Cookie: cookies },
+    });
+    const html = decodeSiiHtml(rawRes.data);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
 async function start() {
