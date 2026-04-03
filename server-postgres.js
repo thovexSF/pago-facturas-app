@@ -275,58 +275,86 @@ async function siiLogin(rut, password, empresaRut) {
 
   console.log('[SII] Login MIPYME completo');
 
-  // Paso 6: Establecer sesión en portal RCV (www4.sii.cl) desde el portal MIPYME
-  console.log('[SII] Estableciendo sesión RCV desde portal MIPYME...');
+  // Paso 6: Establecer sesión en portal RCV (www4.sii.cl)
+  // Estrategia: navegar desde misiir.sii.cl (establece sesión real con TOKEN),
+  // luego intentar seleccionar empresa representada en www4.
+  console.log('[SII] Estableciendo sesión RCV...');
   try {
-    // Buscar link al RCV directamente en la página del portal MIPYME (www1.sii.cl)
-    // El portal MIPYME tiene links con el contexto de empresa ya seleccionada
-    let rcvLink = null;
+    const { rut: empRut, dv: empDv } = parseRut(empresaRut);
 
-    // 1. Buscar en la página post-empresa
-    const rcvM1 = empPostHtml.match(/href="(https?:\/\/www4\.sii\.cl\/consdcvinternetui\/[^"]+)"/i);
-    if (rcvM1) rcvLink = rcvM1[1];
+    // 6a: GET misiir home → buscar link a www4 (o usar base URL)
+    const siihomeRes = await http.get(SII_URLS.siiHome, {
+      headers: { ...BASE_HEADERS, Cookie: getCookieHeader(cookieStore) },
+    });
+    mergeCookies(cookieStore, siihomeRes.headers['set-cookie']);
+    const siihomeHtml = decodeSiiHtml(siihomeRes.data);
 
-    // 2. Si no está ahí, buscar en el home MIPYME
-    if (!rcvLink) {
-      const mipymeHomeUrls = [
-        'https://www1.sii.cl/cgi-bin/Portal001/mipeHome.cgi',
-        'https://www1.sii.cl/cgi-bin/Portal001/mipeMenus.cgi',
-        empPostFinalUrl,
-      ];
-      for (const homeUrl of mipymeHomeUrls) {
-        if (!homeUrl || !homeUrl.includes('www1.sii.cl')) continue;
-        const homeRes = await http.get(homeUrl, {
-          headers: { ...BASE_HEADERS, Cookie: getCookieHeader(cookieStore), Referer: empPostFinalUrl },
-        });
-        mergeCookies(cookieStore, homeRes.headers['set-cookie']);
-        const homeHtml = decodeSiiHtml(homeRes.data);
-        const rcvM = homeHtml.match(/href="(https?:\/\/www4\.sii\.cl\/consdcvinternetui\/[^"]+)"/i);
-        if (rcvM) { rcvLink = rcvM[1]; break; }
-        console.log(`[SII] Sin link RCV en ${homeUrl.substring(0, 80)}, status: ${homeRes.status}`);
+    // Extraer todos los links de www4 para diagnóstico
+    const www4Links = [...siihomeHtml.matchAll(/href="(https?:\/\/www4\.sii\.cl[^"]+)"/gi)].map(m => m[1]);
+    console.log(`[SII] Links www4 en misiir home: ${JSON.stringify(www4Links.slice(0, 5))}`);
+
+    const rcvLinkM = siihomeHtml.match(/href="(https?:\/\/www4\.sii\.cl\/consdcvinternetui\/[^"]+)"/i);
+    const rcvLink = rcvLinkM?.[1] || 'https://www4.sii.cl/consdcvinternetui/';
+    console.log(`[SII] Link RCV: ${rcvLink}`);
+
+    // 6b: Navegar a www4 para establecer sesión
+    const rcvRes = await http.get(rcvLink, {
+      headers: { ...BASE_HEADERS, Cookie: getCookieHeader(cookieStore), Referer: SII_URLS.siiHome },
+    });
+    mergeCookies(cookieStore, rcvRes.headers['set-cookie']);
+    const { res: rcvFinal, finalUrl: rcvFinalUrl } = await followRedirects(http, cookieStore, rcvRes, rcvLink);
+    const rcvHtml = decodeSiiHtml(rcvFinal.data);
+    console.log(`[SII] RCV URL final: ${rcvFinalUrl}, status: ${rcvFinal.status}`);
+    console.log(`[SII] RCV HTML (200): ${rcvHtml.substring(0, 200)}`);
+
+    // 6c: Intentar seleccionar empresa representada en www4
+    // Probamos varios endpoints conocidos del FacadeService
+    const candidateEndpoints = [
+      'selectRepresentado',
+      'getInfoEmpresa',
+      'cambiarRepresentado',
+      'getListaRepresentados',
+    ];
+    for (const ep of candidateEndpoints) {
+      try {
+        const epBody = {
+          metaData: {
+            namespace: `cl.sii.sdi.lob.diii.consdcv.data.api.interfaces.FacadeService/${ep}`,
+            conversationId: `INIT${Date.now()}`,
+            transactionId: '0',
+            page: null,
+          },
+          data: { rut: empRut, dv: empDv },
+        };
+        const epRes = await http.post(
+          `https://www4.sii.cl/consdcvinternetui/services/data/facadeService/${ep}`,
+          JSON.stringify(epBody),
+          {
+            headers: {
+              ...BASE_HEADERS,
+              'Content-Type': 'application/json; charset=utf-8',
+              Accept: '*/*',
+              Cookie: getCookieHeader(cookieStore),
+              Referer: rcvFinalUrl,
+              Origin: 'https://www4.sii.cl',
+            },
+            responseType: 'arraybuffer',
+          }
+        );
+        const epText = decodeSiiHtml(epRes.data);
+        console.log(`[SII] www4/${ep} → ${epRes.status}: ${epText.substring(0, 200)}`);
+        // Si no es 404 ni HTML de error, puede ser útil
+        if (epRes.status === 200 && epText.startsWith('{')) {
+          mergeCookies(cookieStore, epRes.headers['set-cookie']);
+        }
+      } catch (e) {
+        console.log(`[SII] www4/${ep} error: ${e.message}`);
       }
     }
 
-    // 3. Fallback: URL directa con RUT empresa como parámetro
-    if (!rcvLink) {
-      const { rut: empRut, dv: empDv } = parseRut(empresaRut);
-      rcvLink = `https://www4.sii.cl/consdcvinternetui/?rut=${empRut}&dv=${empDv}`;
-      console.log(`[SII] Fallback RCV URL: ${rcvLink}`);
-    } else {
-      console.log(`[SII] Link RCV encontrado: ${rcvLink}`);
-    }
-
-    // Navegar al portal RCV para establecer sesión
-    const rcvRes = await http.get(rcvLink, {
-      headers: { ...BASE_HEADERS, Cookie: getCookieHeader(cookieStore), Referer: empPostFinalUrl || formAction },
-    });
-    mergeCookies(cookieStore, rcvRes.headers['set-cookie']);
-    console.log(`[SII] RCV inicial status: ${rcvRes.status}, new cookies: ${JSON.stringify(rcvRes.headers['set-cookie'])?.substring(0, 200)}`);
-
-    const { res: rcvFinal, finalUrl: rcvFinalUrl } = await followRedirects(http, cookieStore, rcvRes, rcvLink);
-    console.log(`[SII] RCV URL final: ${rcvFinalUrl}, status: ${rcvFinal.status}`);
-    console.log(`[SII] Todas las cookies: ${getCookieHeader(cookieStore).substring(0, 400)}`);
+    console.log(`[SII] Cookies finales: ${getCookieHeader(cookieStore).substring(0, 400)}`);
   } catch (err) {
-    console.warn('[SII] Error accediendo RCV:', err.message);
+    console.warn('[SII] Error sesión RCV:', err.message);
   }
 
   const cookies = getCookieHeader(cookieStore);
