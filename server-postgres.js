@@ -270,8 +270,24 @@ async function siiLogin(rut, password, empresaRut) {
   });
   await followRedirects(http, cookieStore, empPostRaw, formAction);
 
+  const mipymeCookies = getCookieHeader(cookieStore);
+  console.log('[SII] Login MIPYME completo');
+
+  // Paso 6: Login en portal RCV (www4.sii.cl) para obtener TOKEN y RUT_NS
+  console.log('[SII] GET portal RCV para obtener TOKEN...');
+  try {
+    const rcvRes = await http.get('https://www4.sii.cl/consdcvinternetui/', {
+      headers: { ...BASE_HEADERS, Cookie: mipymeCookies, Referer: SII_URLS.siiHome },
+    });
+    mergeCookies(cookieStore, rcvRes.headers['set-cookie']);
+    const { finalUrl: rcvUrl } = await followRedirects(http, cookieStore, rcvRes, 'https://www4.sii.cl/consdcvinternetui/');
+    console.log(`[SII] RCV URL final: ${rcvUrl}`);
+  } catch (err) {
+    console.warn('[SII] Error accediendo RCV:', err.message);
+  }
+
   const cookies = getCookieHeader(cookieStore);
-  console.log('[SII] Login completo');
+  console.log(`[SII] Login completo. Cookies (200 chars): ${cookies.substring(0, 200)}`);
   return { http, cookies, cookieStore };
 }
 
@@ -334,17 +350,19 @@ async function fetchFacturasRecibidas(http, cookies, opts = {}) {
           headers: {
             ...BASE_HEADERS,
             'Content-Type': 'application/json; charset=utf-8',
-            'Accept': 'application/json',
+            'Accept': '*/*',
             Cookie: cookieHeader,
             Referer: 'https://www4.sii.cl/consdcvinternetui/',
             Origin: 'https://www4.sii.cl',
           },
-          responseType: 'json',
+          responseType: 'arraybuffer',
         }
       );
 
-      const data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
-      console.log(`[SII RCV] Período ${periodo} status: ${res.status}, keys: ${Object.keys(data || {}).join(', ')}`);
+      const rawText = decodeSiiHtml(res.data);
+      console.log(`[SII RCV] Período ${periodo} status: ${res.status}, bytes: ${rawText.length}, snippet: ${rawText.substring(0, 200)}`);
+      let data;
+      try { data = JSON.parse(rawText); } catch { console.warn('[SII RCV] Respuesta no es JSON:', rawText.substring(0, 300)); continue; }
 
       // La respuesta viene en data.data o data.listaDetalle
       const lista = data?.data?.listaDetalle || data?.listaDetalle || data?.data || [];
@@ -522,15 +540,16 @@ app.get('/debug/sii-recibidas', async (req, res) => {
         headers: {
           ...BASE_HEADERS,
           'Content-Type': 'application/json; charset=utf-8',
-          Accept: 'application/json',
+          Accept: '*/*',
           Cookie: cookies,
           Referer: 'https://www4.sii.cl/consdcvinternetui/',
           Origin: 'https://www4.sii.cl',
         },
-        responseType: 'json',
+        responseType: 'arraybuffer',
       }
     );
-    res.json({ status: rawRes.status, cookies: cookies.substring(0, 300), periodo, data: rawRes.data });
+    const rawText = decodeSiiHtml(rawRes.data);
+    res.json({ status: rawRes.status, cookies: cookies.substring(0, 300), periodo, raw: rawText.substring(0, 2000) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
