@@ -30,12 +30,29 @@ async function setupDb() {
       fecha_emision DATE,
       monto_neto    BIGINT,
       estado_sii    VARCHAR(50),
-      estado_pago   VARCHAR(20) DEFAULT 'pendiente',
-      pagada_at     TIMESTAMP,
+      -- Cuota 1: 50% a 30 días
+      vcto_1        DATE,
+      monto_1       BIGINT,
+      pagado_1      BOOLEAN DEFAULT FALSE,
+      pagado_1_at   TIMESTAMP,
+      -- Cuota 2: 50% a 40 días
+      vcto_2        DATE,
+      monto_2       BIGINT,
+      pagado_2      BOOLEAN DEFAULT FALSE,
+      pagado_2_at   TIMESTAMP,
       created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  // Migración: agregar columnas si la tabla ya existe sin ellas
+  const cols = ['vcto_1','monto_1','pagado_1','pagado_1_at','vcto_2','monto_2','pagado_2','pagado_2_at'];
+  for (const col of cols) {
+    await pool.query(`ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ${col} ${
+      col.startsWith('monto') ? 'BIGINT' :
+      col.startsWith('vcto')  ? 'DATE' :
+      col.endsWith('_at')     ? 'TIMESTAMP' : 'BOOLEAN DEFAULT FALSE'
+    }`).catch(() => {});
+  }
   console.log('[DB] Tabla lista');
 }
 
@@ -166,10 +183,16 @@ app.post('/api/sync', async (req, res) => {
   let insertadas = 0, actualizadas = 0;
 
   for (const d of docs) {
+    const fechaEmision = parseDate(d.detFchDoc);
+    const mitad = Math.round(d.detMntNeto / 2);
+
     const r = await pool.query(
       `INSERT INTO facturas_recibidas
-         (codigo, rut_emisor, razon_social, folio, fecha_emision, monto_neto, estado_sii)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+         (codigo, rut_emisor, razon_social, folio, fecha_emision, monto_neto, estado_sii,
+          vcto_1, monto_1, vcto_2, monto_2)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,
+          $5::date + 30, $8,
+          $5::date + 40, $9)
        ON CONFLICT (codigo) DO UPDATE SET
          razon_social = EXCLUDED.razon_social,
          monto_neto   = EXCLUDED.monto_neto,
@@ -181,9 +204,11 @@ app.post('/api/sync', async (req, res) => {
         `${d.detRutDoc}-${d.detDvDoc}`,
         d.detRznSoc,
         d.detNroDoc,
-        parseDate(d.detFchDoc),
+        fechaEmision,
         d.detMntNeto,
         d.dcvEstadoContab ?? 'REGISTRO',
+        mitad,
+        d.detMntNeto - mitad,  // el resto en cuota 2
       ]
     );
     r.rows[0].inserted ? insertadas++ : actualizadas++;
@@ -192,11 +217,35 @@ app.post('/api/sync', async (req, res) => {
   res.json({ ok: true, mes, insertadas, actualizadas, total: docs.length });
 });
 
-app.put('/api/facturas/:id/pagar', async (req, res) => {
+// PUT /api/facturas/:id/vencimientos  — ajustar fechas y montos de cuotas
+// body: { vcto_1: "2026-04-30", monto_1: 50000, vcto_2: "2026-05-10", monto_2: 50000 }
+app.put('/api/facturas/:id/vencimientos', async (req, res) => {
+  const { vcto_1, monto_1, vcto_2, monto_2 } = req.body;
   try {
     await pool.query(
-      `UPDATE facturas_recibidas
-       SET estado_pago = 'pagada', pagada_at = NOW(), updated_at = NOW()
+      `UPDATE facturas_recibidas SET
+         vcto_1     = COALESCE($2, vcto_1),
+         monto_1    = COALESCE($3, monto_1),
+         vcto_2     = COALESCE($4, vcto_2),
+         monto_2    = COALESCE($5, monto_2),
+         updated_at = NOW()
+       WHERE id = $1`,
+      [req.params.id, vcto_1 ?? null, monto_1 ?? null, vcto_2 ?? null, monto_2 ?? null]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/facturas/:id/pagar/:cuota  — marcar cuota 1 o 2 como pagada
+app.put('/api/facturas/:id/pagar/:cuota', async (req, res) => {
+  const cuota = req.params.cuota; // "1" o "2"
+  if (!['1','2'].includes(cuota)) return res.status(400).json({ error: 'cuota debe ser 1 o 2' });
+  try {
+    await pool.query(
+      `UPDATE facturas_recibidas SET
+         pagado_${cuota} = TRUE, pagado_${cuota}_at = NOW(), updated_at = NOW()
        WHERE id = $1`,
       [req.params.id]
     );
