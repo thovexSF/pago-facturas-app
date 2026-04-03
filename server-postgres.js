@@ -275,105 +275,109 @@ async function siiLogin(rut, password, empresaRut) {
   return { http, cookies, cookieStore };
 }
 
+// Extrae TOKEN de las cookies del SII
+function extractToken(cookies) {
+  const m = cookies.match(/(?:^|;\s*)TOKEN=([^;]+)/i);
+  return m ? m[1] : null;
+}
+
+// Extrae RUT y DV de las cookies del SII
+function extractRutDvFromCookies(cookies) {
+  const rutM = cookies.match(/(?:^|;\s*)RUT_NS=([^;]+)/i);
+  const dvM  = cookies.match(/(?:^|;\s*)DV_NS=([^;]+)/i);
+  return { rut: rutM?.[1] || null, dv: dvM?.[1] || null };
+}
+
 async function fetchFacturasRecibidas(http, cookies, opts = {}) {
-  const { fechaDesde, fechaHasta, maxPaginas = 20 } = opts;
+  const { mesesAtras = 3 } = opts;
   const facturas = [];
-  let pagina = 1;
 
-  while (pagina <= maxPaginas) {
-    const params = new URLSearchParams({
-      RUT_EMIT: '',
-      FOLIO: '',
-      RZN_SOC: '',
-      FEC_DESDE: fechaDesde || '',
-      FEC_HASTA: fechaHasta || '',
-      TPO_DOC: '33', // Facturas electrónicas
-      ESTADO: '',
-      ORDEN: '',
-      NUM_PAG: String(pagina),
-    });
+  // El RCV trabaja por período tributario (YYYYMM)
+  const hoy = new Date();
+  const periodos = [];
+  for (let i = 0; i < mesesAtras; i++) {
+    const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+    periodos.push(`${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
 
-    console.log(`[SII] GET facturas recibidas pág ${pagina}...`);
-    const res = await http.get(`${SII_URLS.listadoRecibidos}?${params}`, {
-      headers: { ...BASE_HEADERS, Cookie: cookies },
-    });
-    const html = decodeSiiHtml(res.data);
+  // Extraer TOKEN y RUT/DV de las cookies
+  const token = extractToken(cookies);
+  const { rut, dv } = extractRutDvFromCookies(cookies);
 
-    // Detectar si no hay datos
-    const codigos = [...html.matchAll(/CODIGO=(\d+)/g)].map(m => m[1]);
-    if (codigos.length === 0) {
-      console.log(`[SII] Sin más facturas recibidas en pág ${pagina}`);
-      break;
-    }
+  // Si no hay TOKEN en cookies, intentar extraerlo de la URL de redirección
+  const cookieHeader = cookies;
 
-    const rows = parseTableRows(html);
-    const filasDatos = rows.filter(r =>
-      r.cells.length >= 4 &&
-      (r.links.some(l => l.includes('CODIGO=')) || r.cells.join(' ').includes('CODIGO='))
-    );
+  for (const periodo of periodos) {
+    console.log(`[SII RCV] Consultando período ${periodo}...`);
+    try {
+      const body = {
+        metaData: {
+          namespace: 'cl.sii.sdi.lob.diii.consdcv.data.api.interfaces.FacadeService/getDetalleCompra',
+          conversationId: token || '0',
+          transactionId: '0',
+          page: null,
+        },
+        data: {
+          ptributario: periodo,
+          operacion: 'COMPRA',
+          estadoContab: 'REGISTRO',
+          codTipoDoc: '33',
+          accionRecaptcha: 'RCV_DDETC',
+          tokenRecaptcha: 'c3',
+        },
+      };
 
-    for (const row of filasDatos) {
-      const linkCodigo = row.links.find(l => l.includes('CODIGO=')) || row.cells.find(c => c.includes('CODIGO='));
-      if (!linkCodigo) continue;
-      const codigoM = linkCodigo.match(/CODIGO=(\d+)/);
-      if (!codigoM) continue;
-      const codigo = codigoM[1];
-
-      // Para recibidas: [rut_emisor | razon_social | tipo_doc | folio | fecha | monto | estado]
-      const dataCells = row.cells.filter((c, i) => i > 0 || c.length > 5);
-      const [col0, col1, col2, col3, col4, col5, col6] = dataCells;
-
-      const isDate = s => /^\d{4}-\d{2}-\d{2}/.test((s || '').trim());
-      const isTipoDoc = s => /(factura|electronica|electrónica|exenta|gu[ií]a|nota|despacho|cr[eé]dito|d[eé]bito|boleta)/i.test(s || '');
-
-      let rutEmisor, razonSocial, tipoDoc, folio, fecha, montoStr, estado;
-
-      if (isTipoDoc(col1)) {
-        const rutM = (col0 || '').match(/^(\d{7,8}-[\dKk])\s*(.*)/);
-        rutEmisor = rutM ? rutM[1] : (col0 || '').trim();
-        razonSocial = rutM?.[2]?.trim() || '';
-        tipoDoc = (col1 || '').trim();
-        folio = parseInt(col2 || '0', 10) || 0;
-        fecha = (col3 || '').trim();
-        montoStr = col4 || '0';
-        estado = (col5 || '').trim();
-      } else {
-        rutEmisor = (col0 || '').trim();
-        razonSocial = (col1 || '').trim();
-        tipoDoc = (col2 || '').trim();
-        if (isDate(col3)) {
-          folio = 0;
-          fecha = (col3 || '').trim();
-          montoStr = col4 || '0';
-          estado = (col5 || '').trim();
-        } else {
-          folio = parseInt(col3 || '0', 10) || 0;
-          fecha = (col4 || '').trim();
-          montoStr = col5 || '0';
-          estado = (col6 || '').trim();
+      const res = await http.post(
+        'https://www4.sii.cl/consdcvinternetui/services/data/facadeService/getDetalleCompra',
+        JSON.stringify(body),
+        {
+          headers: {
+            ...BASE_HEADERS,
+            'Content-Type': 'application/json; charset=utf-8',
+            'Accept': 'application/json',
+            Cookie: cookieHeader,
+            Referer: 'https://www4.sii.cl/consdcvinternetui/',
+            Origin: 'https://www4.sii.cl',
+          },
+          responseType: 'json',
         }
+      );
+
+      const data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+      console.log(`[SII RCV] Período ${periodo} status: ${res.status}, keys: ${Object.keys(data || {}).join(', ')}`);
+
+      // La respuesta viene en data.data o data.listaDetalle
+      const lista = data?.data?.listaDetalle || data?.listaDetalle || data?.data || [];
+      if (!Array.isArray(lista)) {
+        console.log(`[SII RCV] Sin lista para período ${periodo}:`, JSON.stringify(data).slice(0, 300));
+        continue;
       }
 
-      const monto = parseInt(montoStr.replace(/[^\d]/g, '') || '0', 10);
-      // Fecha de vencimiento: 30 días desde emisión (estándar facturas Chile)
-      const fechaVencimiento = fecha ? calcularVencimiento(fecha, 30) : null;
+      for (const item of lista) {
+        const rutEmisor = item.rutEmisor ? `${item.rutEmisor}-${item.dvEmisor || ''}` : null;
+        const fecha = item.fchDoc ? item.fchDoc.substring(0, 10) : null;
+        const monto = parseInt(item.mntTotal || item.monto || '0', 10);
+        const folio = parseInt(item.folio || item.nroDoc || '0', 10);
+        const codigo = `${periodo}-${rutEmisor}-${folio}`;
 
-      facturas.push({
-        codigo,
-        rutEmisor,
-        razonSocial,
-        tipoDocumento: tipoDoc,
-        tipoCodigo: 33,
-        folio,
-        fechaEmision: fecha || null,
-        fechaVencimiento,
-        monto,
-        estadoSii: estado,
-      });
+        facturas.push({
+          codigo,
+          rutEmisor,
+          razonSocial: item.razonSocial || item.rznSoc || '',
+          tipoDocumento: 'Factura Electrónica',
+          tipoCodigo: 33,
+          folio,
+          fechaEmision: fecha,
+          fechaVencimiento: fecha ? calcularVencimiento(fecha, 30) : null,
+          monto,
+          estadoSii: item.estadoContab || item.estado || 'REGISTRO',
+        });
+      }
+    } catch (err) {
+      console.warn(`[SII RCV] Error período ${periodo}:`, err.message);
     }
 
-    pagina++;
-    await new Promise(r => setTimeout(r, 300)); // pausa entre páginas
+    await new Promise(r => setTimeout(r, 400));
   }
 
   return facturas;
@@ -490,16 +494,43 @@ app.get('/debug/sii-recibidas', async (req, res) => {
   const empresaRut = process.env.SII_EMPRESA_RUT;
   try {
     const { http, cookies } = await siiLogin(rut, password, empresaRut);
-    const params = new URLSearchParams({
-      RUT_EMIT: '', FOLIO: '', RZN_SOC: '',
-      FEC_DESDE: '', FEC_HASTA: '', TPO_DOC: '', ESTADO: '', ORDEN: '', NUM_PAG: '1',
-    });
-    const rawRes = await http.get(`${SII_URLS.listadoRecibidos}?${params}`, {
-      headers: { ...BASE_HEADERS, Cookie: cookies },
-    });
-    const html = decodeSiiHtml(rawRes.data);
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(html);
+    const hoy = new Date();
+    const periodo = `${hoy.getFullYear()}${String(hoy.getMonth() + 1).padStart(2, '0')}`;
+    const token = extractToken(cookies);
+    console.log(`[DEBUG] Cookies: ${cookies.substring(0, 200)}`);
+    console.log(`[DEBUG] TOKEN: ${token}`);
+    const body = {
+      metaData: {
+        namespace: 'cl.sii.sdi.lob.diii.consdcv.data.api.interfaces.FacadeService/getDetalleCompra',
+        conversationId: token || '0',
+        transactionId: '0',
+        page: null,
+      },
+      data: {
+        ptributario: periodo,
+        operacion: 'COMPRA',
+        estadoContab: 'REGISTRO',
+        codTipoDoc: '33',
+        accionRecaptcha: 'RCV_DDETC',
+        tokenRecaptcha: 'c3',
+      },
+    };
+    const rawRes = await http.post(
+      'https://www4.sii.cl/consdcvinternetui/services/data/facadeService/getDetalleCompra',
+      JSON.stringify(body),
+      {
+        headers: {
+          ...BASE_HEADERS,
+          'Content-Type': 'application/json; charset=utf-8',
+          Accept: 'application/json',
+          Cookie: cookies,
+          Referer: 'https://www4.sii.cl/consdcvinternetui/',
+          Origin: 'https://www4.sii.cl',
+        },
+        responseType: 'json',
+      }
+    );
+    res.json({ status: rawRes.status, cookies: cookies.substring(0, 300), periodo, data: rawRes.data });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
