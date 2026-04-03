@@ -496,6 +496,214 @@ async function fetchFacturasRecibidas(http, cookies, opts = {}) {
   return facturas;
 }
 
+// ─── Playwright-based SII Scraper ─────────────────────────────────────────────
+
+async function fetchFacturasConPuppeteer(rut, password, empresaRut, mesesAtras = 6) {
+  let chromium;
+  try { ({ chromium } = require('playwright')); }
+  catch (e) { throw new Error('playwright no instalado: ' + e.message); }
+
+  console.log('[Playwright] Iniciando browser Chromium...');
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+  });
+
+  const facturas = [];
+
+  try {
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      extraHTTPHeaders: { 'Accept-Language': 'es-CL,es;q=0.9' },
+      ignoreHTTPSErrors: true,
+    });
+    const page = await context.newPage();
+
+    // Interceptar XHR del Angular para diagnóstico
+    page.on('response', async (response) => {
+      const url = response.url();
+      if (url.includes('consdcvinternetui/services') || url.includes('facadeService')) {
+        const text = await response.text().catch(() => '');
+        console.log(`[Playwright] XHR ${url.split('/').pop()} → ${response.status()} | ${text.substring(0, 250)}`);
+      }
+    });
+
+    // ── Paso 1: Login ────────────────────────────────────────────────────────
+    console.log('[Playwright] Paso 1: Login...');
+    await page.goto(
+      'https://zeusr.sii.cl//AUT2000/InicioAutenticacion/IngresoRutClave.html?https://misiir.sii.cl/cgi_misii/siihome.cgi',
+      { waitUntil: 'domcontentloaded', timeout: 30000 }
+    );
+    await page.waitForSelector('#rutcntr', { timeout: 15000 });
+    await page.fill('#rutcntr', rut);
+    await page.fill('#clave', password);
+    await Promise.all([
+      page.waitForLoadState('networkidle'),
+      page.click('[type=submit]'),
+    ]);
+    const loginUrl = page.url();
+    console.log(`[Playwright] URL post-login: ${loginUrl}`);
+    if (loginUrl.includes('IngresoRut') || loginUrl.includes('rutcntr')) {
+      throw new Error('Login SII fallido: credenciales incorrectas');
+    }
+
+    // ── Paso 2: Selección empresa ────────────────────────────────────────────
+    console.log('[Playwright] Paso 2: Selección empresa...');
+    await page.goto(
+      'https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi',
+      { waitUntil: 'domcontentloaded', timeout: 30000 }
+    );
+    const { rut: empRut } = parseRut(empresaRut);
+    const selectCount = await page.locator('select').count();
+    if (selectCount > 0) {
+      const options = await page.evaluate(() =>
+        Array.from(document.querySelector('select')?.options || []).map(o => ({ value: o.value, text: o.text }))
+      );
+      console.log(`[Playwright] Opciones empresa: ${JSON.stringify(options)}`);
+      const target = options.find(o =>
+        o.value === empresaRut || o.value === empRut || o.value.includes(empRut) || o.text.includes(empRut)
+      );
+      const selected = target || options[0];
+      if (selected) {
+        await page.selectOption('select', selected.value);
+        console.log(`[Playwright] Empresa seleccionada: ${selected.value}`);
+        const btnCount = await page.locator('[type=submit]').count();
+        if (btnCount > 0) {
+          await Promise.all([
+            page.waitForLoadState('networkidle').catch(() => {}),
+            page.click('[type=submit]'),
+          ]);
+        }
+      }
+    } else {
+      console.log('[Playwright] Sin select de empresa (auto-seleccionada)');
+    }
+    console.log(`[Playwright] URL post-empresa: ${page.url()}`);
+
+    // ── Paso 3: Portal RCV www4 ──────────────────────────────────────────────
+    console.log('[Playwright] Paso 3: Navegando RCV...');
+    await page.goto(
+      'https://www4.sii.cl/consdcvinternetui/',
+      { waitUntil: 'networkidle', timeout: 45000 }
+    );
+    // Esperar que el AngularJS app inicialice y haga las llamadas de init
+    await page.waitForTimeout(5000);
+    const rcvTitle = await page.title().catch(() => '');
+    console.log(`[Playwright] RCV URL: ${page.url()} | título: ${rcvTitle}`);
+
+    // Verificar si hay select de empresa en www4
+    const www4SelectCount = await page.locator('select').count();
+    if (www4SelectCount > 0) {
+      const opts = await page.evaluate(() =>
+        Array.from(document.querySelector('select')?.options || []).map(o => ({ v: o.value, t: o.text }))
+      );
+      console.log(`[Playwright] Select en www4: ${JSON.stringify(opts)}`);
+      const tgt = opts.find(o => o.v.includes(empRut) || o.t.includes(empRut));
+      if (tgt) {
+        await page.evaluate((v) => {
+          const sel = document.querySelector('select');
+          sel.value = v;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }, tgt.v);
+        console.log(`[Playwright] Empresa en www4: ${tgt.v}`);
+        await page.waitForTimeout(2000);
+      }
+    }
+
+    // ── Paso 4: Extraer cookies y llamar API ─────────────────────────────────
+    const allCookies = await context.cookies();
+    console.log(`[Playwright] Cookies (${allCookies.length}): ${allCookies.map(c => c.name).join(', ')}`);
+    const cookieStr = allCookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+    const hoy = new Date();
+    const periodos = [];
+    for (let i = 0; i < mesesAtras; i++) {
+      const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+      periodos.push(`${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`);
+    }
+
+    const TIPOS_DOC = [
+      { codigo: '33', nombre: 'Factura Electrónica Afecta' },
+      { codigo: '34', nombre: 'Factura Electrónica Exenta' },
+    ];
+
+    const http = makeSiiAxios();
+    for (const periodo of periodos) {
+      for (const tipo of TIPOS_DOC) {
+        try {
+          const body = {
+            metaData: {
+              namespace: 'cl.sii.sdi.lob.diii.consdcv.data.api.interfaces.FacadeService/getDetalleCompra',
+              conversationId: `P${Date.now()}`,
+              transactionId: '0',
+              page: null,
+            },
+            data: {
+              ptributario: periodo,
+              operacion: 'COMPRA',
+              estadoContab: 'REGISTRO',
+              codTipoDoc: tipo.codigo,
+              accionRecaptcha: 'RCV_DETC',
+              tokenRecaptcha: 'c3',
+            },
+          };
+          const res = await http.post(
+            'https://www4.sii.cl/consdcvinternetui/services/data/facadeService/getDetalleCompra',
+            JSON.stringify(body),
+            {
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+                'Content-Type': 'application/json; charset=utf-8',
+                'Accept': '*/*',
+                'Accept-Language': 'es-CL,es;q=0.9',
+                Cookie: cookieStr,
+                Referer: 'https://www4.sii.cl/consdcvinternetui/',
+                Origin: 'https://www4.sii.cl',
+              },
+              responseType: 'arraybuffer',
+            }
+          );
+          const rawText = decodeSiiHtml(res.data);
+          console.log(`[Puppeteer RCV] ${periodo}/${tipo.codigo}: ${rawText.substring(0, 280)}`);
+          let parsed;
+          try { parsed = JSON.parse(rawText); } catch { continue; }
+          if (parsed?.respEstado?.codRespuesta === 2) {
+            console.log(`[Puppeteer RCV] Sin datos ${periodo}/${tipo.codigo}: ${parsed?.respEstado?.codError}`);
+            continue;
+          }
+          const lista = parsed?.data?.listaDetalle || parsed?.data || [];
+          if (!Array.isArray(lista) || lista.length === 0) continue;
+          console.log(`[Puppeteer RCV] ✓ ${lista.length} docs en ${periodo}/${tipo.codigo}`);
+          for (const item of lista) {
+            const rutEmisor = item.rutDoc ? `${item.rutDoc}-${item.dvDoc || ''}` :
+                              item.rutEmisor ? `${item.rutEmisor}-${item.dvEmisor || ''}` : null;
+            const fecha = (item.fchDoc || item.fechaDoc || '').substring(0, 10) || null;
+            facturas.push({
+              codigo: `${periodo}-${tipo.codigo}-${rutEmisor}-${parseInt(item.folio || '0', 10)}`,
+              rutEmisor,
+              razonSocial: item.razonSocial || item.rznSoc || '',
+              tipoDocumento: tipo.nombre,
+              tipoCodigo: parseInt(tipo.codigo, 10),
+              folio: parseInt(item.folio || '0', 10),
+              fechaEmision: fecha,
+              fechaVencimiento: fecha ? calcularVencimiento(fecha, 30) : null,
+              monto: parseInt(item.mntTotal || item.montoTotal || '0', 10),
+              estadoSii: item.estadoContab || 'REGISTRO',
+            });
+          }
+        } catch (err) {
+          console.warn(`[Puppeteer RCV] Error ${periodo}/${tipo.codigo}:`, err.message);
+        }
+        await new Promise(r => setTimeout(r, 400));
+      }
+    }
+  } finally {
+    await browser.close();
+    console.log('[Playwright] Browser cerrado.');
+  }
+  return facturas;
+}
+
 function calcularVencimiento(fechaEmision, dias) {
   try {
     const d = new Date(fechaEmision);
@@ -533,17 +741,8 @@ app.post('/api/sync', async (req, res) => {
   }
 
   try {
-    console.log('[SYNC] Iniciando sincronización SII...');
-    const { http, cookies } = await siiLogin(rut, password, empresaRut);
-
-    // Últimos 90 días
-    const hoy = new Date();
-    const hace90 = new Date(hoy);
-    hace90.setDate(hoy.getDate() - 90);
-    const fechaDesde = hace90.toISOString().split('T')[0];
-    const fechaHasta = hoy.toISOString().split('T')[0];
-
-    const facturas = await fetchFacturasRecibidas(http, cookies, { fechaDesde, fechaHasta, empresaRut });
+    console.log('[SYNC] Iniciando sincronización SII con Playwright...');
+    const facturas = await fetchFacturasConPuppeteer(rut, password, empresaRut, 6);
     console.log(`[SYNC] Obtenidas ${facturas.length} facturas del SII`);
 
     let nuevas = 0;
