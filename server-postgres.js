@@ -320,8 +320,17 @@ function extractRutDvFromCookies(cookies) {
 }
 
 async function fetchFacturasRecibidas(http, cookies, opts = {}) {
-  const { mesesAtras = 6 } = opts;
+  const { mesesAtras = 6, empresaRut } = opts;
   const facturas = [];
+
+  // Separar RUT y DV de la empresa (ej: "78015129-3" → rut="78015129", dv="3")
+  let rutEmpresa = null;
+  let dvEmpresa = null;
+  if (empresaRut) {
+    const parts = empresaRut.replace(/\./g, '').split('-');
+    rutEmpresa = parts[0];
+    dvEmpresa = parts[1] || '';
+  }
 
   // El RCV trabaja por período tributario (YYYYMM)
   const hoy = new Date();
@@ -331,16 +340,28 @@ async function fetchFacturasRecibidas(http, cookies, opts = {}) {
     periodos.push(`${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`);
   }
 
-  // Extraer TOKEN y RUT/DV de las cookies
+  // Extraer TOKEN de las cookies
   const token = extractToken(cookies);
-  const { rut, dv } = extractRutDvFromCookies(cookies);
-
-  // Si no hay TOKEN en cookies, intentar extraerlo de la URL de redirección
   const cookieHeader = cookies;
 
   for (const periodo of periodos) {
-    console.log(`[SII RCV] Consultando período ${periodo}...`);
+    console.log(`[SII RCV] Consultando período ${periodo} empresa ${rutEmpresa}-${dvEmpresa}...`);
     try {
+      const dataObj = {
+        ptributario: periodo,
+        operacion: 'COMPRA',
+        estadoContab: 'REGISTRO',
+        codTipoDoc: '0',
+        accionRecaptcha: 'RCV_DETC',
+        tokenRecaptcha: 'c3',
+      };
+
+      // Incluir RUT de la empresa si está disponible
+      if (rutEmpresa) {
+        dataObj.rutEmpresa = rutEmpresa;
+        dataObj.dvEmpresa = dvEmpresa;
+      }
+
       const body = {
         metaData: {
           namespace: 'cl.sii.sdi.lob.diii.consdcv.data.api.interfaces.FacadeService/getDetalleCompra',
@@ -348,14 +369,7 @@ async function fetchFacturasRecibidas(http, cookies, opts = {}) {
           transactionId: '0',
           page: null,
         },
-        data: {
-          ptributario: periodo,
-          operacion: 'COMPRA',
-          estadoContab: 'REGISTRO',
-          codTipoDoc: '0',
-          accionRecaptcha: 'RCV_DETC',
-          tokenRecaptcha: 'c3',
-        },
+        data: dataObj,
       };
 
       const res = await http.post(
@@ -463,7 +477,7 @@ app.post('/api/sync', async (req, res) => {
     const fechaDesde = hace90.toISOString().split('T')[0];
     const fechaHasta = hoy.toISOString().split('T')[0];
 
-    const facturas = await fetchFacturasRecibidas(http, cookies, { fechaDesde, fechaHasta });
+    const facturas = await fetchFacturasRecibidas(http, cookies, { fechaDesde, fechaHasta, empresaRut });
     console.log(`[SYNC] Obtenidas ${facturas.length} facturas del SII`);
 
     let nuevas = 0;
@@ -528,10 +542,16 @@ app.get('/debug/sii-recibidas', async (req, res) => {
   try {
     const { http, cookies } = await siiLogin(rut, password, empresaRut);
     const hoy = new Date();
-    const periodo = `${hoy.getFullYear()}${String(hoy.getMonth() + 1).padStart(2, '0')}`;
+    const periodo = req.query.periodo || `${hoy.getFullYear()}${String(hoy.getMonth() + 1).padStart(2, '0')}`;
     const token = extractToken(cookies);
     console.log(`[DEBUG] Cookies: ${cookies.substring(0, 200)}`);
     console.log(`[DEBUG] TOKEN: ${token}`);
+
+    // Separar RUT/DV empresa
+    const empParts = (empresaRut || '').replace(/\./g, '').split('-');
+    const rutEmp = empParts[0] || '';
+    const dvEmp = empParts[1] || '';
+
     const body = {
       metaData: {
         namespace: 'cl.sii.sdi.lob.diii.consdcv.data.api.interfaces.FacadeService/getDetalleCompra',
@@ -540,10 +560,12 @@ app.get('/debug/sii-recibidas', async (req, res) => {
         page: null,
       },
       data: {
+        rutEmpresa: rutEmp,
+        dvEmpresa: dvEmp,
         ptributario: periodo,
         operacion: 'COMPRA',
         estadoContab: 'REGISTRO',
-        codTipoDoc: '33',
+        codTipoDoc: '0',
         accionRecaptcha: 'RCV_DETC',
         tokenRecaptcha: 'c3',
       },
@@ -564,7 +586,7 @@ app.get('/debug/sii-recibidas', async (req, res) => {
       }
     );
     const rawText = decodeSiiHtml(rawRes.data);
-    res.json({ status: rawRes.status, cookies: cookies.substring(0, 300), periodo, raw: rawText });
+    res.json({ status: rawRes.status, cookies: cookies.substring(0, 300), periodo, rutEmpresa: rutEmp, dvEmpresa: dvEmp, requestBody: body, raw: rawText });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
