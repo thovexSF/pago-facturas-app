@@ -9,8 +9,9 @@ document.addEventListener('DOMContentLoaded', () => {
   initTabs();
   initModal();
   cargarFacturas();
+  syncAuto(); // sincroniza meses recientes que falten al cargar
 
-  document.getElementById('btn-sync').addEventListener('click', sincronizar);
+  document.getElementById('btn-sync').addEventListener('click', sincronizarHistorico);
   document.getElementById('filter-estado').addEventListener('change', renderTabla);
 });
 
@@ -194,16 +195,33 @@ async function marcarPagada() {
 
 // ─── Sincronizar ──────────────────────────────────────────────────────────────
 
-async function sincronizar() {
+// Al cargar: sincroniza solo los meses recientes que falten (silencioso)
+async function syncAuto() {
+  try {
+    const res  = await fetch('/api/sync/auto', { method: 'POST' });
+    const data = await res.json();
+    if (data.meses?.length) {
+      const total = data.meses.reduce((s, m) => s + m.insertadas, 0);
+      if (total > 0) {
+        mostrarToast(`Auto-sync: ${total} facturas nuevas`, 'success');
+        await cargarFacturas();
+      }
+    }
+  } catch (_) { /* silencioso */ }
+}
+
+// Botón manual: sincroniza TODO el historial (últimos 2 años)
+async function sincronizarHistorico() {
   const btn = document.getElementById('btn-sync');
   btn.disabled = true;
   btn.textContent = '↻ Sincronizando...';
   try {
-    const res = await fetch('/api/sync', { method: 'POST' });
+    const res  = await fetch('/api/sync/historico', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Error sincronizando');
-    mostrarToast(`Sincronización completa: ${data.nuevas} nuevas, ${data.actualizadas} actualizadas`, 'success');
-    await cargarFacturas();
+    mostrarToast(data.mensaje ?? 'Sincronización histórica iniciada en background', 'success');
+    // Recargar facturas después de un momento (el proceso sigue en background)
+    setTimeout(cargarFacturas, 5000);
   } catch (err) {
     mostrarToast('Error: ' + err.message, 'error');
   } finally {
