@@ -167,8 +167,9 @@ app.get('/api/facturas', async (req, res) => {
 
 // POST /api/sync?mes=202603
 app.post('/api/sync', async (req, res) => {
-  const mes = req.query.mes ?? req.body.mes;
-  if (!mes) return res.status(400).json({ error: 'Falta parámetro mes (ej: 202603)' });
+  const now = new Date();
+  const mesPorDefecto = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const mes = req.query.mes ?? req.body?.mes ?? mesPorDefecto;
 
   console.log(`[sync] Iniciando para ${mes}...`);
   let docs;
