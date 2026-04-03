@@ -273,15 +273,30 @@ async function siiLogin(rut, password, empresaRut) {
   const mipymeCookies = getCookieHeader(cookieStore);
   console.log('[SII] Login MIPYME completo');
 
-  // Paso 6: Login en portal RCV (www4.sii.cl) para obtener TOKEN y RUT_NS
-  console.log('[SII] GET portal RCV para obtener TOKEN...');
+  // Paso 6: Establecer sesión en portal RCV (www4.sii.cl)
+  console.log('[SII] Estableciendo sesión RCV...');
   try {
-    const rcvRes = await http.get('https://www4.sii.cl/consdcvinternetui/', {
-      headers: { ...BASE_HEADERS, Cookie: mipymeCookies, Referer: SII_URLS.siiHome },
+    // Primero navegar a la home del SII que tiene el link al RCV
+    const siihomeRes = await http.get('https://misiir.sii.cl/cgi_misii/siihome.cgi', {
+      headers: { ...BASE_HEADERS, Cookie: mipymeCookies },
+    });
+    mergeCookies(cookieStore, siihomeRes.headers['set-cookie']);
+    const siihomeHtml = decodeSiiHtml(siihomeRes.data);
+
+    // Buscar link al portal RCV en la página home
+    const rcvLinkM = siihomeHtml.match(/href="(https:\/\/www4\.sii\.cl\/consdcvinternetui\/[^"]+)"/i);
+    const rcvLink = rcvLinkM?.[1] || 'https://www4.sii.cl/consdcvinternetui/';
+    console.log(`[SII] Link RCV encontrado: ${rcvLink}`);
+
+    // Navegar al portal RCV con las cookies actuales
+    const rcvRes = await http.get(rcvLink, {
+      headers: { ...BASE_HEADERS, Cookie: getCookieHeader(cookieStore), Referer: 'https://misiir.sii.cl/cgi_misii/siihome.cgi' },
     });
     mergeCookies(cookieStore, rcvRes.headers['set-cookie']);
-    const { finalUrl: rcvUrl } = await followRedirects(http, cookieStore, rcvRes, 'https://www4.sii.cl/consdcvinternetui/');
-    console.log(`[SII] RCV URL final: ${rcvUrl}`);
+    console.log(`[SII] RCV status: ${rcvRes.status}, set-cookie: ${JSON.stringify(rcvRes.headers['set-cookie'])}`);
+
+    const { res: rcvFinal, finalUrl: rcvFinalUrl } = await followRedirects(http, cookieStore, rcvRes, rcvLink);
+    console.log(`[SII] RCV URL final: ${rcvFinalUrl}, cookies nuevas: ${getCookieHeader(cookieStore).substring(0, 200)}`);
   } catch (err) {
     console.warn('[SII] Error accediendo RCV:', err.message);
   }
