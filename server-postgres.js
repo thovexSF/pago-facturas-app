@@ -320,7 +320,7 @@ function extractRutDvFromCookies(cookies) {
 }
 
 async function fetchFacturasRecibidas(http, cookies, opts = {}) {
-  const { mesesAtras = 3 } = opts;
+  const { mesesAtras = 6 } = opts;
   const facturas = [];
 
   // El RCV trabaja por período tributario (YYYYMM)
@@ -352,7 +352,7 @@ async function fetchFacturasRecibidas(http, cookies, opts = {}) {
           ptributario: periodo,
           operacion: 'COMPRA',
           estadoContab: 'REGISTRO',
-          codTipoDoc: '33',
+          codTipoDoc: '0',
           accionRecaptcha: 'RCV_DETC',
           tokenRecaptcha: 'c3',
         },
@@ -564,7 +564,7 @@ app.get('/debug/sii-recibidas', async (req, res) => {
       }
     );
     const rawText = decodeSiiHtml(rawRes.data);
-    res.json({ status: rawRes.status, cookies: cookies.substring(0, 300), periodo, raw: rawText.substring(0, 2000) });
+    res.json({ status: rawRes.status, cookies: cookies.substring(0, 300), periodo, raw: rawText });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
