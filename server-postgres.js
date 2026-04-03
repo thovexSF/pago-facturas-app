@@ -268,35 +268,63 @@ async function siiLogin(rut, password, empresaRut) {
       Cookie: getCookieHeader(cookieStore),
     },
   });
-  await followRedirects(http, cookieStore, empPostRaw, formAction);
+  // Capturar el resultado final del POST de empresa para obtener la URL del home MIPYME
+  const { res: empPostFinal, finalUrl: empPostFinalUrl } = await followRedirects(http, cookieStore, empPostRaw, formAction);
+  const empPostHtml = decodeSiiHtml(empPostFinal.data);
+  console.log(`[SII] Post-empresa URL final: ${empPostFinalUrl}`);
 
-  const mipymeCookies = getCookieHeader(cookieStore);
   console.log('[SII] Login MIPYME completo');
 
-  // Paso 6: Establecer sesión en portal RCV (www4.sii.cl)
-  console.log('[SII] Estableciendo sesión RCV...');
+  // Paso 6: Establecer sesión en portal RCV (www4.sii.cl) desde el portal MIPYME
+  console.log('[SII] Estableciendo sesión RCV desde portal MIPYME...');
   try {
-    // Primero navegar a la home del SII que tiene el link al RCV
-    const siihomeRes = await http.get('https://misiir.sii.cl/cgi_misii/siihome.cgi', {
-      headers: { ...BASE_HEADERS, Cookie: mipymeCookies },
-    });
-    mergeCookies(cookieStore, siihomeRes.headers['set-cookie']);
-    const siihomeHtml = decodeSiiHtml(siihomeRes.data);
+    // Buscar link al RCV directamente en la página del portal MIPYME (www1.sii.cl)
+    // El portal MIPYME tiene links con el contexto de empresa ya seleccionada
+    let rcvLink = null;
 
-    // Buscar link al portal RCV en la página home
-    const rcvLinkM = siihomeHtml.match(/href="(https:\/\/www4\.sii\.cl\/consdcvinternetui\/[^"]+)"/i);
-    const rcvLink = rcvLinkM?.[1] || 'https://www4.sii.cl/consdcvinternetui/';
-    console.log(`[SII] Link RCV encontrado: ${rcvLink}`);
+    // 1. Buscar en la página post-empresa
+    const rcvM1 = empPostHtml.match(/href="(https?:\/\/www4\.sii\.cl\/consdcvinternetui\/[^"]+)"/i);
+    if (rcvM1) rcvLink = rcvM1[1];
 
-    // Navegar al portal RCV con las cookies actuales
+    // 2. Si no está ahí, buscar en el home MIPYME
+    if (!rcvLink) {
+      const mipymeHomeUrls = [
+        'https://www1.sii.cl/cgi-bin/Portal001/mipeHome.cgi',
+        'https://www1.sii.cl/cgi-bin/Portal001/mipeMenus.cgi',
+        empPostFinalUrl,
+      ];
+      for (const homeUrl of mipymeHomeUrls) {
+        if (!homeUrl || !homeUrl.includes('www1.sii.cl')) continue;
+        const homeRes = await http.get(homeUrl, {
+          headers: { ...BASE_HEADERS, Cookie: getCookieHeader(cookieStore), Referer: empPostFinalUrl },
+        });
+        mergeCookies(cookieStore, homeRes.headers['set-cookie']);
+        const homeHtml = decodeSiiHtml(homeRes.data);
+        const rcvM = homeHtml.match(/href="(https?:\/\/www4\.sii\.cl\/consdcvinternetui\/[^"]+)"/i);
+        if (rcvM) { rcvLink = rcvM[1]; break; }
+        console.log(`[SII] Sin link RCV en ${homeUrl.substring(0, 80)}, status: ${homeRes.status}`);
+      }
+    }
+
+    // 3. Fallback: URL directa con RUT empresa como parámetro
+    if (!rcvLink) {
+      const { rut: empRut, dv: empDv } = parseRut(empresaRut);
+      rcvLink = `https://www4.sii.cl/consdcvinternetui/?rut=${empRut}&dv=${empDv}`;
+      console.log(`[SII] Fallback RCV URL: ${rcvLink}`);
+    } else {
+      console.log(`[SII] Link RCV encontrado: ${rcvLink}`);
+    }
+
+    // Navegar al portal RCV para establecer sesión
     const rcvRes = await http.get(rcvLink, {
-      headers: { ...BASE_HEADERS, Cookie: getCookieHeader(cookieStore), Referer: 'https://misiir.sii.cl/cgi_misii/siihome.cgi' },
+      headers: { ...BASE_HEADERS, Cookie: getCookieHeader(cookieStore), Referer: empPostFinalUrl || formAction },
     });
     mergeCookies(cookieStore, rcvRes.headers['set-cookie']);
-    console.log(`[SII] RCV status: ${rcvRes.status}, set-cookie: ${JSON.stringify(rcvRes.headers['set-cookie'])}`);
+    console.log(`[SII] RCV inicial status: ${rcvRes.status}, new cookies: ${JSON.stringify(rcvRes.headers['set-cookie'])?.substring(0, 200)}`);
 
     const { res: rcvFinal, finalUrl: rcvFinalUrl } = await followRedirects(http, cookieStore, rcvRes, rcvLink);
-    console.log(`[SII] RCV URL final: ${rcvFinalUrl}, cookies nuevas: ${getCookieHeader(cookieStore).substring(0, 200)}`);
+    console.log(`[SII] RCV URL final: ${rcvFinalUrl}, status: ${rcvFinal.status}`);
+    console.log(`[SII] Todas las cookies: ${getCookieHeader(cookieStore).substring(0, 400)}`);
   } catch (err) {
     console.warn('[SII] Error accediendo RCV:', err.message);
   }
@@ -320,17 +348,8 @@ function extractRutDvFromCookies(cookies) {
 }
 
 async function fetchFacturasRecibidas(http, cookies, opts = {}) {
-  const { mesesAtras = 6, empresaRut } = opts;
+  const { mesesAtras = 6 } = opts;
   const facturas = [];
-
-  // Separar RUT y DV de la empresa (ej: "78015129-3" → rut="78015129", dv="3")
-  let rutEmpresa = null;
-  let dvEmpresa = null;
-  if (empresaRut) {
-    const parts = empresaRut.replace(/\./g, '').split('-');
-    rutEmpresa = parts[0];
-    dvEmpresa = parts[1] || '';
-  }
 
   // El RCV trabaja por período tributario (YYYYMM)
   const hoy = new Date();
@@ -345,7 +364,7 @@ async function fetchFacturasRecibidas(http, cookies, opts = {}) {
   const cookieHeader = cookies;
 
   for (const periodo of periodos) {
-    console.log(`[SII RCV] Consultando período ${periodo} empresa ${rutEmpresa}-${dvEmpresa}...`);
+    console.log(`[SII RCV] Consultando período ${periodo}...`);
     try {
       const dataObj = {
         ptributario: periodo,
@@ -355,12 +374,6 @@ async function fetchFacturasRecibidas(http, cookies, opts = {}) {
         accionRecaptcha: 'RCV_DETC',
         tokenRecaptcha: 'c3',
       };
-
-      // Incluir RUT de la empresa si está disponible
-      if (rutEmpresa) {
-        dataObj.rutEmpresa = rutEmpresa;
-        dataObj.dvEmpresa = dvEmpresa;
-      }
 
       const body = {
         metaData: {
@@ -560,8 +573,6 @@ app.get('/debug/sii-recibidas', async (req, res) => {
         page: null,
       },
       data: {
-        rutEmpresa: rutEmp,
-        dvEmpresa: dvEmp,
         ptributario: periodo,
         operacion: 'COMPRA',
         estadoContab: 'REGISTRO',
