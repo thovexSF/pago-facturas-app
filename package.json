@@ -5,8 +5,7 @@
   "main": "server-postgres.js",
   "scripts": {
     "start": "node server-postgres.js",
-    "dev": "node server-simple.js",
-    "postinstall": "npx playwright install chromium --with-deps"
+    "sync": "node scripts/get-cookies.js"
   },
   "dependencies": {
     "express": "^4.18.2",
@@ -14,7 +13,9 @@
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "axios": "^1.7.9",
-    "iconv-lite": "^0.6.3",
+    "iconv-lite": "^0.6.3"
+  },
+  "devDependencies": {
     "playwright": "^1.44.0"
   },
   "engines": {
