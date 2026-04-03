@@ -29,6 +29,7 @@ async function setupDb() {
       folio         INTEGER,
       fecha_emision DATE,
       monto_neto    BIGINT,
+      monto_total   BIGINT,
       estado_sii    VARCHAR(50),
       -- Cuota 1: 50% a 30 días
       vcto_1        DATE,
@@ -45,7 +46,7 @@ async function setupDb() {
     )
   `);
   // Migración: agregar columnas si la tabla ya existe sin ellas
-  const cols = ['vcto_1','monto_1','pagado_1','pagado_1_at','vcto_2','monto_2','pagado_2','pagado_2_at'];
+  const cols = ['monto_total','vcto_1','monto_1','pagado_1','pagado_1_at','vcto_2','monto_2','pagado_2','pagado_2_at'];
   for (const col of cols) {
     await pool.query(`ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ${col} ${
       col.startsWith('monto') ? 'BIGINT' :
@@ -185,18 +186,20 @@ app.post('/api/sync', async (req, res) => {
 
   for (const d of docs) {
     const fechaEmision = parseDate(d.detFchDoc);
-    const mitad = Math.round(d.detMntNeto / 2);
+    const montoTotal   = Math.round(d.detMntNeto * 1.19);
+    const mitad        = Math.round(montoTotal / 2);
 
     const r = await pool.query(
       `INSERT INTO facturas_recibidas
-         (codigo, rut_emisor, razon_social, folio, fecha_emision, monto_neto, estado_sii,
+         (codigo, rut_emisor, razon_social, folio, fecha_emision, monto_neto, monto_total, estado_sii,
           vcto_1, monto_1, vcto_2, monto_2)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,
-          $5::date + 30, $8,
-          $5::date + 40, $9)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
+          $5::date + 30, $9,
+          $5::date + 40, $10)
        ON CONFLICT (codigo) DO UPDATE SET
          razon_social = EXCLUDED.razon_social,
          monto_neto   = EXCLUDED.monto_neto,
+         monto_total  = EXCLUDED.monto_total,
          estado_sii   = EXCLUDED.estado_sii,
          updated_at   = NOW()
        RETURNING (xmax = 0) AS inserted`,
@@ -207,9 +210,10 @@ app.post('/api/sync', async (req, res) => {
         d.detNroDoc,
         fechaEmision,
         d.detMntNeto,
+        montoTotal,
         d.dcvEstadoContab ?? 'REGISTRO',
         mitad,
-        d.detMntNeto - mitad,  // el resto en cuota 2
+        montoTotal - mitad,
       ]
     );
     r.rows[0].inserted ? insertadas++ : actualizadas++;
