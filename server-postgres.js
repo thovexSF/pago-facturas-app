@@ -45,14 +45,24 @@ async function setupDb() {
       updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
-  // Migración: agregar columnas si la tabla ya existe sin ellas
-  const cols = ['monto_total','vcto_1','monto_1','pagado_1','pagado_1_at','vcto_2','monto_2','pagado_2','pagado_2_at'];
-  for (const col of cols) {
-    await pool.query(`ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ${col} ${
-      col.startsWith('monto') ? 'BIGINT' :
-      col.startsWith('vcto')  ? 'DATE' :
-      col.endsWith('_at')     ? 'TIMESTAMP' : 'BOOLEAN DEFAULT FALSE'
-    }`).catch(() => {});
+  // Migración: agregar columnas que pueden faltar en tablas existentes
+  const migraciones = [
+    ['monto_neto',   'BIGINT'],
+    ['monto_total',  'BIGINT'],
+    ['estado_sii',   'VARCHAR(50)'],
+    ['vcto_1',       'DATE'],
+    ['monto_1',      'BIGINT'],
+    ['pagado_1',     'BOOLEAN DEFAULT FALSE'],
+    ['pagado_1_at',  'TIMESTAMP'],
+    ['vcto_2',       'DATE'],
+    ['monto_2',      'BIGINT'],
+    ['pagado_2',     'BOOLEAN DEFAULT FALSE'],
+    ['pagado_2_at',  'TIMESTAMP'],
+  ];
+  for (const [col, type] of migraciones) {
+    await pool.query(
+      `ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ${col} ${type}`
+    ).catch(() => {});
   }
   console.log('[DB] Tabla lista');
 }
