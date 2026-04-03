@@ -338,7 +338,7 @@ async function fetchFacturasRecibidas(http, cookies, opts = {}) {
           operacion: 'COMPRA',
           estadoContab: 'REGISTRO',
           codTipoDoc: '33',
-          accionRecaptcha: 'RCV_DDETC',
+          accionRecaptcha: 'RCV_DETC',
           tokenRecaptcha: 'c3',
         },
       };
@@ -529,7 +529,7 @@ app.get('/debug/sii-recibidas', async (req, res) => {
         operacion: 'COMPRA',
         estadoContab: 'REGISTRO',
         codTipoDoc: '33',
-        accionRecaptcha: 'RCV_DDETC',
+        accionRecaptcha: 'RCV_DETC',
         tokenRecaptcha: 'c3',
       },
     };
