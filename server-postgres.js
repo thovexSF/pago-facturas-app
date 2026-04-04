@@ -128,8 +128,8 @@ async function upsertFacturas(docs) {
           vcto_1, monto_1, pagado_1, pagado_1_at,
           vcto_2, monto_2, pagado_2, pagado_2_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
-          $5::date+$9, $10, $11, $12,
-          $5::date+$13, $14, $11, $12)
+          $5::date+$9::integer, $10, $11, $12,
+          $5::date+$13::integer, $14, $11, $12)
        ON CONFLICT (codigo) DO UPDATE SET
          razon_social = EXCLUDED.razon_social,
          monto_neto   = EXCLUDED.monto_neto,
