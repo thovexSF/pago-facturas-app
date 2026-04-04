@@ -1,6 +1,5 @@
-const express      = require('express');
-const { Pool }     = require('pg');
-const { chromium } = require('playwright');
+const express = require('express');
+const { Pool } = require('pg');
 require('dotenv').config();
 
 const app  = express();
@@ -209,6 +208,7 @@ async function ngSelect(page, selector, value) {
 }
 
 async function abrirSesionSII() {
+  const { chromium } = require('playwright');
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   const page    = await context.newPage();

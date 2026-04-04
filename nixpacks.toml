@@ -1,0 +1,5 @@
+[phases.install]
+cmds = [
+  "npm i",
+  "npx playwright install chromium --with-deps"
+]
