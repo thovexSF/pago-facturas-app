@@ -69,6 +69,7 @@ async function setupDb() {
     ['monto_neto','BIGINT'],['monto_total','BIGINT'],['estado_sii','VARCHAR(50)'],
     ['vcto_1','DATE'],['monto_1','BIGINT'],['pagado_1','BOOLEAN DEFAULT FALSE'],['pagado_1_at','TIMESTAMP'],
     ['vcto_2','DATE'],['monto_2','BIGINT'],['pagado_2','BOOLEAN DEFAULT FALSE'],['pagado_2_at','TIMESTAMP'],
+    ['pdf_data','BYTEA'],['pdf_nombre','VARCHAR(100)'],['pdf_at','TIMESTAMP'],
   ]) {
     await pool.query(`ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
   }
@@ -252,6 +253,161 @@ async function abrirSesionSII() {
   return { browser, context, conversationId };
 }
 
+// Descarga el PDF de una factura navegando el portal DTE de www1.sii.cl
+async function descargarPdfSII(folio, rutEmisor) {
+  const { chromium } = require('playwright');
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  const page    = await context.newPage();
+
+  try {
+    // Login
+    await page.goto('https://zeusr.sii.cl//AUT2000/InicioAutenticacion/IngresoRutClave.html?https://misiir.sii.cl/cgi_misii/siihome.cgi');
+    await page.fill('#rutcntr', SII_RUT);
+    await page.fill('#clave',   SII_PASSWORD);
+    await Promise.all([page.waitForLoadState('networkidle'), page.keyboard.press('Enter')]);
+
+    // Seleccionar empresa
+    await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi');
+    if (await page.locator('select[name="RUT_EMP"]').count()) {
+      await page.locator('select[name="RUT_EMP"]').selectOption(SII_EMPRESA_RUT);
+      await Promise.all([
+        page.waitForLoadState('networkidle').catch(() => {}),
+        page.locator('[type=submit]').first().click(),
+      ]);
+    }
+
+    // Ir a la lista de documentos recibidos y buscar el folio
+    await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi', { waitUntil: 'networkidle' });
+
+    let enlace = null;
+    for (let p = 0; p < 15 && !enlace; p++) {
+      // Buscar fila que tenga el folio Y el rut del emisor
+      const rutNum = rutEmisor.split('-')[0];
+      const filas  = page.locator('tr').filter({ hasText: String(folio) }).filter({ hasText: rutNum });
+      if (await filas.count()) {
+        enlace = await filas.first().locator('a').first().getAttribute('href');
+        break;
+      }
+      // Siguiente página
+      const next = page.locator('a').filter({ hasText: '>' }).last();
+      if (!await next.count()) break;
+      await Promise.all([page.waitForLoadState('networkidle'), next.click()]);
+    }
+
+    if (!enlace) throw new Error(`Folio ${folio} no encontrado en lista SII`);
+
+    // Navegar al detalle
+    const detailUrl = enlace.startsWith('http') ? enlace : `https://www1.sii.cl${enlace}`;
+    await page.goto(detailUrl, { waitUntil: 'networkidle' });
+
+    // Interceptar la respuesta del PDF al hacer click en el botón
+    const [pdfResponse] = await Promise.all([
+      page.waitForResponse(r => {
+        const ct = r.headers()['content-type'] ?? '';
+        return ct.includes('pdf') || r.url().includes('.pdf');
+      }, { timeout: 20000 }),
+      page.locator('input[value*="VISUALIZACI"], a:has-text("VISUALIZACI")').first().click(),
+    ]);
+
+    return await pdfResponse.body();
+
+  } finally {
+    await browser.close();
+  }
+}
+
+// Descarga PDFs en lote con una sola sesión SII
+// Construye un mapa de toda la lista de documentos paginando una sola vez,
+// luego navega directamente al detalle de cada uno.
+async function descargarPdfsBulkSII() {
+  const { rows: sinPdf } = await pool.query(
+    `SELECT id, folio, rut_emisor FROM facturas_recibidas WHERE pdf_data IS NULL ORDER BY fecha_emision DESC`
+  );
+  if (!sinPdf.length) return { descargadas: 0, errores: 0, total: 0 };
+
+  const { chromium } = require('playwright');
+  const browser = await chromium.launch({ headless: true });
+  const ctx  = await browser.newContext({ ignoreHTTPSErrors: true });
+  const page = await ctx.newPage();
+  let descargadas = 0, errores = 0;
+
+  try {
+    // Login
+    await page.goto('https://zeusr.sii.cl//AUT2000/InicioAutenticacion/IngresoRutClave.html?https://misiir.sii.cl/cgi_misii/siihome.cgi');
+    await page.fill('#rutcntr', SII_RUT);
+    await page.fill('#clave',   SII_PASSWORD);
+    await Promise.all([page.waitForLoadState('networkidle'), page.keyboard.press('Enter')]);
+
+    await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi');
+    if (await page.locator('select[name="RUT_EMP"]').count()) {
+      await page.locator('select[name="RUT_EMP"]').selectOption(SII_EMPRESA_RUT);
+      await Promise.all([page.waitForLoadState('networkidle').catch(() => {}), page.locator('[type=submit]').first().click()]);
+    }
+
+    // Paginar lista completa UNA sola vez y construir mapa folio|rut → href
+    console.log('[PDF bulk] Construyendo mapa de documentos...');
+    const allRows = [];
+    await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi', { waitUntil: 'networkidle' });
+    for (let pg = 0; pg < 200; pg++) {
+      const rows = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('table tr')).map(row => ({
+          text: (row.innerText ?? '').replace(/\s+/g, ' ').trim(),
+          href: row.querySelector('a[href]')?.getAttribute('href') ?? null,
+        })).filter(r => r.href && r.text.length > 5)
+      );
+      allRows.push(...rows);
+      const next = page.locator('a').filter({ hasText: /^>$/ }).last();
+      if (!await next.count()) break;
+      await Promise.all([page.waitForLoadState('networkidle'), next.click()]);
+    }
+    console.log(`[PDF bulk] Mapa listo: ${allRows.length} filas para ${sinPdf.length} facturas`);
+
+    // Por cada factura sin PDF, buscar en el mapa y descargar
+    for (const f of sinPdf) {
+      try {
+        const rutNum   = String(f.rut_emisor).split('-')[0];
+        const folioStr = String(f.folio);
+        const row = allRows.find(r => r.text.includes(folioStr) && r.text.includes(rutNum));
+
+        if (!row?.href) {
+          console.warn(`[PDF bulk] Folio ${f.folio} no encontrado`);
+          errores++;
+          continue;
+        }
+
+        const detailUrl = row.href.startsWith('http') ? row.href : `https://www1.sii.cl${row.href}`;
+        await page.goto(detailUrl, { waitUntil: 'networkidle' });
+
+        const [pdfRes] = await Promise.all([
+          page.waitForResponse(r => {
+            const ct = r.headers()['content-type'] ?? '';
+            return ct.includes('pdf') || r.url().includes('.pdf');
+          }, { timeout: 25000 }),
+          page.locator('input[value*="VISUALIZACI"], a:has-text("VISUALIZACI")').first().click(),
+        ]);
+
+        const buf    = await pdfRes.body();
+        const nombre = `factura_${f.folio}_${f.rut_emisor}.pdf`;
+        await pool.query(
+          `UPDATE facturas_recibidas SET pdf_data=$1, pdf_nombre=$2, pdf_at=NOW(), updated_at=NOW() WHERE id=$3`,
+          [buf, nombre, f.id]
+        );
+        descargadas++;
+        console.log(`[PDF bulk] ✓ Folio ${f.folio} (${descargadas}/${sinPdf.length})`);
+      } catch (err) {
+        errores++;
+        console.error(`[PDF bulk] ✗ Folio ${f.folio}: ${err.message}`);
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+
+  console.log(`[PDF bulk] Completado: ${descargadas} OK, ${errores} errores`);
+  return { descargadas, errores, total: sinPdf.length };
+}
+
 async function getFacturasMes(context, conversationId, ptributario) {
   const res = await context.request.post(
     'https://www4.sii.cl/consdcvinternetui/services/data/facadeService/getDetalleCompra',
@@ -311,8 +467,77 @@ app.put('/api/proveedores/:rut', async (req, res) => {
 
 app.get('/api/facturas', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM facturas_recibidas ORDER BY fecha_emision DESC');
+    const { rows } = await pool.query(`
+      SELECT id, codigo, rut_emisor, razon_social, folio, fecha_emision,
+             monto_neto, monto_total, estado_sii,
+             vcto_1, monto_1, pagado_1, pagado_1_at,
+             vcto_2, monto_2, pagado_2, pagado_2_at,
+             pdf_nombre, pdf_at, (pdf_data IS NOT NULL) AS has_pdf,
+             created_at, updated_at
+      FROM facturas_recibidas ORDER BY fecha_emision DESC
+    `);
     res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/facturas/:id/pdf — descarga el PDF desde SII y lo guarda en DB
+app.post('/api/facturas/:id/pdf', async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM facturas_recibidas WHERE id=$1', [req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: 'Factura no encontrada' });
+  const f = rows[0];
+
+  let pdfBuffer;
+  try {
+    pdfBuffer = await descargarPdfSII(f.folio, f.rut_emisor);
+  } catch (err) {
+    console.error('[PDF]', err.message);
+    return res.status(502).json({ error: err.message });
+  }
+
+  const nombre = `factura_${f.folio}_${f.rut_emisor}.pdf`;
+  await pool.query(
+    `UPDATE facturas_recibidas SET pdf_data=$1, pdf_nombre=$2, pdf_at=NOW(), updated_at=NOW() WHERE id=$3`,
+    [pdfBuffer, nombre, req.params.id]
+  );
+  res.json({ ok: true, nombre, bytes: pdfBuffer.length });
+});
+
+// GET /api/facturas/:id/pdf — sirve el PDF guardado
+app.get('/api/facturas/:id/pdf', async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT pdf_data, pdf_nombre FROM facturas_recibidas WHERE id=$1', [req.params.id]
+  );
+  if (!rows.length || !rows[0].pdf_data)
+    return res.status(404).json({ error: 'PDF no disponible' });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${rows[0].pdf_nombre}"`);
+  res.send(rows[0].pdf_data);
+});
+
+// POST /api/pdf/sync — descarga en background todos los PDFs faltantes
+app.post('/api/pdf/sync', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT COUNT(*) FROM facturas_recibidas WHERE pdf_data IS NULL`
+    );
+    const pendientes = parseInt(rows[0].count);
+    if (!pendientes) return res.json({ ok: true, mensaje: 'Todos los PDFs ya están disponibles', pendientes: 0 });
+
+    res.json({ ok: true, mensaje: `Descargando ${pendientes} PDFs en background…`, pendientes });
+
+    descargarPdfsBulkSII()
+      .then(r => console.log(`[PDF sync] ${r.descargadas}/${r.total} OK, ${r.errores} errores`))
+      .catch(err => console.error('[PDF sync]', err.message));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/pdf/status — cuántos PDFs están disponibles vs total
+app.get('/api/pdf/status', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT COUNT(*) AS total, COUNT(pdf_data) AS con_pdf FROM facturas_recibidas`
+    );
+    res.json({ total: parseInt(rows[0].total), con_pdf: parseInt(rows[0].con_pdf) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

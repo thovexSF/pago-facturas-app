@@ -6,6 +6,9 @@ let facturaActiva = null;
 // Chips: set de rut_emisor visibles en calendario (persistido en localStorage)
 let chipsFiltro = new Set(JSON.parse(localStorage.getItem('chipsFiltro') ?? 'null') ?? []);
 
+// Chips del gráfico: set de razon_social (vacío = todos)
+let graficoProvsFiltro = new Set();
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -16,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
   syncAuto();
 
   document.getElementById('btn-sync').addEventListener('click', sincronizarHistorico);
+  document.getElementById('btn-pdf-sync').addEventListener('click', descargarPdfsPendientes);
   document.getElementById('filter-estado').addEventListener('change', renderTabla);
   document.getElementById('grafico-tipo').addEventListener('change', renderGrafico);
 });
@@ -201,6 +205,11 @@ function renderTabla() {
           ${!f.pagado_1 && !f.pagado_2 ? '<span class="text-muted">—</span>' : ''}
         </td>
         <td><span class="badge ${estadoClass}">${estadoLabel}</span></td>
+        <td onclick="event.stopPropagation()">
+          ${f.has_pdf
+            ? `<a class="btn btn-sm btn-success" href="/api/facturas/${f.id}/pdf" target="_blank" rel="noopener">📄 Ver</a>`
+            : `<button class="btn btn-sm btn-secondary" onclick="descargarPdfFactura(${f.id})">⬇ PDF</button>`}
+        </td>
         <td>${!ambaPagada?`<button class="btn btn-sm btn-pay" onclick="event.stopPropagation();abrirModal(facturas.find(x=>x.id===${f.id}))">Pagar</button>`:''}</td>
       </tr>`;
   }).join('');
@@ -285,6 +294,7 @@ function initModal() {
   document.getElementById('modal').addEventListener('click', e => {
     if (e.target === document.getElementById('modal')) cerrarModal();
   });
+  // btn-modal-pdf onclick se asigna dinámicamente en abrirModal
 }
 
 function abrirModal(f) {
@@ -328,6 +338,28 @@ function abrirModal(f) {
   document.querySelectorAll('.cuota-row').forEach(r => {
     r.style.display = esContado ? 'none' : '';
   });
+
+  // Botón PDF
+  const btnPdf = document.getElementById('btn-modal-pdf');
+  if (f.has_pdf) {
+    btnPdf.textContent = '📄 Ver PDF';
+    btnPdf.onclick = () => window.open(`/api/facturas/${f.id}/pdf`, '_blank');
+    btnPdf.disabled = false;
+    btnPdf.className = 'btn btn-sm btn-success';
+  } else {
+    btnPdf.textContent = '⬇ Descargar PDF';
+    btnPdf.disabled = false;
+    btnPdf.className = 'btn btn-sm btn-secondary';
+    btnPdf.onclick = async () => {
+      btnPdf.disabled = true;
+      btnPdf.textContent = '⏳ Descargando…';
+      await descargarPdfFactura(f.id);
+      await cargarFacturas();
+      const updated = facturas.find(x => x.id === f.id);
+      if (updated) abrirModal(updated);
+    };
+  }
+
   document.getElementById('modal').style.display = 'flex';
 }
 
@@ -345,6 +377,51 @@ async function marcarCuota(cuota) {
     cerrarModal();
     await cargarFacturas();
   } catch (err) { mostrarToast(err.message, 'error'); }
+}
+
+// ─── PDF ──────────────────────────────────────────────────────────────────────
+
+async function descargarPdfFactura(id) {
+  try {
+    const res = await fetch(`/api/facturas/${id}/pdf`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Error al descargar PDF');
+    mostrarToast(`PDF guardado (${Math.round(data.bytes/1024)} KB)`, 'success');
+    await cargarFacturas();
+  } catch (err) { mostrarToast('Error PDF: '+err.message, 'error'); }
+}
+
+async function descargarPdfsPendientes() {
+  const btn = document.getElementById('btn-pdf-sync');
+  btn.disabled = true; btn.textContent = '⏳ Iniciando…';
+  try {
+    const res  = await fetch('/api/pdf/sync', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Error');
+    mostrarToast(data.mensaje, data.pendientes > 0 ? 'info' : 'success');
+    if (data.pendientes > 0) {
+      // Recargar facturas cada 15 s mientras hay PDFs descargándose
+      let intentos = 0;
+      const poll = setInterval(async () => {
+        intentos++;
+        const st = await fetch('/api/pdf/status').then(r => r.json()).catch(() => null);
+        if (st) {
+          btn.textContent = `📄 ${st.con_pdf}/${st.total} PDFs`;
+          if (st.con_pdf >= st.total || intentos >= 60) {
+            clearInterval(poll);
+            btn.disabled = false; btn.textContent = '📄 Descargar PDFs';
+            await cargarFacturas();
+            mostrarToast(`PDFs disponibles: ${st.con_pdf}/${st.total}`, 'success');
+          }
+        }
+      }, 15000);
+    }
+  } catch (err) { mostrarToast('Error: '+err.message, 'error'); }
+  finally {
+    if (document.getElementById('btn-pdf-sync').textContent === '⏳ Iniciando…') {
+      btn.disabled = false; btn.textContent = '📄 Descargar PDFs';
+    }
+  }
 }
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────
@@ -371,7 +448,14 @@ async function sincronizarHistorico() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Error');
     mostrarToast(data.mensaje ?? 'Sincronización iniciada', 'success');
-    setTimeout(cargarTodo, 5000);
+    setTimeout(async () => {
+      await cargarTodo();
+      // Disparar descarga de PDFs faltantes en background
+      fetch('/api/pdf/sync', { method: 'POST' })
+        .then(r => r.json())
+        .then(d => { if (d.pendientes > 0) mostrarToast(`Descargando ${d.pendientes} PDFs…`, 'info'); })
+        .catch(() => {});
+    }, 5000);
   } catch (err) { mostrarToast('Error: '+err.message, 'error'); }
   finally {
     btn.disabled = false;
@@ -386,6 +470,30 @@ const COLORES = [
   '#dd6b20','#319795','#d53f8c','#2b6cb0','#276749',
 ];
 
+function renderGraficoChips(proveedoresOrdenados) {
+  const container = document.getElementById('grafico-chips');
+  if (!container) return;
+  // Chip "Todos" + uno por proveedor
+  const todosActivo = graficoProvsFiltro.size === 0;
+  const chips = [`<button class="chip ${todosActivo ? 'chip-active' : ''}" onclick="toggleGraficoChip(null)">Todos</button>`];
+  for (const prov of proveedoresOrdenados) {
+    const activo = graficoProvsFiltro.has(prov);
+    chips.push(`<button class="chip ${activo ? 'chip-active' : ''}" onclick="toggleGraficoChip(${JSON.stringify(prov)})">${esc(prov)}</button>`);
+  }
+  container.innerHTML = chips.join('');
+}
+
+function toggleGraficoChip(prov) {
+  if (prov === null) {
+    graficoProvsFiltro.clear();
+  } else if (graficoProvsFiltro.has(prov)) {
+    graficoProvsFiltro.delete(prov);
+  } else {
+    graficoProvsFiltro.add(prov);
+  }
+  renderGrafico();
+}
+
 function renderGrafico() {
   if (!facturas.length) return;
 
@@ -399,8 +507,8 @@ function renderGrafico() {
     porMesProv[mes][prov] = (porMesProv[mes][prov] || 0) + (parseInt(f.monto_total) || 0);
   });
 
-  const meses     = Object.keys(porMesProv).sort();
-  const labels    = meses.map(m => {
+  const meses  = Object.keys(porMesProv).sort();
+  const labels = meses.map(m => {
     const [y, mo] = m.split('-');
     return new Date(y, mo - 1).toLocaleDateString('es-CL', { month: 'short', year: '2-digit' });
   });
@@ -412,18 +520,29 @@ function renderGrafico() {
   }));
   const proveedoresOrdenados = Object.keys(totProv).sort((a, b) => totProv[b] - totProv[a]);
 
+  // Renderizar chips (con la lista ordenada)
+  renderGraficoChips(proveedoresOrdenados);
+
+  // Filtrar por chips seleccionados
+  const visibles = graficoProvsFiltro.size > 0
+    ? proveedoresOrdenados.filter(p => graficoProvsFiltro.has(p))
+    : proveedoresOrdenados;
+
   const tipo = document.getElementById('grafico-tipo')?.value ?? 'bar';
 
-  const datasets = proveedoresOrdenados.map((prov, i) => ({
-    label: prov,
-    data:  meses.map(m => Math.round((porMesProv[m]?.[prov] || 0) / 1000)), // en miles
-    backgroundColor: COLORES[i % COLORES.length] + (tipo === 'bar' ? 'cc' : '22'),
-    borderColor:     COLORES[i % COLORES.length],
-    borderWidth: tipo === 'line' ? 2 : 0,
-    fill: false,
-    tension: 0.3,
-    pointRadius: tipo === 'line' ? 3 : 0,
-  }));
+  const datasets = visibles.map((prov, i) => {
+    const colorIdx = proveedoresOrdenados.indexOf(prov); // mantener colores fijos por proveedor
+    return {
+      label: prov,
+      data:  meses.map(m => Math.round((porMesProv[m]?.[prov] || 0) / 1000)),
+      backgroundColor: COLORES[colorIdx % COLORES.length] + (tipo === 'bar' ? 'cc' : '22'),
+      borderColor:     COLORES[colorIdx % COLORES.length],
+      borderWidth: tipo === 'line' ? 2 : 0,
+      fill: false,
+      tension: 0.3,
+      pointRadius: tipo === 'line' ? 3 : 0,
+    };
+  });
 
   if (graficoChart) graficoChart.destroy();
 

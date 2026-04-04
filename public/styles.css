@@ -18,6 +18,7 @@ body {
 }
 .header h1 { font-size: 22px; font-weight: 700; color: #1a202c; }
 .empresa { font-size: 12px; color: #718096; display: block; margin-top: 2px; }
+.header-right { display: flex; gap: 8px; align-items: center; }
 
 /* ── Stats ── */
 .stats {

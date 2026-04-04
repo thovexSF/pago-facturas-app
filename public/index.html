@@ -17,6 +17,9 @@
         <span class="empresa">Bioma Coffee · 78015129-3</span>
       </div>
       <div class="header-right">
+        <button class="btn btn-secondary" id="btn-pdf-sync">
+          📄 Descargar PDFs
+        </button>
         <button class="btn btn-sync" id="btn-sync">
           <span class="sync-icon">↻</span> Sincronizar SII
         </button>
@@ -78,6 +81,7 @@
             <th>Monto total</th>
             <th>Fechas de pago</th>
             <th>Estado</th>
+            <th>PDF</th>
             <th></th>
           </tr>
         </thead>
@@ -99,6 +103,7 @@
             <option value="line">Líneas</option>
           </select>
         </div>
+        <div id="grafico-chips" class="chips-container"></div>
         <canvas id="grafico-canvas"></canvas>
       </div>
     </div>
@@ -172,6 +177,7 @@
       <div class="modal-footer">
         <button class="btn btn-pay" id="btn-pagar-1">Pagar cuota 1</button>
         <button class="btn btn-pay" id="btn-pagar-2">Pagar cuota 2</button>
+        <button class="btn btn-secondary btn-sm" id="btn-modal-pdf">📄 PDF</button>
         <button class="btn btn-secondary" id="modal-cancel">Cerrar</button>
       </div>
     </div>
