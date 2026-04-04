@@ -52,7 +52,7 @@ function cargarEventosCalendar() {
       const vencida = new Date(f.vcto_1) < new Date();
       calendar.addEvent({
         id: `${f.id}-1`,
-        title: `Factura N° ${f.folio} $${formatMonto(f.monto_1)} C1`,
+        title: `C1 Factura N° ${f.folio} $${formatMonto(f.monto_1)}`,
         start: f.vcto_1.split('T')[0],
         backgroundColor: vencida ? '#e53e3e' : '#3182ce',
         borderColor:     vencida ? '#c53030' : '#2b6cb0',
@@ -62,7 +62,7 @@ function cargarEventosCalendar() {
       const vencida = new Date(f.vcto_2) < new Date();
       calendar.addEvent({
         id: `${f.id}-2`,
-        title: `Factura N° ${f.folio} $${formatMonto(f.monto_2)} C2`,
+        title: `C2 Factura N° ${f.folio} $${formatMonto(f.monto_2)}`,
         start: f.vcto_2.split('T')[0],
         backgroundColor: vencida ? '#e53e3e' : '#38a169',
         borderColor:     vencida ? '#c53030' : '#276749',

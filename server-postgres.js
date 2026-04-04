@@ -94,6 +94,17 @@ async function setupDb() {
     WHERE f.rut_emisor = p.rut_emisor
       AND p.condicion = 'contado'
   `);
+  // Marcar como pagadas todas las cuotas cuyo vencimiento ya pasó
+  await pool.query(`
+    UPDATE facturas_recibidas SET
+      pagado_1 = TRUE, pagado_1_at = COALESCE(pagado_1_at, vcto_1), updated_at = NOW()
+    WHERE pagado_1 = FALSE AND vcto_1 < CURRENT_DATE
+  `);
+  await pool.query(`
+    UPDATE facturas_recibidas SET
+      pagado_2 = TRUE, pagado_2_at = COALESCE(pagado_2_at, vcto_2), updated_at = NOW()
+    WHERE pagado_2 = FALSE AND vcto_2 IS NOT NULL AND vcto_2 < CURRENT_DATE
+  `);
   console.log('[DB] Tablas listas');
 }
 
