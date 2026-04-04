@@ -17,7 +17,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btn-sync').addEventListener('click', sincronizarHistorico);
   document.getElementById('filter-estado').addEventListener('change', renderTabla);
+  document.getElementById('grafico-tipo').addEventListener('change', renderGrafico);
 });
+
+let graficoChart = null;
 
 async function cargarTodo() {
   await Promise.all([cargarFacturas(), cargarProveedores()]);
@@ -111,6 +114,7 @@ function initTabs() {
       tab.classList.add('active');
       document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
       if (tab.dataset.tab === 'calendario') calendar.updateSize();
+      if (tab.dataset.tab === 'grafico') renderGrafico();
     });
   });
 }
@@ -123,6 +127,7 @@ async function cargarFacturas() {
   renderStats();
   renderTabla();
   cargarEventosCalendar();
+  renderGrafico();
 }
 
 async function cargarProveedores() {
@@ -372,6 +377,79 @@ async function sincronizarHistorico() {
     btn.disabled = false;
     btn.innerHTML = '<span class="sync-icon">↻</span> Sincronizar SII';
   }
+}
+
+// ─── Gráfico ──────────────────────────────────────────────────────────────────
+
+const COLORES = [
+  '#3182ce','#38a169','#e53e3e','#d69e2e','#805ad5',
+  '#dd6b20','#319795','#d53f8c','#2b6cb0','#276749',
+];
+
+function renderGrafico() {
+  if (!facturas.length) return;
+
+  // Agrupar por mes y proveedor → suma monto_total
+  const porMesProv = {};
+  facturas.forEach(f => {
+    if (!f.fecha_emision) return;
+    const mes  = f.fecha_emision.slice(0, 7); // "2026-03"
+    const prov = f.razon_social || f.rut_emisor;
+    if (!porMesProv[mes]) porMesProv[mes] = {};
+    porMesProv[mes][prov] = (porMesProv[mes][prov] || 0) + (parseInt(f.monto_total) || 0);
+  });
+
+  const meses     = Object.keys(porMesProv).sort();
+  const labels    = meses.map(m => {
+    const [y, mo] = m.split('-');
+    return new Date(y, mo - 1).toLocaleDateString('es-CL', { month: 'short', year: '2-digit' });
+  });
+
+  // Proveedores únicos ordenados por total histórico desc
+  const totProv = {};
+  Object.values(porMesProv).forEach(mp => Object.entries(mp).forEach(([p, v]) => {
+    totProv[p] = (totProv[p] || 0) + v;
+  }));
+  const proveedoresOrdenados = Object.keys(totProv).sort((a, b) => totProv[b] - totProv[a]);
+
+  const tipo = document.getElementById('grafico-tipo')?.value ?? 'bar';
+
+  const datasets = proveedoresOrdenados.map((prov, i) => ({
+    label: prov,
+    data:  meses.map(m => Math.round((porMesProv[m]?.[prov] || 0) / 1000)), // en miles
+    backgroundColor: COLORES[i % COLORES.length] + (tipo === 'bar' ? 'cc' : '22'),
+    borderColor:     COLORES[i % COLORES.length],
+    borderWidth: tipo === 'line' ? 2 : 0,
+    fill: false,
+    tension: 0.3,
+    pointRadius: tipo === 'line' ? 3 : 0,
+  }));
+
+  if (graficoChart) graficoChart.destroy();
+
+  graficoChart = new Chart(document.getElementById('grafico-canvas'), {
+    type: tipo === 'line' ? 'line' : 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 12 } },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ${ctx.dataset.label}: $${ctx.parsed.y.toLocaleString('es-CL')}k`,
+          },
+        },
+      },
+      scales: {
+        x: { stacked: tipo === 'bar', grid: { display: false } },
+        y: {
+          stacked: tipo === 'bar',
+          ticks: { callback: v => `$${v}k` },
+          grid:  { color: '#f0f4f8' },
+        },
+      },
+    },
+  });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

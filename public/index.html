@@ -47,6 +47,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="calendario">Calendario</button>
       <button class="tab" data-tab="lista">Lista</button>
+      <button class="tab" data-tab="grafico">Gráfico</button>
       <button class="tab" data-tab="proveedores">Proveedores</button>
     </div>
 
@@ -85,6 +86,20 @@
       </div><!-- /table-wrapper -->
       <div id="empty-state" class="empty-state" style="display:none">
         <p>No hay facturas. Haz clic en <strong>Sincronizar SII</strong> para cargar.</p>
+      </div>
+    </div>
+
+    <!-- Gráfico -->
+    <div class="tab-content" id="tab-grafico">
+      <div class="grafico-card">
+        <div class="grafico-header">
+          <h3>Facturación mensual por proveedor</h3>
+          <select id="grafico-tipo">
+            <option value="bar">Barras apiladas</option>
+            <option value="line">Líneas</option>
+          </select>
+        </div>
+        <canvas id="grafico-canvas"></canvas>
       </div>
     </div>
 
@@ -166,6 +181,7 @@
   <div class="toast" id="toast"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

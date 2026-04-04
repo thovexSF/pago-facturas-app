@@ -276,6 +276,28 @@ body {
 .toast-error   { background: #9b2c2c; color: #fff; }
 .toast-info    { background: #2b6cb0; color: #fff; }
 
+/* ── Gráfico ── */
+.grafico-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 20px 24px;
+}
+.grafico-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.grafico-header h3 { font-size: 15px; font-weight: 600; color: #2d3748; }
+.grafico-header select {
+  padding: 5px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #4a5568;
+}
+
 /* ── Chips ── */
 .chips-container {
   display: flex;
