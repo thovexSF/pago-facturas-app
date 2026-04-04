@@ -169,7 +169,7 @@ async function upsertFacturas(docs) {
           vcto_2, monto_2, pagado_2, pagado_2_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
           $5::date,           $9,  $10, $11,
-          CASE WHEN $12 THEN NULL ELSE $5::date + $13::integer END,
+          CASE WHEN $12::boolean THEN NULL ELSE $5::date + $13::integer END,
           $14, FALSE, NULL)
        ON CONFLICT (codigo) DO UPDATE SET
          razon_social = EXCLUDED.razon_social,
