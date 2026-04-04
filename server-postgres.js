@@ -298,52 +298,43 @@ async function loginSII(page) {
 }
 
 // Selecciona la empresa en el portal www1.
-// www1/Portal001 requiere venir desde misiir con el token de sesión en la URL.
+// www1/Portal001 requiere autenticación vía CAutInicio con www1 como return URL.
+// Si la primera navegación a www1 redirige a zeusr, volvemos a autenticar
+// con la URL de retorno apuntando a www1 para que CAutInicio redirija allí.
 async function seleccionarEmpresa(page) {
-  // Asegurar que estamos en misiir antes de navegar a www1
-  if (!page.url().includes('misiir.sii.cl')) {
-    await page.goto('https://misiir.sii.cl/cgi_misii/siihome.cgi',
-      { waitUntil: 'load', timeout: 30000 }
-    ).catch(() => {});
-    await page.waitForTimeout(1500);
-  }
+  const TARGET = 'https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi';
 
-  // Log: links a www1 disponibles en la página misiir (tienen token de sesión)
-  const todosLinks = await page.locator('a[href*="www1.sii.cl"]').all();
-  console.log(`[SII empresa] Links a www1 en misiir: ${todosLinks.length}`);
-  for (let i = 0; i < Math.min(todosLinks.length, 8); i++) {
-    const href = await todosLinks[i].getAttribute('href').catch(() => '');
-    const txt  = (await todosLinks[i].textContent().catch(() => '')).trim().slice(0, 40);
-    console.log(`[SII empresa]   [${i}] "${txt}" → ${(href ?? '').slice(0, 120)}`);
-  }
+  await page.goto(TARGET, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(2000);
+  let url = page.url();
+  console.log(`[SII empresa] URL inicial: ${url}`);
 
-  // Buscar link a Portal001/mipeSelEmpresa (incluye token)
-  const linkEmpresa = page.locator('a[href*="Portal001/mipeSelEmpresa"]').first();
-  if (await linkEmpresa.count()) {
-    const href = await linkEmpresa.getAttribute('href');
-    console.log(`[SII empresa] Navegando via link: ${href?.slice(0, 120)}`);
-    await page.goto(href.startsWith('http') ? href : `https://www1.sii.cl${href}`,
-      { waitUntil: 'load', timeout: 30000 }
-    ).catch(() => {});
-  } else {
-    // Fallback: link genérico a www1 (el primero disponible, suele tener token)
-    const linkWww1 = page.locator('a[href*="www1.sii.cl/cgi-bin/Portal001"]').first();
-    if (await linkWww1.count()) {
-      const href = await linkWww1.getAttribute('href');
-      console.log(`[SII empresa] Navegando via Portal001 genérico: ${href?.slice(0, 120)}`);
-      await page.goto(href.startsWith('http') ? href : `https://www1.sii.cl${href}`,
-        { waitUntil: 'load', timeout: 30000 }
-      ).catch(() => {});
+  // Si www1 redirigió a zeusr login → autenticar con www1 como return URL
+  if (url.includes('zeusr.sii.cl') && url.includes('IngresoRutClave')) {
+    console.log('[SII empresa] www1 pidió auth en zeusr, re-autenticando...');
+
+    // Buscar campos de login (misma lógica que loginSII)
+    const rutSels   = ['#rutcntr', 'input[name="rutcntr"]', 'input[name="rut"]'];
+    const claveSels = ['#clave', 'input[name="clave"]', 'input[type="password"]'];
+    let rutSel = null, claveSel = null;
+    for (const s of rutSels)   { if (await page.locator(s).count()) { rutSel   = s; break; } }
+    for (const s of claveSels) { if (await page.locator(s).count()) { claveSel = s; break; } }
+
+    if (rutSel && claveSel) {
+      await page.fill(rutSel,   SII_RUT);
+      await page.fill(claveSel, SII_PASSWORD);
+      await page.keyboard.press('Enter');
+      // Esperar redirect a www1 (return URL era www1)
+      try {
+        await page.waitForURL(u => u.includes('www1.sii.cl'), { timeout: 30000 });
+      } catch { /* timeout */ }
+      await page.waitForTimeout(2000);
+      url = page.url();
+      console.log(`[SII empresa] Post-auth URL: ${url}`);
     } else {
-      // Sin link: navegación directa (puede fallar sin token)
-      console.warn('[SII empresa] Sin link a www1 en misiir, intentando directo');
-      await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi',
-        { waitUntil: 'load', timeout: 30000 }
-      ).catch(() => {});
+      console.warn('[SII empresa] Sin campos de login en zeusr');
     }
   }
-  await page.waitForTimeout(1500);
-  console.log(`[SII empresa] Post-nav URL: ${page.url()}`);
 
   if (await page.locator('select[name="RUT_EMP"]').count()) {
     await page.locator('select[name="RUT_EMP"]').selectOption(SII_EMPRESA_RUT);
@@ -354,7 +345,7 @@ async function seleccionarEmpresa(page) {
     await page.waitForTimeout(1000);
     console.log(`[SII empresa] Post-selección URL: ${page.url()}`);
   } else {
-    console.warn(`[SII empresa] Sin selector de empresa en: ${page.url()}`);
+    console.warn(`[SII empresa] Sin selector empresa en: ${page.url()}`);
   }
 }
 
