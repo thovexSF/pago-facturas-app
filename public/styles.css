@@ -299,6 +299,54 @@ body {
   color: #4a5568;
 }
 
+/* ── Dropdown proveedores gráfico ── */
+.grafico-footer { margin-top: 18px; }
+.prov-dropdown  { position: relative; display: inline-block; }
+.prov-dropdown-btn {
+  padding: 6px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+  color: #4a5568;
+  cursor: pointer;
+  transition: border-color .15s;
+}
+.prov-dropdown-btn:hover { border-color: #3182ce; color: #3182ce; }
+.prov-dropdown-panel {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 230px;
+  max-height: 280px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 -4px 20px rgba(0,0,0,.1);
+  z-index: 200;
+}
+.prov-dropdown-panel.open { display: block; }
+.prov-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: #2d3748;
+  cursor: pointer;
+  user-select: none;
+}
+.prov-check-row:hover { background: #f7fafc; }
+.prov-check-row input[type=checkbox] { accent-color: #3182ce; cursor: pointer; }
+.prov-check-todos {
+  border-bottom: 1px solid #e2e8f0;
+  font-weight: 600;
+  color: #2b6cb0;
+  margin-bottom: 2px;
+}
+
 /* ── Chips ── */
 .chips-container {
   display: flex;

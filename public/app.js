@@ -22,6 +22,14 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-pdf-sync').addEventListener('click', descargarPdfsPendientes);
   document.getElementById('filter-estado').addEventListener('change', renderTabla);
   document.getElementById('grafico-tipo').addEventListener('change', renderGrafico);
+
+  // Cerrar dropdown de proveedores al hacer click fuera
+  document.addEventListener('click', e => {
+    const dd = document.getElementById('prov-dropdown');
+    if (dd && !dd.contains(e.target)) {
+      document.getElementById('prov-dropdown-panel')?.classList.remove('open');
+    }
+  });
 });
 
 let graficoChart = null;
@@ -470,27 +478,49 @@ const COLORES = [
   '#dd6b20','#319795','#d53f8c','#2b6cb0','#276749',
 ];
 
-function renderGraficoChips(proveedoresOrdenados) {
-  const container = document.getElementById('grafico-chips');
-  if (!container) return;
-  // Chip "Todos" + uno por proveedor
-  const todosActivo = graficoProvsFiltro.size === 0;
-  const chips = [`<button class="chip ${todosActivo ? 'chip-active' : ''}" onclick="toggleGraficoChip(null)">Todos</button>`];
-  for (const prov of proveedoresOrdenados) {
-    const activo = graficoProvsFiltro.has(prov);
-    chips.push(`<button class="chip ${activo ? 'chip-active' : ''}" onclick="toggleGraficoChip(${JSON.stringify(prov)})">${esc(prov)}</button>`);
+function renderGraficoDropdown(proveedoresOrdenados) {
+  const list = document.getElementById('prov-check-list');
+  if (!list) return;
+  const todosCheck = document.getElementById('prov-check-all');
+  const ninguno = graficoProvsFiltro.size === 0;
+  if (todosCheck) todosCheck.checked = ninguno;
+
+  list.innerHTML = proveedoresOrdenados.map(prov => `
+    <label class="prov-check-row">
+      <input type="checkbox" ${graficoProvsFiltro.has(prov) || ninguno ? 'checked' : ''}
+        onchange="toggleGraficoProveedor(${JSON.stringify(prov)}, this.checked)">
+      ${esc(prov)}
+    </label>`).join('');
+
+  // Actualizar label del botón
+  const label = document.getElementById('prov-dropdown-label');
+  if (label) {
+    label.textContent = ninguno
+      ? '· Todos'
+      : `· ${[...graficoProvsFiltro].length} seleccionado${graficoProvsFiltro.size > 1 ? 's' : ''}`;
   }
-  container.innerHTML = chips.join('');
 }
 
-function toggleGraficoChip(prov) {
-  if (prov === null) {
-    graficoProvsFiltro.clear();
-  } else if (graficoProvsFiltro.has(prov)) {
-    graficoProvsFiltro.delete(prov);
-  } else {
+function toggleProvDropdown() {
+  document.getElementById('prov-dropdown-panel').classList.toggle('open');
+}
+
+function toggleGraficoTodos(checked) {
+  if (checked) graficoProvsFiltro.clear();
+  renderGrafico();
+}
+
+function toggleGraficoProveedor(prov, checked) {
+  // Desmarcar "Todos" si el usuario elige individualmente
+  const todosCheck = document.getElementById('prov-check-all');
+  if (checked) {
     graficoProvsFiltro.add(prov);
+  } else {
+    graficoProvsFiltro.delete(prov);
   }
+  if (todosCheck) todosCheck.checked = false;
+  // Si deseleccionaron todos individualmente → volver a "Todos"
+  if (graficoProvsFiltro.size === 0 && todosCheck) todosCheck.checked = true;
   renderGrafico();
 }
 
@@ -520,8 +550,8 @@ function renderGrafico() {
   }));
   const proveedoresOrdenados = Object.keys(totProv).sort((a, b) => totProv[b] - totProv[a]);
 
-  // Renderizar chips (con la lista ordenada)
-  renderGraficoChips(proveedoresOrdenados);
+  // Renderizar dropdown (con la lista ordenada)
+  renderGraficoDropdown(proveedoresOrdenados);
 
   // Filtrar por chips seleccionados
   const visibles = graficoProvsFiltro.size > 0
