@@ -78,16 +78,21 @@ async function setupDb() {
     FROM facturas_recibidas
     ON CONFLICT (rut_emisor) DO NOTHING
   `);
-  // Marcar como pagadas las facturas contado que aún figuran pendientes
+  // Corregir facturas contado: una sola cuota por el total, vcto = fecha emisión
   await pool.query(`
     UPDATE facturas_recibidas f SET
-      pagado_1 = TRUE, pagado_1_at = COALESCE(pagado_1_at, f.created_at),
-      pagado_2 = TRUE, pagado_2_at = COALESCE(pagado_2_at, f.created_at),
-      updated_at = NOW()
+      vcto_1      = f.fecha_emision,
+      monto_1     = f.monto_total,
+      pagado_1    = TRUE,
+      pagado_1_at = COALESCE(f.pagado_1_at, f.created_at),
+      vcto_2      = NULL,
+      monto_2     = NULL,
+      pagado_2    = FALSE,
+      pagado_2_at = NULL,
+      updated_at  = NOW()
     FROM proveedores p
     WHERE f.rut_emisor = p.rut_emisor
       AND p.condicion = 'contado'
-      AND (f.pagado_1 = FALSE OR f.pagado_2 = FALSE)
   `);
   console.log('[DB] Tablas listas');
 }
@@ -137,9 +142,11 @@ async function upsertFacturas(docs) {
     const montoTotal = Math.round(d.detMntNeto * 1.19);
     const monto1 = Math.round(montoTotal * prov.pct_1 / 100);
     const monto2 = montoTotal - monto1;
-    const esContado = prov.condicion === 'contado';
-    const dias1 = esContado ? 0 : prov.dias_1;
-    const dias2 = esContado ? 0 : prov.dias_2;
+    const esContado  = prov.condicion === 'contado';
+    const fechaEmision = parseDate(d.detFchDoc);
+    const monto1 = esContado ? montoTotal : Math.round(montoTotal * prov.pct_1 / 100);
+    const monto2 = esContado ? null       : montoTotal - monto1;
+    const vcto2  = esContado ? null       : fechaEmision; // se calcula en SQL con +dias_2
 
     const r = await pool.query(
       `INSERT INTO facturas_recibidas
@@ -148,8 +155,9 @@ async function upsertFacturas(docs) {
           vcto_1, monto_1, pagado_1, pagado_1_at,
           vcto_2, monto_2, pagado_2, pagado_2_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
-          $5::date+$9::integer, $10, $11, $12,
-          $5::date+$13::integer, $14, $11, $12)
+          $5::date,           $9,  $10, $11,
+          CASE WHEN $12 THEN NULL ELSE $5::date + $13::integer END,
+          $14, FALSE, NULL)
        ON CONFLICT (codigo) DO UPDATE SET
          razon_social = EXCLUDED.razon_social,
          monto_neto   = EXCLUDED.monto_neto,
@@ -167,11 +175,9 @@ async function upsertFacturas(docs) {
        RETURNING (xmax = 0) AS inserted`,
       [
         String(d.detCodigo), rut, d.detRznSoc, d.detNroDoc,
-        parseDate(d.detFchDoc), d.detMntNeto, montoTotal,
-        d.dcvEstadoContab ?? 'REGISTRO',
-        dias1, monto1,
-        esContado, esContado ? new Date() : null,
-        dias2, monto2,
+        fechaEmision, d.detMntNeto, montoTotal, d.dcvEstadoContab ?? 'REGISTRO',
+        monto1, esContado, esContado ? new Date() : null,  // cuota 1
+        esContado, prov.dias_2, monto2,                    // cuota 2 (null si contado)
       ]
     );
     r.rows[0].inserted ? insertadas++ : actualizadas++;
