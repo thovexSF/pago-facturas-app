@@ -288,7 +288,105 @@ async function abrirSesionSII() {
   return { browser, context, conversationId };
 }
 
-// Descarga el PDF de UNA factura navegando el portal DTE de www1.sii.cl
+// Dado una página que ya muestra el detalle del DTE, hace click en el botón
+// de visualización y devuelve el buffer del PDF.
+async function clickYDescargarPdf(page) {
+  const btnSelector = 'input[value*="VISUALIZACI"], button:has-text("VISUALIZACI"), a:has-text("VISUALIZACI"), input[value*="PDF"], a:has-text("PDF")';
+  const [pdfResponse] = await Promise.all([
+    page.waitForResponse(r => {
+      const ct = r.headers()['content-type'] ?? '';
+      return ct.includes('pdf') || r.url().toLowerCase().includes('.pdf') || ct.includes('octet-stream');
+    }, { timeout: 30000 }),
+    page.locator(btnSelector).first().click(),
+  ]);
+  return pdfResponse.body();
+}
+
+// Intenta navegar al detalle del documento de varias formas.
+// Devuelve true si llegamos a una página con botón de PDF.
+async function navegarADetalleDte(page, folio, rutEmisor) {
+  const [rutNum, dvNum] = rutEmisor.split('-');
+  const [empRut, empDv] = SII_EMPRESA_RUT.split('-');
+  const folioStr = String(folio);
+
+  // ── Intento 1: URL directa con parámetros conocidos ──────────────────────
+  const urlsDirectas = [
+    `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocDet.cgi?TIPO_DOC=33&FOLIO=${folioStr}&RUT_EMISOR=${rutNum}&DV_EMISOR=${dvNum}&RUT_RECEP=${empRut}&DV_RECEP=${empDv}`,
+    `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocDet.cgi?TIPO_DTE=33&NUM_FOLIO=${folioStr}&RUT_EMS=${rutNum}&DV_EMS=${dvNum}`,
+    `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocDet.cgi?RUT_EMISOR=${rutNum}&DV_EMISOR=${dvNum}&FOLIO=${folioStr}&TIPO=33`,
+  ];
+
+  for (const url of urlsDirectas) {
+    await page.goto(url, { waitUntil: 'load', timeout: 20000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+    const tieneBtn = await page.locator('input[value*="VISUALIZACI"], a:has-text("VISUALIZACI"), input[value*="PDF"]').count();
+    if (tieneBtn) {
+      console.log(`[PDF] Detalle encontrado via URL directa: ${url}`);
+      return true;
+    }
+  }
+
+  // ── Intento 2: buscar en la lista con rango extendido ────────────────────
+  const hace3 = new Date(); hace3.setFullYear(hace3.getFullYear() - 3);
+  const hoy   = new Date();
+  const dFmt  = d => `${String(d.getDate()).padStart(2,'0')}%2F${String(d.getMonth()+1).padStart(2,'0')}%2F${d.getFullYear()}`;
+
+  // Probar con parámetros GET en la URL
+  await page.goto(
+    `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi?FEC_DESDE=${dFmt(hace3)}&FEC_HASTA=${dFmt(hoy)}&TIPO_DOC=33`,
+    { waitUntil: 'load', timeout: 30000 }
+  ).catch(() => {});
+  await page.waitForTimeout(2000);
+
+  // Diagnóstico
+  const diagTitle = await page.title().catch(() => '?');
+  const diagRows  = await page.locator('table tr').count().catch(() => 0);
+  console.log(`[PDF] Lista: "${diagTitle}" | ${diagRows} filas | ${page.url()}`);
+
+  // Si hay form con fechas, intentar rellenarlo también
+  const desde = page.locator('input[name*="DESDE"], input[name*="desde"], input[id*="desde"]').first();
+  if (await desde.count()) {
+    const hasta = page.locator('input[name*="HASTA"], input[name*="hasta"], input[id*="hasta"]').first();
+    const d2 = new Date(); const d1 = new Date(); d1.setFullYear(d1.getFullYear()-3);
+    const fmt2 = d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
+    await desde.fill(fmt2(d1)).catch(() => {});
+    if (await hasta.count()) await hasta.fill(fmt2(d2)).catch(() => {});
+    const btnBuscar = page.locator('input[type=submit], button[type=submit]').first();
+    if (await btnBuscar.count()) {
+      await Promise.all([page.waitForLoadState('load').catch(() => {}), btnBuscar.click()]);
+      await page.waitForTimeout(2000);
+      const rowsAfter = await page.locator('table tr').count().catch(() => 0);
+      console.log(`[PDF] Tras filtro: ${rowsAfter} filas`);
+    }
+  }
+
+  // Paginar y buscar el folio
+  for (let p = 0; p < 30; p++) {
+    const filas = page.locator('tr').filter({ hasText: folioStr });
+    const count = await filas.count();
+    for (let i = 0; i < count; i++) {
+      const texto = (await filas.nth(i).textContent() ?? '').replace(/\./g,'');
+      if (texto.includes(rutNum)) {
+        const href = await filas.nth(i).locator('a').first().getAttribute('href').catch(() => null);
+        if (href) {
+          const detailUrl = href.startsWith('http') ? href : `https://www1.sii.cl${href}`;
+          await page.goto(detailUrl, { waitUntil: 'load', timeout: 20000 }).catch(() => {});
+          await page.waitForTimeout(1000);
+          const tieneBtn = await page.locator('input[value*="VISUALIZACI"], a:has-text("VISUALIZACI")').count();
+          if (tieneBtn) { console.log(`[PDF] Detalle encontrado via lista pág ${p+1}`); return true; }
+        }
+      }
+    }
+    const next = page.locator('a').filter({ hasText: /^[>»]$/ }).last();
+    if (!await next.count()) break;
+    await Promise.all([page.waitForLoadState('load').catch(() => {}), next.click()]);
+    await page.waitForTimeout(500);
+  }
+
+  return false;
+}
+
+// Descarga el PDF de UNA factura
 async function descargarPdfSII(folio, rutEmisor) {
   if (pdfEnCurso) throw new Error('Ya hay una descarga de PDF en curso, intenta en unos minutos');
   pdfEnCurso = true;
@@ -301,43 +399,10 @@ async function descargarPdfSII(folio, rutEmisor) {
     await loginSII(page);
     await seleccionarEmpresa(page);
 
-    // Ir a la lista de documentos recibidos y buscar el folio
-    await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi',
-      { waitUntil: 'load', timeout: 30000 }
-    ).catch(() => {});
-    await page.waitForTimeout(1500);
+    const encontrado = await navegarADetalleDte(page, folio, rutEmisor);
+    if (!encontrado) throw new Error(`Folio ${folio} no encontrado (ni URL directa ni lista SII)`);
 
-    let enlace = null;
-    for (let p = 0; p < 15 && !enlace; p++) {
-      // Buscar fila que tenga el folio Y el rut del emisor
-      const rutNum = rutEmisor.split('-')[0];
-      const filas  = page.locator('tr').filter({ hasText: String(folio) }).filter({ hasText: rutNum });
-      if (await filas.count()) {
-        enlace = await filas.first().locator('a').first().getAttribute('href');
-        break;
-      }
-      // Siguiente página
-      const next = page.locator('a').filter({ hasText: '>' }).last();
-      if (!await next.count()) break;
-      await Promise.all([page.waitForLoadState('networkidle'), next.click()]);
-    }
-
-    if (!enlace) throw new Error(`Folio ${folio} no encontrado en lista SII`);
-
-    // Navegar al detalle
-    const detailUrl = enlace.startsWith('http') ? enlace : `https://www1.sii.cl${enlace}`;
-    await page.goto(detailUrl, { waitUntil: 'networkidle' });
-
-    // Interceptar la respuesta del PDF al hacer click en el botón
-    const [pdfResponse] = await Promise.all([
-      page.waitForResponse(r => {
-        const ct = r.headers()['content-type'] ?? '';
-        return ct.includes('pdf') || r.url().includes('.pdf');
-      }, { timeout: 20000 }),
-      page.locator('input[value*="VISUALIZACI"], a:has-text("VISUALIZACI")').first().click(),
-    ]);
-
-    return await pdfResponse.body();
+    return await clickYDescargarPdf(page);
 
   } finally {
     pdfEnCurso = false;
@@ -345,9 +410,8 @@ async function descargarPdfSII(folio, rutEmisor) {
   }
 }
 
-// Descarga PDFs en lote con una sola sesión SII.
-// Estrategia: construir un mapa de TODA la lista (paginando una vez)
-// y luego navegar directo al detalle de cada factura.
+// Descarga PDFs en lote reutilizando una sola sesión SII.
+// Usa navegarADetalleDte() por cada factura (URLs directas + fallback lista).
 async function descargarPdfsBulkSII() {
   if (pdfEnCurso) {
     console.warn('[PDF bulk] Ya hay una sesión PDF en curso, abortando');
@@ -366,107 +430,17 @@ async function descargarPdfsBulkSII() {
   const page = await ctx.newPage();
   let descargadas = 0, errores = 0;
 
-  // helper: normaliza texto quitando puntos de miles chilenos y espacios extras
-  const norm = str => str.replace(/\./g, '').replace(/\s+/g, ' ').trim();
-
   try {
     await loginSII(page);
     await seleccionarEmpresa(page);
+    console.log(`[PDF bulk] Sesión lista. Descargando ${sinPdf.length} PDFs...`);
 
-    // ── Construir mapa de documentos ─────────────────────────────────────────
-    const hoy   = new Date();
-    const hace2 = new Date(); hace2.setFullYear(hoy.getFullYear() - 2);
-    const dFmt  = d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
-
-    await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi',
-      { waitUntil: 'load', timeout: 30000 }
-    ).catch(() => {});
-    await page.waitForTimeout(2000);
-
-    // ── Diagnóstico (se logea una vez para ayudar a depurar) ─────────────────
-    const diagTitle  = await page.title().catch(() => '?');
-    const diagUrl    = page.url();
-    const diagInputs = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('input')).map(i =>
-        `${i.type}[name=${i.name || i.id}]=${i.value}`
-      ).filter(Boolean)
-    ).catch(() => []);
-    const diagRows   = await page.locator('table tr').count().catch(() => 0);
-    console.log(`[PDF bulk] Página: "${diagTitle}" | ${diagUrl}`);
-    console.log(`[PDF bulk] Inputs: ${diagInputs.join(' | ')}`);
-    console.log(`[PDF bulk] Filas en tabla al cargar: ${diagRows}`);
-
-    // Intentar expandir rango de fechas llenando los inputs de fecha que existan
-    const fechaCandidatos = [
-      ['input[name="FEC_DESDE"],input[name="FDESDE"],input[id*="desde"],input[id*="Desde"],input[placeholder*="desde"],input[placeholder*="Desde"]', dFmt(hace2)],
-      ['input[name="FEC_HASTA"],input[name="FHASTA"],input[id*="hasta"],input[id*="Hasta"],input[placeholder*="hasta"],input[placeholder*="Hasta"]', dFmt(hoy)],
-    ];
-    let fechaSet = false;
-    for (const [sel, val] of fechaCandidatos) {
-      const el = page.locator(sel).first();
-      if (await el.count()) { await el.fill(val); fechaSet = true; }
-    }
-    if (fechaSet) {
-      const btnBuscar = page.locator('input[type=submit], button[type=submit], button:has-text("Buscar"), input[value*="Buscar"]').first();
-      if (await btnBuscar.count()) {
-        await Promise.all([page.waitForLoadState('networkidle').catch(() => {}), btnBuscar.click()]);
-        await page.waitForTimeout(2000);
-      }
-    }
-
-    // ── Paginar y recopilar todas las filas ──────────────────────────────────
-    const allRows = [];
-    for (let pg = 0; pg < 300; pg++) {
-      await page.waitForTimeout(400);
-      const rows = await page.evaluate(() =>
-        Array.from(document.querySelectorAll('table tr, tbody tr')).map(row => ({
-          text: (row.innerText ?? '').replace(/\s+/g, ' ').trim(),
-          href: row.querySelector('a[href]')?.getAttribute('href') ?? null,
-        })).filter(r => r.href && r.text.length > 5)
-      );
-      allRows.push(...rows);
-      const next = page.locator('a').filter({ hasText: /^[>»→]$/ }).last();
-      if (!await next.count()) break;
-      await Promise.all([page.waitForLoadState('networkidle'), next.click()]);
-    }
-
-    console.log(`[PDF bulk] Mapa: ${allRows.length} filas`);
-    if (allRows.length > 0) {
-      console.log(`[PDF bulk] Muestra primera fila: "${allRows[0].text.slice(0, 120)}"`);
-    } else {
-      console.warn('[PDF bulk] ADVERTENCIA: mapa vacío — la página no devolvió filas con links');
-    }
-
-    // ── Descargar PDF por cada factura ───────────────────────────────────────
     for (const f of sinPdf) {
       try {
-        const folioStr = String(f.folio);
-        const rutNum   = f.rut_emisor.split('-')[0];
+        const encontrado = await navegarADetalleDte(page, f.folio, f.rut_emisor);
+        if (!encontrado) throw new Error('no encontrado en SII');
 
-        // Buscar con texto normalizado (sin puntos de miles)
-        const row = allRows.find(r => {
-          const t = norm(r.text);
-          return t.includes(folioStr) && t.includes(rutNum);
-        });
-
-        if (!row?.href) {
-          console.warn(`[PDF bulk] Folio ${f.folio} (RUT ${rutNum}) no encontrado en mapa`);
-          errores++;
-          continue;
-        }
-
-        const detailUrl = row.href.startsWith('http') ? row.href : `https://www1.sii.cl${row.href}`;
-        await page.goto(detailUrl, { waitUntil: 'networkidle' });
-
-        const [pdfRes] = await Promise.all([
-          page.waitForResponse(r => {
-            const ct = r.headers()['content-type'] ?? '';
-            return ct.includes('pdf') || r.url().includes('.pdf');
-          }, { timeout: 25000 }),
-          page.locator('input[value*="VISUALIZACI"], a:has-text("VISUALIZACI")').first().click(),
-        ]);
-
-        const buf    = await pdfRes.body();
+        const buf    = await clickYDescargarPdf(page);
         const nombre = `factura_${f.folio}_${f.rut_emisor}.pdf`;
         await pool.query(
           `UPDATE facturas_recibidas SET pdf_data=$1, pdf_nombre=$2, pdf_at=NOW(), updated_at=NOW() WHERE id=$3`,
