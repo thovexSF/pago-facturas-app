@@ -403,13 +403,15 @@ app.post('/api/sync/historico', async (req, res) => {
   finally { sesion?.browser.close(); }
 });
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+let dbReady = false;
+app.get('/health', (req, res) => res.json({ status: 'ok', db: dbReady }));
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
-async function start() {
-  await setupDb();
-  app.listen(PORT, '0.0.0.0', () => console.log(`Puerto ${PORT}`));
-}
-
-start().catch(err => { console.error(err); process.exit(1); });
+// Levantar servidor primero para pasar healthcheck, luego inicializar DB
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Puerto ${PORT}`);
+  setupDb()
+    .then(() => { dbReady = true; })
+    .catch(err => console.error('[DB] Error en setup:', err.message));
+});
