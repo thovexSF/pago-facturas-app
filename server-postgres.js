@@ -426,28 +426,24 @@ async function navegarADetalleDte(page, folio, rutEmisor) {
 async function descargarPdfSII(folio, rutEmisor) {
   if (pdfEnCurso) throw new Error('Ya hay una descarga de PDF en curso, intenta en unos minutos');
   pdfEnCurso = true;
-  const { chromium } = require('playwright');
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ ignoreHTTPSErrors: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' });
-  const page    = await context.newPage();
-
+  let sesion;
   try {
-    await loginSII(page);
-    await seleccionarEmpresa(page);
+    // abrirSesionSII ya hace login + empresa en www1 → sesión establecida
+    sesion = await abrirSesionSII();
+    const page = await sesion.context.newPage();
 
     const encontrado = await navegarADetalleDte(page, folio, rutEmisor);
-    if (!encontrado) throw new Error(`Folio ${folio} no encontrado (ni URL directa ni lista SII)`);
+    if (!encontrado) throw new Error(`Folio ${folio} no encontrado en SII`);
 
     return await clickYDescargarPdf(page);
-
   } finally {
     pdfEnCurso = false;
-    await browser.close();
+    await sesion?.browser.close();
   }
 }
 
 // Descarga PDFs en lote reutilizando una sola sesión SII.
-// Usa navegarADetalleDte() por cada factura (URLs directas + fallback lista).
+// Usa abrirSesionSII() (igual que descargarPdfSII) + navegarADetalleDte() por cada factura.
 async function descargarPdfsBulkSII() {
   if (pdfEnCurso) {
     console.warn('[PDF bulk] Ya hay una sesión PDF en curso, abortando');
@@ -460,15 +456,13 @@ async function descargarPdfsBulkSII() {
   );
   if (!sinPdf.length) { pdfEnCurso = false; return { descargadas: 0, errores: 0, total: 0 }; }
 
-  const { chromium } = require('playwright');
-  const browser = await chromium.launch({ headless: true });
-  const ctx  = await browser.newContext({ ignoreHTTPSErrors: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' });
-  const page = await ctx.newPage();
+  let sesion;
   let descargadas = 0, errores = 0;
 
   try {
-    await loginSII(page);
-    await seleccionarEmpresa(page);
+    // abrirSesionSII hace login + selección de empresa en www1 → sesión lista
+    sesion = await abrirSesionSII();
+    const page = await sesion.context.newPage();
     console.log(`[PDF bulk] Sesión lista. Descargando ${sinPdf.length} PDFs...`);
 
     for (const f of sinPdf) {
@@ -491,7 +485,7 @@ async function descargarPdfsBulkSII() {
     }
   } finally {
     pdfEnCurso = false;
-    await browser.close();
+    await sesion?.browser.close();
   }
 
   console.log(`[PDF bulk] Completado: ${descargadas} OK, ${errores} errores`);
