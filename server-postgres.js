@@ -262,35 +262,32 @@ async function loginSII(page) {
       await page.fill(rutSel,   SII_RUT);
       await page.fill(claveSel, SII_PASSWORD);
 
-      // Submit y esperar a que la URL salga de IngresoRutClave (= dejar la página de login)
-      // CAutInicio.cgi es la URL de ÉXITO del auth (procesa credenciales, setea cookies)
+      // Submit: esperar 60s que CAutInicio.cgi redirija a misiir automáticamente (SSO chain)
       await page.keyboard.press('Enter');
       try {
-        await page.waitForURL(
-          u => !u.includes('IngresoRutClave'),
-          { timeout: 25000 }
-        );
-      } catch { /* timeout — revisamos URL abajo */ }
-      await page.waitForTimeout(2000);
+        await page.waitForURL(u => u.includes('misiir.sii.cl'), { timeout: 60000 });
+      } catch { /* timeout — loguear HTML de CAutInicio para diagnóstico */ }
 
+      await page.waitForTimeout(2000);
       const postUrl = page.url();
       console.log(`[SII login] post-login URL: ${postUrl}`);
 
-      // Rechazo real: volvió al formulario de login
+      // Log del HTML si quedamos en CAutInicio (entender qué bloquea el redirect)
+      if (postUrl.includes('CAutInicio') || (postUrl.includes('zeusr') && !postUrl.includes('IngresoRutClave'))) {
+        const htmlSnip = await page.evaluate(() =>
+          (document.body?.innerHTML ?? '').replace(/\s+/g,' ').trim().slice(0, 600)
+        ).catch(() => '');
+        console.log(`[SII login] CAutInicio HTML: ${htmlSnip}`);
+      }
+
+      // Rechazo: volvió al formulario de login
       if (postUrl.includes('IngresoRutClave')) {
         console.warn(`[SII login] intento ${intento}: credenciales rechazadas → ${postUrl}`);
         if (intento < 3) await page.waitForTimeout(3000);
         continue;
       }
 
-      // Éxito: CAutInicio.cgi procesó el auth y seteó cookies.
-      // Navegar a misiir completa la cadena zeusr → misiir → www1
-      await page.goto('https://misiir.sii.cl/cgi_misii/siihome.cgi',
-        { waitUntil: 'load', timeout: 30000 }
-      ).catch(e => console.warn('[SII login] misiir goto error:', e.message));
-      await page.waitForTimeout(1500);
-      const misiirUrl = page.url();
-      console.log(`[SII login] ✓ Autenticación exitosa | misiir URL: ${misiirUrl}`);
+      console.log(`[SII login] ✓ Sesión establecida | URL: ${postUrl}`);
       return;
     }
 
