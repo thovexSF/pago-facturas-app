@@ -183,6 +183,11 @@ function renderTabla() {
         <td>${formatFecha(f.fecha_emision)}</td>
         <td class="${vencida?'text-danger':''}">${formatFecha(proxVcto)}</td>
         <td class="monto">$${formatMonto(f.monto_total)}</td>
+        <td class="fechas-pago">
+          ${f.pagado_1 && f.pagado_1_at ? `<div class="pago-fecha">C1 · ${formatFecha(f.pagado_1_at)}</div>` : ''}
+          ${f.pagado_2 && f.pagado_2_at ? `<div class="pago-fecha">C2 · ${formatFecha(f.pagado_2_at)}</div>` : ''}
+          ${!f.pagado_1 && !f.pagado_2 ? '<span class="text-muted">—</span>' : ''}
+        </td>
         <td><span class="badge ${estadoClass}">${estadoLabel}</span></td>
         <td>${!ambaPagada?`<button class="btn btn-sm btn-pay" onclick="event.stopPropagation();abrirModal(facturas.find(x=>x.id===${f.id}))">Pagar</button>`:''}</td>
       </tr>`;

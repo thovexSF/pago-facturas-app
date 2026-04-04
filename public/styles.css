@@ -132,6 +132,9 @@ body {
 
 .emisor-nombre { font-weight: 500; }
 .emisor-rut { font-size: 11px; color: #a0aec0; }
+.fechas-pago { font-size: 11px; color: #4a5568; line-height: 1.7; }
+.pago-fecha { white-space: nowrap; }
+.text-muted { color: #cbd5e0; }
 .monto { font-weight: 600; font-variant-numeric: tabular-nums; }
 .text-danger { color: #e53e3e; font-weight: 600; }
 
