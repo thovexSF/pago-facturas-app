@@ -241,6 +241,22 @@ async function loginSII(page) {
   throw new Error('No se pudo encontrar formulario de login SII después de 3 intentos');
 }
 
+// Selecciona la empresa en el portal www1 (ignora ERR_ABORTED de redirects JS)
+async function seleccionarEmpresa(page) {
+  await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi',
+    { waitUntil: 'load', timeout: 30000 }
+  ).catch(() => {});
+  await page.waitForTimeout(1000);
+  if (await page.locator('select[name="RUT_EMP"]').count()) {
+    await page.locator('select[name="RUT_EMP"]').selectOption(SII_EMPRESA_RUT);
+    await Promise.all([
+      page.waitForLoadState('load').catch(() => {}),
+      page.locator('[type=submit]').first().click(),
+    ]);
+    await page.waitForTimeout(1000);
+  }
+}
+
 async function abrirSesionSII() {
   const { chromium } = require('playwright');
   const browser = await chromium.launch({ headless: true });
@@ -258,15 +274,7 @@ async function abrirSesionSII() {
   });
 
   await loginSII(page);
-
-  await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi', { waitUntil: 'networkidle' });
-  if (await page.locator('select[name="RUT_EMP"]').count()) {
-    await page.locator('select[name="RUT_EMP"]').selectOption(SII_EMPRESA_RUT);
-    await Promise.all([
-      page.waitForLoadState('networkidle').catch(() => {}),
-      page.locator('[type=submit]').first().click(),
-    ]);
-  }
+  await seleccionarEmpresa(page);
 
   await page.goto('https://www4.sii.cl/consdcvinternetui/', { waitUntil: 'networkidle' });
   await page.waitForTimeout(3000);
@@ -291,19 +299,13 @@ async function descargarPdfSII(folio, rutEmisor) {
 
   try {
     await loginSII(page);
-
-    // Seleccionar empresa
-    await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi', { waitUntil: 'networkidle' });
-    if (await page.locator('select[name="RUT_EMP"]').count()) {
-      await page.locator('select[name="RUT_EMP"]').selectOption(SII_EMPRESA_RUT);
-      await Promise.all([
-        page.waitForLoadState('networkidle').catch(() => {}),
-        page.locator('[type=submit]').first().click(),
-      ]);
-    }
+    await seleccionarEmpresa(page);
 
     // Ir a la lista de documentos recibidos y buscar el folio
-    await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi', { waitUntil: 'networkidle' });
+    await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi',
+      { waitUntil: 'load', timeout: 30000 }
+    ).catch(() => {});
+    await page.waitForTimeout(1500);
 
     let enlace = null;
     for (let p = 0; p < 15 && !enlace; p++) {
@@ -369,20 +371,16 @@ async function descargarPdfsBulkSII() {
 
   try {
     await loginSII(page);
-
-    await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi', { waitUntil: 'networkidle' });
-    if (await page.locator('select[name="RUT_EMP"]').count()) {
-      await page.locator('select[name="RUT_EMP"]').selectOption(SII_EMPRESA_RUT);
-      await Promise.all([page.waitForLoadState('networkidle').catch(() => {}), page.locator('[type=submit]').first().click()]);
-    }
+    await seleccionarEmpresa(page);
 
     // ── Construir mapa de documentos ─────────────────────────────────────────
-    // Intentar con rango de fechas amplio vía parámetros GET
     const hoy   = new Date();
     const hace2 = new Date(); hace2.setFullYear(hoy.getFullYear() - 2);
     const dFmt  = d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
 
-    await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi', { waitUntil: 'networkidle' });
+    await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi',
+      { waitUntil: 'load', timeout: 30000 }
+    ).catch(() => {});
     await page.waitForTimeout(2000);
 
     // ── Diagnóstico (se logea una vez para ayudar a depurar) ─────────────────
@@ -613,6 +611,28 @@ app.post('/api/pdf/sync', async (req, res) => {
       .then(r => console.log(`[PDF sync] ${r.descargadas}/${r.total} OK, ${r.errores} errores`))
       .catch(err => console.error('[PDF sync]', err.message));
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/pdf/test/:folio — prueba de descarga con UNA factura (debug)
+app.get('/api/pdf/test/:folio', async (req, res) => {
+  if (pdfEnCurso) return res.status(409).json({ error: 'PDF en curso, espera' });
+  const { rows } = await pool.query(
+    `SELECT id, folio, rut_emisor FROM facturas_recibidas WHERE folio=$1 LIMIT 1`,
+    [req.params.folio]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'Folio no encontrado en DB' });
+  const f = rows[0];
+  try {
+    const buf = await descargarPdfSII(f.folio, f.rut_emisor);
+    const nombre = `factura_${f.folio}_${f.rut_emisor}.pdf`;
+    await pool.query(
+      `UPDATE facturas_recibidas SET pdf_data=$1, pdf_nombre=$2, pdf_at=NOW(), updated_at=NOW() WHERE id=$3`,
+      [buf, nombre, f.id]
+    );
+    res.json({ ok: true, folio: f.folio, bytes: buf.length, nombre });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 });
 
 // GET /api/pdf/status — cuántos PDFs están disponibles vs total
