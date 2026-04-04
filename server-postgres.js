@@ -371,74 +371,59 @@ async function clickYDescargarPdf(page) {
   return pdfResponse.body();
 }
 
-// Intenta navegar al detalle del documento de varias formas.
-// Devuelve true si llegamos a una página con botón de PDF.
+// Navega al detalle del DTE usando mipeAdminDocsRcp.cgi (lista real).
+// El detalle está en mipeGesDocRcp.cgi?CODIGO=X&csrt=Y — solo accesible
+// clicando el ícono desde la lista (CODIGO y csrt no son predecibles).
+// Devuelve true si llegamos a la página con botón "VISUALIZACIÓN DOCUMENTO".
 async function navegarADetalleDte(page, folio, rutEmisor) {
-  const [rutNum, dvNum] = rutEmisor.split('-');
-  const [empRut, empDv] = SII_EMPRESA_RUT.split('-');
+  const [rutNum] = rutEmisor.split('-');
   const folioStr = String(folio);
 
-  // ── Intento 1: URL directa con parámetros conocidos ──────────────────────
-  const urlsDirectas = [
-    `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocDet.cgi?TIPO_DOC=33&FOLIO=${folioStr}&RUT_EMISOR=${rutNum}&DV_EMISOR=${dvNum}&RUT_RECEP=${empRut}&DV_RECEP=${empDv}`,
-    `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocDet.cgi?TIPO_DTE=33&NUM_FOLIO=${folioStr}&RUT_EMS=${rutNum}&DV_EMS=${dvNum}`,
-    `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocDet.cgi?RUT_EMISOR=${rutNum}&DV_EMISOR=${dvNum}&FOLIO=${folioStr}&TIPO=33`,
-  ];
-
-  for (const url of urlsDirectas) {
-    await page.goto(url, { waitUntil: 'load', timeout: 20000 }).catch(() => {});
-    await page.waitForTimeout(1000);
-    const tieneBtn = await page.locator('input[value*="VISUALIZACI"], a:has-text("VISUALIZACI"), input[value*="PDF"]').count();
-    if (tieneBtn) {
-      console.log(`[PDF] Detalle encontrado via URL directa: ${url}`);
-      return true;
-    }
-  }
-
-  // ── Intento 2: buscar en la lista (sin params GET — el CGI no los acepta) ──
-  await page.goto(
-    'https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi',
-    { waitUntil: 'load', timeout: 30000 }
-  ).catch(e => console.warn('[PDF] goto lista error:', e.message));
+  // Navegar a la lista filtrada por folio y emisor
+  const listUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeAdminDocsRcp.cgi?RUT_EMI=${rutNum}&FOLIO=${folioStr}&RZN_SOC=&FEC_DESDE=&FEC_HASTA=&TPO_DOC=33&ESTADO=&ORDEN=`;
+  await page.goto(listUrl, { waitUntil: 'load', timeout: 30000 })
+    .catch(e => console.warn('[PDF] goto lista error:', e.message));
   await page.waitForTimeout(2000);
 
-  // Diagnóstico
   const diagTitle = await page.title().catch(() => '?');
   const diagRows  = await page.locator('table tr').count().catch(() => 0);
   console.log(`[PDF] Lista: "${diagTitle}" | ${diagRows} filas | ${page.url()}`);
 
-  // Si hay form con fechas, intentar rellenarlo también
-  const desde = page.locator('input[name*="DESDE"], input[name*="desde"], input[id*="desde"]').first();
-  if (await desde.count()) {
-    const hasta = page.locator('input[name*="HASTA"], input[name*="hasta"], input[id*="hasta"]').first();
-    const d2 = new Date(); const d1 = new Date(); d1.setFullYear(d1.getFullYear()-3);
-    const fmt2 = d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
-    await desde.fill(fmt2(d1)).catch(() => {});
-    if (await hasta.count()) await hasta.fill(fmt2(d2)).catch(() => {});
-    const btnBuscar = page.locator('input[type=submit], button[type=submit]').first();
-    if (await btnBuscar.count()) {
-      await Promise.all([page.waitForLoadState('load').catch(() => {}), btnBuscar.click()]);
-      await page.waitForTimeout(2000);
-      const rowsAfter = await page.locator('table tr').count().catch(() => 0);
-      console.log(`[PDF] Tras filtro: ${rowsAfter} filas`);
-    }
-  }
-
-  // Paginar y buscar el folio
-  for (let p = 0; p < 30; p++) {
+  // Paginar y buscar el folio (normalmente con filtro habrá solo 1 fila)
+  for (let p = 0; p < 10; p++) {
     const filas = page.locator('tr').filter({ hasText: folioStr });
     const count = await filas.count();
     for (let i = 0; i < count; i++) {
-      const texto = (await filas.nth(i).textContent() ?? '').replace(/\./g,'');
-      if (texto.includes(rutNum)) {
-        const href = await filas.nth(i).locator('a').first().getAttribute('href').catch(() => null);
-        if (href) {
-          const detailUrl = href.startsWith('http') ? href : `https://www1.sii.cl${href}`;
-          await page.goto(detailUrl, { waitUntil: 'load', timeout: 20000 }).catch(() => {});
-          await page.waitForTimeout(1000);
-          const tieneBtn = await page.locator('input[value*="VISUALIZACI"], a:has-text("VISUALIZACI")').count();
-          if (tieneBtn) { console.log(`[PDF] Detalle encontrado via lista pág ${p+1}`); return true; }
+      const texto = (await filas.nth(i).textContent() ?? '').replace(/\./g, '');
+      if (texto.includes(rutNum.replace(/\./g, ''))) {
+        // Clic en el primer link de la fila (ícono "Ver" → mipeGesDocRcp.cgi?CODIGO=...&csrt=...)
+        const link = filas.nth(i).locator('a').first();
+        if (!await link.count()) continue;
+        await Promise.all([
+          page.waitForLoadState('load').catch(() => {}),
+          link.click(),
+        ]);
+        await page.waitForTimeout(2000);
+        console.log(`[PDF] Detalle: ${page.url()}`);
+
+        // Expandir "Otros detalles documento" para que aparezca el botón PDF
+        const otrosDetalles = page.locator('a, button, div[role="button"]')
+          .filter({ hasText: /otros detalles documento/i }).first();
+        if (await otrosDetalles.count()) {
+          await otrosDetalles.click().catch(() => {});
+          await page.waitForTimeout(1500);
         }
+
+        // Verificar botón de visualización
+        const tieneBtn = await page.locator(
+          'input[value*="VISUALIZACI"], a:has-text("VISUALIZACI"), button:has-text("VISUALIZACI")'
+        ).count();
+        if (tieneBtn) {
+          console.log('[PDF] ✓ Botón VISUALIZACIÓN encontrado');
+          return true;
+        }
+        console.warn('[PDF] En detalle pero sin botón VISUALIZACIÓN');
+        return false;
       }
     }
     const next = page.locator('a').filter({ hasText: /^[>»]$/ }).last();
