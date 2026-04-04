@@ -6,7 +6,6 @@
   <title>Facturas por Pagar — Bioma</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css" />
   <link rel="stylesheet" href="styles.css" />
-
 </head>
 <body>
   <div class="app">
@@ -28,7 +27,7 @@
     <div class="stats">
       <div class="stat">
         <div class="stat-value" id="stat-total">—</div>
-        <div class="stat-label">Total pendientes</div>
+        <div class="stat-label">Cuotas pendientes</div>
       </div>
       <div class="stat stat-warning">
         <div class="stat-value" id="stat-vencidas">—</div>
@@ -36,11 +35,11 @@
       </div>
       <div class="stat stat-amount">
         <div class="stat-value" id="stat-monto">—</div>
-        <div class="stat-label">Monto total</div>
+        <div class="stat-label">Monto pendiente</div>
       </div>
       <div class="stat stat-success">
         <div class="stat-value" id="stat-pagadas">—</div>
-        <div class="stat-label">Pagadas este mes</div>
+        <div class="stat-label">Facturas completas</div>
       </div>
     </div>
 
@@ -48,10 +47,12 @@
     <div class="tabs">
       <button class="tab active" data-tab="calendario">Calendario</button>
       <button class="tab" data-tab="lista">Lista</button>
+      <button class="tab" data-tab="proveedores">Proveedores</button>
     </div>
 
     <!-- Calendario -->
     <div class="tab-content active" id="tab-calendario">
+      <div id="chips-container" class="chips-container"></div>
       <div id="calendar"></div>
     </div>
 
@@ -70,8 +71,8 @@
             <th>Emisor</th>
             <th>Folio</th>
             <th>Emisión</th>
-            <th>Vencimiento</th>
-            <th>Monto</th>
+            <th>Próx. vencimiento</th>
+            <th>Monto total</th>
             <th>Estado</th>
             <th></th>
           </tr>
@@ -81,6 +82,11 @@
       <div id="empty-state" class="empty-state" style="display:none">
         <p>No hay facturas. Haz clic en <strong>Sincronizar SII</strong> para cargar.</p>
       </div>
+    </div>
+
+    <!-- Proveedores -->
+    <div class="tab-content" id="tab-proveedores">
+      <div id="proveedores-lista"></div>
     </div>
 
   </div>
@@ -99,7 +105,7 @@
             <span class="detail-value" id="modal-emisor">—</span>
           </div>
           <div class="detail-row">
-            <span class="detail-label">RUT Emisor</span>
+            <span class="detail-label">RUT</span>
             <span class="detail-value" id="modal-rut">—</span>
           </div>
           <div class="detail-row">
@@ -118,17 +124,21 @@
             <span class="detail-label">Estado SII</span>
             <span class="detail-value" id="modal-estado-sii">—</span>
           </div>
-          <div class="detail-row" style="margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0">
-            <span class="detail-label">Cuota 1 · día 30</span>
-            <span class="detail-value"><span id="modal-vcto-1">—</span> &nbsp; <strong id="modal-monto-1">—</strong></span>
+          <div class="detail-row cuota-row" style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0">
+            <span class="detail-label">Cuota 1 · <span id="modal-label-1">día 30</span></span>
+            <span class="detail-value">
+              <span id="modal-vcto-1">—</span> &nbsp; <strong id="modal-monto-1">—</strong>
+            </span>
           </div>
-          <div class="detail-row">
-            <span class="detail-label">Cuota 2 · día 40</span>
-            <span class="detail-value"><span id="modal-vcto-2">—</span> &nbsp; <strong id="modal-monto-2">—</strong></span>
+          <div class="detail-row cuota-row">
+            <span class="detail-label">Cuota 2 · <span id="modal-label-2">día 40</span></span>
+            <span class="detail-value">
+              <span id="modal-vcto-2">—</span> &nbsp; <strong id="modal-monto-2">—</strong>
+            </span>
           </div>
         </div>
 
-        <div class="pago-info" id="pago-info">
+        <div class="pago-info">
           <h3>Datos para transferencia</h3>
           <div class="copy-row">
             <span id="pago-rut-copy">—</span>
@@ -140,9 +150,9 @@
           </div>
         </div>
       </div>
-      <div class="modal-footer" id="modal-footer">
-        <button class="btn btn-pay" id="btn-pagar-1">Pagar 50%</button>
-        <button class="btn btn-pay" id="btn-pagar-2">Pagar 50%</button>
+      <div class="modal-footer">
+        <button class="btn btn-pay" id="btn-pagar-1">Pagar cuota 1</button>
+        <button class="btn btn-pay" id="btn-pagar-2">Pagar cuota 2</button>
         <button class="btn btn-secondary" id="modal-cancel">Cerrar</button>
       </div>
     </div>

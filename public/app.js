@@ -1,6 +1,10 @@
-let facturas = [];
-let calendar = null;
+let facturas    = [];
+let proveedores = [];
+let calendar    = null;
 let facturaActiva = null;
+
+// Chips: set de rut_emisor visibles en calendario (persistido en localStorage)
+let chipsFiltro = new Set(JSON.parse(localStorage.getItem('chipsFiltro') ?? 'null') ?? []);
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
@@ -8,28 +12,28 @@ document.addEventListener('DOMContentLoaded', () => {
   initCalendar();
   initTabs();
   initModal();
-  cargarFacturas();
+  cargarTodo();
   syncAuto();
 
   document.getElementById('btn-sync').addEventListener('click', sincronizarHistorico);
   document.getElementById('filter-estado').addEventListener('change', renderTabla);
 });
 
+async function cargarTodo() {
+  await Promise.all([cargarFacturas(), cargarProveedores()]);
+}
+
 // ─── Calendar ─────────────────────────────────────────────────────────────────
 
 function initCalendar() {
-  const el = document.getElementById('calendar');
-  calendar = new FullCalendar.Calendar(el, {
+  calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
     initialView: 'dayGridMonth',
     locale: 'es',
     height: 'auto',
-    headerToolbar: {
-      left: 'prev,next today',
-      center: 'title',
-      right: 'dayGridMonth,listMonth',
-    },
+    headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,listMonth' },
     eventClick: (info) => {
-      const f = facturas.find(x => String(x.id) === info.event.id.split('-')[0]);
+      const id = parseInt(info.event.id.split('-')[0]);
+      const f  = facturas.find(x => x.id === id);
       if (f) abrirModal(f);
     },
   });
@@ -38,32 +42,61 @@ function initCalendar() {
 
 function cargarEventosCalendar() {
   calendar.removeAllEvents();
-  const eventos = [];
+  // Si no hay chips seleccionados, mostrar todos los que tengan en_agenda=true
+  const agendaRuts = new Set(proveedores.filter(p => p.en_agenda).map(p => p.rut_emisor));
+  const filtrados  = chipsFiltro.size > 0 ? chipsFiltro : agendaRuts;
+
   facturas.forEach(f => {
+    if (!filtrados.has(f.rut_emisor)) return;
     if (f.vcto_1 && !f.pagado_1) {
       const vencida = new Date(f.vcto_1) < new Date();
-      eventos.push({
+      calendar.addEvent({
         id: `${f.id}-1`,
-        title: `50% ${f.razon_social || f.rut_emisor}`,
+        title: `C1 ${f.razon_social || f.rut_emisor}`,
         start: f.vcto_1.split('T')[0],
         backgroundColor: vencida ? '#e53e3e' : '#3182ce',
         borderColor:     vencida ? '#c53030' : '#2b6cb0',
-        extendedProps: { monto: f.monto_1, cuota: 1 },
       });
     }
     if (f.vcto_2 && !f.pagado_2) {
       const vencida = new Date(f.vcto_2) < new Date();
-      eventos.push({
+      calendar.addEvent({
         id: `${f.id}-2`,
-        title: `50% ${f.razon_social || f.rut_emisor}`,
+        title: `C2 ${f.razon_social || f.rut_emisor}`,
         start: f.vcto_2.split('T')[0],
         backgroundColor: vencida ? '#e53e3e' : '#38a169',
         borderColor:     vencida ? '#c53030' : '#276749',
-        extendedProps: { monto: f.monto_2, cuota: 2 },
       });
     }
   });
-  calendar.addEventSource(eventos);
+}
+
+// ─── Chips ────────────────────────────────────────────────────────────────────
+
+function renderChips() {
+  const container = document.getElementById('chips-container');
+  // Mostrar solo proveedores a crédito (los únicos relevantes para el calendario)
+  const credito = proveedores.filter(p => p.condicion === 'credito');
+  if (!credito.length) { container.innerHTML = ''; return; }
+
+  container.innerHTML = credito.map(p => {
+    const activo = chipsFiltro.size === 0
+      ? p.en_agenda
+      : chipsFiltro.has(p.rut_emisor);
+    return `<button class="chip ${activo ? 'chip-active' : ''}"
+              onclick="toggleChip('${p.rut_emisor}')">${esc(p.razon_social || p.rut_emisor)}</button>`;
+  }).join('');
+}
+
+function toggleChip(rut) {
+  if (chipsFiltro.has(rut)) {
+    chipsFiltro.delete(rut);
+  } else {
+    chipsFiltro.add(rut);
+  }
+  localStorage.setItem('chipsFiltro', JSON.stringify([...chipsFiltro]));
+  renderChips();
+  cargarEventosCalendar();
 }
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
@@ -80,41 +113,43 @@ function initTabs() {
   });
 }
 
-// ─── Cargar facturas ──────────────────────────────────────────────────────────
+// ─── Cargar datos ─────────────────────────────────────────────────────────────
 
 async function cargarFacturas() {
-  try {
-    const res = await fetch('/api/facturas');
-    facturas = await res.json();
-    renderStats();
-    renderTabla();
-    cargarEventosCalendar();
-  } catch (err) {
-    mostrarToast('Error cargando facturas: ' + err.message, 'error');
-  }
+  const res = await fetch('/api/facturas');
+  facturas  = await res.json();
+  renderStats();
+  renderTabla();
+  cargarEventosCalendar();
+}
+
+async function cargarProveedores() {
+  const res   = await fetch('/api/proveedores');
+  proveedores = await res.json();
+  renderProveedores();
+  renderChips();
+  cargarEventosCalendar();
 }
 
 // ─── Stats ────────────────────────────────────────────────────────────────────
 
 function renderStats() {
   const hoy = new Date();
-
   const pendC1 = facturas.filter(f => !f.pagado_1 && f.vcto_1);
   const pendC2 = facturas.filter(f => !f.pagado_2 && f.vcto_2);
-
-  const vencidasC1 = pendC1.filter(f => new Date(f.vcto_1) < hoy);
-  const vencidasC2 = pendC2.filter(f => new Date(f.vcto_2) < hoy);
-
+  const vencidas = [
+    ...pendC1.filter(f => new Date(f.vcto_1) < hoy),
+    ...pendC2.filter(f => new Date(f.vcto_2) < hoy),
+  ].length;
   const montoPendiente = [
-    ...pendC1.map(f => parseInt(f.monto_1) || 0),
-    ...pendC2.map(f => parseInt(f.monto_2) || 0),
-  ].reduce((s, v) => s + v, 0);
+    ...pendC1.map(f => parseInt(f.monto_1)||0),
+    ...pendC2.map(f => parseInt(f.monto_2)||0),
+  ].reduce((s,v) => s+v, 0);
 
-  document.getElementById('stat-total').textContent   = pendC1.length + pendC2.length;
-  document.getElementById('stat-vencidas').textContent = vencidasC1.length + vencidasC2.length;
-  document.getElementById('stat-monto').textContent   = '$' + formatMonto(montoPendiente);
-  document.getElementById('stat-pagadas').textContent =
-    facturas.filter(f => f.pagado_1 && f.pagado_2).length;
+  document.getElementById('stat-total').textContent    = pendC1.length + pendC2.length;
+  document.getElementById('stat-vencidas').textContent  = vencidas;
+  document.getElementById('stat-monto').textContent    = '$' + formatMonto(montoPendiente);
+  document.getElementById('stat-pagadas').textContent  = facturas.filter(f => f.pagado_1 && f.pagado_2).length;
 }
 
 // ─── Tabla ────────────────────────────────────────────────────────────────────
@@ -127,7 +162,6 @@ function renderTabla() {
 
   const tbody = document.getElementById('facturas-tbody');
   const empty = document.getElementById('empty-state');
-
   if (!lista.length) { tbody.innerHTML = ''; empty.style.display = 'block'; return; }
   empty.style.display = 'none';
 
@@ -138,27 +172,85 @@ function renderTabla() {
                  || (!f.pagado_2 && f.vcto_2 && new Date(f.vcto_2) < hoy);
     const estadoClass = ambaPagada ? 'badge-success' : vencida ? 'badge-danger' : 'badge-warning';
     const estadoLabel = ambaPagada ? 'Pagada' : vencida ? 'Vencida' : 'Pendiente';
-
-    // Mostrar próximo vencimiento pendiente
-    const proxVcto = !f.pagado_1 && f.vcto_1 ? f.vcto_1 : f.vcto_2;
-
+    const proxVcto    = !f.pagado_1 && f.vcto_1 ? f.vcto_1 : f.vcto_2;
     return `
-      <tr class="${vencida ? 'row-vencida' : ''}" onclick="abrirModal(facturas.find(x=>x.id===${f.id}))" style="cursor:pointer">
+      <tr class="${vencida?'row-vencida':''}" onclick="abrirModal(facturas.find(x=>x.id===${f.id}))" style="cursor:pointer">
         <td>
-          <div class="emisor-nombre">${esc(f.razon_social || '—')}</div>
-          <div class="emisor-rut">${esc(f.rut_emisor || '—')}</div>
+          <div class="emisor-nombre">${esc(f.razon_social||'—')}</div>
+          <div class="emisor-rut">${esc(f.rut_emisor||'—')}</div>
         </td>
-        <td>${f.folio || '—'}</td>
+        <td>${f.folio||'—'}</td>
         <td>${formatFecha(f.fecha_emision)}</td>
-        <td class="${vencida ? 'text-danger' : ''}">${formatFecha(proxVcto)}</td>
+        <td class="${vencida?'text-danger':''}">${formatFecha(proxVcto)}</td>
         <td class="monto">$${formatMonto(f.monto_total)}</td>
         <td><span class="badge ${estadoClass}">${estadoLabel}</span></td>
-        <td>
-          ${!ambaPagada ? `<button class="btn btn-sm btn-pay" onclick="event.stopPropagation();abrirModal(facturas.find(x=>x.id===${f.id}))">Pagar</button>` : ''}
-        </td>
-      </tr>
-    `;
+        <td>${!ambaPagada?`<button class="btn btn-sm btn-pay" onclick="event.stopPropagation();abrirModal(facturas.find(x=>x.id===${f.id}))">Pagar</button>`:''}</td>
+      </tr>`;
   }).join('');
+}
+
+// ─── Proveedores ──────────────────────────────────────────────────────────────
+
+function renderProveedores() {
+  const el = document.getElementById('proveedores-lista');
+  if (!proveedores.length) {
+    el.innerHTML = '<p class="empty-prov">Sincroniza primero para ver los proveedores.</p>';
+    return;
+  }
+  el.innerHTML = `
+    <table class="facturas-table">
+      <thead><tr>
+        <th>Proveedor</th>
+        <th>Condición</th>
+        <th>Cuota 1</th>
+        <th>Cuota 2</th>
+        <th>En agenda</th>
+      </tr></thead>
+      <tbody>
+        ${proveedores.map(p => `
+          <tr>
+            <td>
+              <div class="emisor-nombre">${esc(p.razon_social||'—')}</div>
+              <div class="emisor-rut">${esc(p.rut_emisor)}</div>
+            </td>
+            <td>
+              <select class="prov-select" onchange="actualizarProveedor('${p.rut_emisor}','condicion',this.value)">
+                <option value="contado" ${p.condicion==='contado'?'selected':''}>Contado</option>
+                <option value="credito" ${p.condicion==='credito'?'selected':''}>Crédito</option>
+              </select>
+            </td>
+            <td class="${p.condicion==='contado'?'prov-disabled':''}">
+              <input class="prov-input" type="number" value="${p.dias_1}" min="1" max="365"
+                ${p.condicion==='contado'?'disabled':''}
+                onchange="actualizarProveedor('${p.rut_emisor}','dias_1',parseInt(this.value))"> días ·
+              <input class="prov-input prov-input-sm" type="number" value="${p.pct_1}" min="1" max="100"
+                ${p.condicion==='contado'?'disabled':''}
+                onchange="actualizarProveedor('${p.rut_emisor}','pct_1',parseInt(this.value))">%
+            </td>
+            <td class="${p.condicion==='contado'?'prov-disabled':''}">
+              <input class="prov-input" type="number" value="${p.dias_2}" min="1" max="365"
+                ${p.condicion==='contado'?'disabled':''}
+                onchange="actualizarProveedor('${p.rut_emisor}','dias_2',parseInt(this.value))"> días ·
+              <input class="prov-input prov-input-sm" type="number" value="${p.pct_2}" min="1" max="100"
+                ${p.condicion==='contado'?'disabled':''}
+                onchange="actualizarProveedor('${p.rut_emisor}','pct_2',parseInt(this.value))">%
+            </td>
+            <td>
+              <input type="checkbox" ${p.en_agenda?'checked':''}
+                onchange="actualizarProveedor('${p.rut_emisor}','en_agenda',this.checked)">
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+async function actualizarProveedor(rut, campo, valor) {
+  await fetch(`/api/proveedores/${encodeURIComponent(rut)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ [campo]: valor }),
+  });
+  await cargarProveedores();
 }
 
 // ─── Modal ────────────────────────────────────────────────────────────────────
@@ -174,37 +266,44 @@ function initModal() {
 function abrirModal(f) {
   if (!f) return;
   facturaActiva = f;
+  const prov = proveedores.find(p => p.rut_emisor === f.rut_emisor);
 
-  document.getElementById('modal-titulo').textContent       = `Factura ${f.folio ? '#' + f.folio : ''}`;
-  document.getElementById('modal-emisor').textContent       = f.razon_social || '—';
-  document.getElementById('modal-rut').textContent          = f.rut_emisor || '—';
-  document.getElementById('modal-folio').textContent        = f.folio || '—';
-  document.getElementById('modal-fecha-emision').textContent= formatFecha(f.fecha_emision);
-  document.getElementById('modal-estado-sii').textContent   = f.estado_sii || '—';
-  document.getElementById('modal-monto').textContent        = '$' + formatMonto(f.monto_total);
-  document.getElementById('pago-rut-copy').textContent      = f.rut_emisor || '—';
-  document.getElementById('pago-monto-copy').textContent    = f.monto_total || '—';
+  document.getElementById('modal-titulo').textContent        = `Factura ${f.folio?'#'+f.folio:''}`;
+  document.getElementById('modal-emisor').textContent        = f.razon_social||'—';
+  document.getElementById('modal-rut').textContent           = f.rut_emisor||'—';
+  document.getElementById('modal-folio').textContent         = f.folio||'—';
+  document.getElementById('modal-fecha-emision').textContent = formatFecha(f.fecha_emision);
+  document.getElementById('modal-estado-sii').textContent    = f.estado_sii||'—';
+  document.getElementById('modal-monto').textContent         = '$'+formatMonto(f.monto_total);
+  document.getElementById('pago-rut-copy').textContent       = f.rut_emisor||'—';
+  document.getElementById('pago-monto-copy').textContent     = f.monto_total||'—';
 
-  // Cuota 1
-  const c1Pagada = !!f.pagado_1;
+  // Labels dinámicos según condición del proveedor
+  const esContado = !prov || prov.condicion === 'contado';
+  document.getElementById('modal-label-1').textContent = esContado ? 'contado' : `día ${prov?.dias_1??30}`;
+  document.getElementById('modal-label-2').textContent = esContado ? 'contado' : `día ${prov?.dias_2??40}`;
+
   document.getElementById('modal-vcto-1').textContent  = formatFecha(f.vcto_1);
-  document.getElementById('modal-monto-1').textContent = '$' + formatMonto(f.monto_1);
-  const btn1 = document.getElementById('btn-pagar-1');
-  btn1.textContent   = c1Pagada ? '✓ Pagada' : 'Pagar 50%';
-  btn1.disabled      = c1Pagada;
-  btn1.className     = `btn btn-sm ${c1Pagada ? 'btn-success' : 'btn-pay'}`;
-  btn1.onclick       = () => marcarCuota(1);
-
-  // Cuota 2
-  const c2Pagada = !!f.pagado_2;
+  document.getElementById('modal-monto-1').textContent = '$'+formatMonto(f.monto_1);
   document.getElementById('modal-vcto-2').textContent  = formatFecha(f.vcto_2);
-  document.getElementById('modal-monto-2').textContent = '$' + formatMonto(f.monto_2);
-  const btn2 = document.getElementById('btn-pagar-2');
-  btn2.textContent   = c2Pagada ? '✓ Pagada' : 'Pagar 50%';
-  btn2.disabled      = c2Pagada;
-  btn2.className     = `btn btn-sm ${c2Pagada ? 'btn-success' : 'btn-pay'}`;
-  btn2.onclick       = () => marcarCuota(2);
+  document.getElementById('modal-monto-2').textContent = '$'+formatMonto(f.monto_2);
 
+  const btn1 = document.getElementById('btn-pagar-1');
+  btn1.textContent = f.pagado_1 ? '✓ Cuota 1 pagada' : 'Pagar cuota 1';
+  btn1.disabled    = !!f.pagado_1;
+  btn1.className   = `btn btn-sm ${f.pagado_1?'btn-secondary':'btn-pay'}`;
+  btn1.onclick     = () => marcarCuota(1);
+
+  const btn2 = document.getElementById('btn-pagar-2');
+  btn2.textContent = f.pagado_2 ? '✓ Cuota 2 pagada' : 'Pagar cuota 2';
+  btn2.disabled    = !!f.pagado_2;
+  btn2.className   = `btn btn-sm ${f.pagado_2?'btn-secondary':'btn-pay'}`;
+  btn2.onclick     = () => marcarCuota(2);
+
+  // Ocultar cuotas si es contado (ya está pagado)
+  document.querySelectorAll('.cuota-row').forEach(r => {
+    r.style.display = esContado ? 'none' : '';
+  });
   document.getElementById('modal').style.display = 'flex';
 }
 
@@ -218,43 +317,39 @@ async function marcarCuota(cuota) {
   try {
     const res = await fetch(`/api/facturas/${facturaActiva.id}/pagar/${cuota}`, { method: 'PUT' });
     if (!res.ok) throw new Error('Error al marcar cuota');
-    mostrarToast(`Cuota ${cuota} marcada como pagada`, 'success');
+    mostrarToast(`Cuota ${cuota} pagada`, 'success');
     cerrarModal();
     await cargarFacturas();
-  } catch (err) {
-    mostrarToast(err.message, 'error');
-  }
+  } catch (err) { mostrarToast(err.message, 'error'); }
 }
 
-// ─── Sincronizar ──────────────────────────────────────────────────────────────
+// ─── Sync ─────────────────────────────────────────────────────────────────────
 
 async function syncAuto() {
   try {
     const res  = await fetch('/api/sync/auto', { method: 'POST' });
     const data = await res.json();
     if (data.meses?.length) {
-      const total = data.meses.reduce((s, m) => s + m.insertadas, 0);
+      const total = data.meses.reduce((s,m) => s+m.insertadas, 0);
       if (total > 0) {
         mostrarToast(`Auto-sync: ${total} facturas nuevas`, 'success');
-        await cargarFacturas();
+        await cargarTodo();
       }
     }
-  } catch (_) { /* silencioso */ }
+  } catch (_) {}
 }
 
 async function sincronizarHistorico() {
   const btn = document.getElementById('btn-sync');
-  btn.disabled = true;
-  btn.textContent = '↻ Sincronizando...';
+  btn.disabled = true; btn.textContent = '↻ Sincronizando...';
   try {
     const res  = await fetch('/api/sync/historico', { method: 'POST' });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Error sincronizando');
-    mostrarToast(data.mensaje ?? 'Sincronización histórica iniciada', 'success');
-    setTimeout(cargarFacturas, 5000);
-  } catch (err) {
-    mostrarToast('Error: ' + err.message, 'error');
-  } finally {
+    if (!res.ok) throw new Error(data.error || 'Error');
+    mostrarToast(data.mensaje ?? 'Sincronización iniciada', 'success');
+    setTimeout(cargarTodo, 5000);
+  } catch (err) { mostrarToast('Error: '+err.message, 'error'); }
+  finally {
     btn.disabled = false;
     btn.innerHTML = '<span class="sync-icon">↻</span> Sincronizar SII';
   }
@@ -262,15 +357,12 @@ async function sincronizarHistorico() {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function formatMonto(monto) {
-  return Number(monto || 0).toLocaleString('es-CL');
-}
+function formatMonto(v) { return Number(v||0).toLocaleString('es-CL'); }
 
 function formatFecha(fecha) {
   if (!fecha) return '—';
   try {
-    const solo = fecha.split('T')[0]; // "2026-04-01T00:00:00Z" → "2026-04-01"
-    return new Date(solo + 'T12:00:00').toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    return new Date(fecha.split('T')[0]+'T12:00:00').toLocaleDateString('es-CL', { day:'2-digit', month:'2-digit', year:'numeric' });
   } catch { return fecha; }
 }
 
@@ -278,9 +370,14 @@ function esc(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-function mostrarToast(msg, tipo = 'info') {
-  const toast = document.getElementById('toast');
-  toast.textContent = msg;
-  toast.className = `toast toast-${tipo} show`;
-  setTimeout(() => { toast.className = 'toast'; }, 3500);
+function copiarTexto(id) {
+  navigator.clipboard.writeText(document.getElementById(id)?.textContent||'')
+    .then(() => mostrarToast('Copiado','success'));
+}
+
+function mostrarToast(msg, tipo='info') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `toast toast-${tipo} show`;
+  setTimeout(() => { t.className = 'toast'; }, 3500);
 }

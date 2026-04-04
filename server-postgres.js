@@ -21,6 +21,19 @@ const pool = new Pool({
 
 async function setupDb() {
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS proveedores (
+      rut_emisor   VARCHAR(20) PRIMARY KEY,
+      razon_social VARCHAR(255),
+      condicion    VARCHAR(10) DEFAULT 'contado',  -- 'contado' | 'credito'
+      dias_1       INTEGER DEFAULT 30,
+      pct_1        INTEGER DEFAULT 50,
+      dias_2       INTEGER DEFAULT 40,
+      pct_2        INTEGER DEFAULT 50,
+      en_agenda    BOOLEAN DEFAULT FALSE,
+      updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS facturas_recibidas (
       id            SERIAL PRIMARY KEY,
       codigo        VARCHAR(50) UNIQUE,
@@ -45,20 +58,18 @@ async function setupDb() {
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS meses_sincronizados (
-      mes        VARCHAR(6) PRIMARY KEY,
-      total      INTEGER,
-      synced_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      mes       VARCHAR(6) PRIMARY KEY,
+      total     INTEGER,
+      synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
-  // Migración columnas faltantes
+  // Migraciones
   for (const [col, type] of [
     ['monto_neto','BIGINT'],['monto_total','BIGINT'],['estado_sii','VARCHAR(50)'],
     ['vcto_1','DATE'],['monto_1','BIGINT'],['pagado_1','BOOLEAN DEFAULT FALSE'],['pagado_1_at','TIMESTAMP'],
     ['vcto_2','DATE'],['monto_2','BIGINT'],['pagado_2','BOOLEAN DEFAULT FALSE'],['pagado_2_at','TIMESTAMP'],
   ]) {
-    await pool.query(
-      `ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ${col} ${type}`
-    ).catch(() => {});
+    await pool.query(`ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
   }
   console.log('[DB] Tablas listas');
 }
@@ -71,7 +82,6 @@ function parseDate(str) {
   return `${y}-${m}-${d}`;
 }
 
-// Genera lista de meses YYYYMM entre desde y hasta (inclusive)
 function rangoDeMeses(desde, hasta) {
   const meses = [];
   let [y, m] = [parseInt(desde.slice(0, 4)), parseInt(desde.slice(4))];
@@ -88,17 +98,38 @@ function mesActual() {
   return `${n.getFullYear()}${String(n.getMonth() + 1).padStart(2, '0')}`;
 }
 
+// Obtiene o crea proveedor. Si es nuevo, lo registra como 'contado'.
+async function getProveedor(rut, razonSocial) {
+  const { rows } = await pool.query('SELECT * FROM proveedores WHERE rut_emisor=$1', [rut]);
+  if (rows.length) return rows[0];
+  await pool.query(
+    `INSERT INTO proveedores (rut_emisor, razon_social, condicion)
+     VALUES ($1, $2, 'contado') ON CONFLICT DO NOTHING`,
+    [rut, razonSocial]
+  );
+  return { rut_emisor: rut, razon_social: razonSocial, condicion: 'contado',
+           dias_1: 30, pct_1: 50, dias_2: 40, pct_2: 50 };
+}
+
 async function upsertFacturas(docs) {
   let insertadas = 0, actualizadas = 0;
   for (const d of docs) {
+    const rut = `${d.detRutDoc}-${d.detDvDoc}`;
+    const prov = await getProveedor(rut, d.detRznSoc);
     const montoTotal = Math.round(d.detMntNeto * 1.19);
-    const mitad      = Math.round(montoTotal / 2);
+    const monto1 = Math.round(montoTotal * prov.pct_1 / 100);
+    const monto2 = montoTotal - monto1;
+    const esContado = prov.condicion === 'contado';
+
     const r = await pool.query(
       `INSERT INTO facturas_recibidas
          (codigo, rut_emisor, razon_social, folio, fecha_emision,
           monto_neto, monto_total, estado_sii,
-          vcto_1, monto_1, vcto_2, monto_2)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, $5::date+30,$9, $5::date+40,$10)
+          vcto_1, monto_1, pagado_1, pagado_1_at,
+          vcto_2, monto_2, pagado_2, pagado_2_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
+          $5::date+$9, $10, $11, $12,
+          $5::date+$13, $14, $11, $12)
        ON CONFLICT (codigo) DO UPDATE SET
          razon_social = EXCLUDED.razon_social,
          monto_neto   = EXCLUDED.monto_neto,
@@ -107,9 +138,12 @@ async function upsertFacturas(docs) {
          updated_at   = NOW()
        RETURNING (xmax = 0) AS inserted`,
       [
-        String(d.detCodigo), `${d.detRutDoc}-${d.detDvDoc}`, d.detRznSoc, d.detNroDoc,
+        String(d.detCodigo), rut, d.detRznSoc, d.detNroDoc,
         parseDate(d.detFchDoc), d.detMntNeto, montoTotal,
-        d.dcvEstadoContab ?? 'REGISTRO', mitad, montoTotal - mitad,
+        d.dcvEstadoContab ?? 'REGISTRO',
+        prov.dias_1, monto1,
+        esContado, esContado ? new Date() : null,
+        prov.dias_2, monto2,
       ]
     );
     r.rows[0].inserted ? insertadas++ : actualizadas++;
@@ -117,7 +151,7 @@ async function upsertFacturas(docs) {
   return { insertadas, actualizadas };
 }
 
-// ─── SII — sesión reutilizable ────────────────────────────────────────────────
+// ─── SII ──────────────────────────────────────────────────────────────────────
 
 async function ngSelect(page, selector, value) {
   await page.evaluate(({ sel, val }) => {
@@ -165,7 +199,6 @@ async function abrirSesionSII() {
   }
 
   if (!conversationId) throw new Error('No se pudo obtener conversationId de SII');
-
   return { browser, context, conversationId };
 }
 
@@ -193,46 +226,84 @@ async function getFacturasMes(context, conversationId, ptributario) {
   return Array.isArray(json?.data) ? json.data : [];
 }
 
-// ─── API ──────────────────────────────────────────────────────────────────────
+// ─── API — Proveedores ────────────────────────────────────────────────────────
+
+app.get('/api/proveedores', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM proveedores ORDER BY razon_social');
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/proveedores/:rut', async (req, res) => {
+  const { condicion, dias_1, pct_1, dias_2, pct_2, en_agenda } = req.body;
+  try {
+    await pool.query(
+      `UPDATE proveedores SET
+         condicion  = COALESCE($2, condicion),
+         dias_1     = COALESCE($3, dias_1),
+         pct_1      = COALESCE($4, pct_1),
+         dias_2     = COALESCE($5, dias_2),
+         pct_2      = COALESCE($6, pct_2),
+         en_agenda  = COALESCE($7, en_agenda),
+         updated_at = NOW()
+       WHERE rut_emisor = $1`,
+      [req.params.rut, condicion??null, dias_1??null, pct_1??null, dias_2??null, pct_2??null, en_agenda??null]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── API — Facturas ───────────────────────────────────────────────────────────
 
 app.get('/api/facturas', async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM facturas_recibidas ORDER BY fecha_emision DESC'
-    );
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    const { rows } = await pool.query('SELECT * FROM facturas_recibidas ORDER BY fecha_emision DESC');
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/sync/auto — sincroniza meses recientes que no estén en DB
-// Abre sesión una sola vez. Siempre re-sincroniza el mes actual.
+app.put('/api/facturas/:id/vencimientos', async (req, res) => {
+  const { vcto_1, monto_1, vcto_2, monto_2 } = req.body;
+  try {
+    await pool.query(
+      `UPDATE facturas_recibidas SET
+         vcto_1=COALESCE($2,vcto_1), monto_1=COALESCE($3,monto_1),
+         vcto_2=COALESCE($4,vcto_2), monto_2=COALESCE($5,monto_2), updated_at=NOW()
+       WHERE id=$1`,
+      [req.params.id, vcto_1??null, monto_1??null, vcto_2??null, monto_2??null]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/facturas/:id/pagar/:cuota', async (req, res) => {
+  const { cuota } = req.params;
+  if (!['1','2'].includes(cuota)) return res.status(400).json({ error: 'cuota debe ser 1 o 2' });
+  try {
+    await pool.query(
+      `UPDATE facturas_recibidas SET pagado_${cuota}=TRUE, pagado_${cuota}_at=NOW(), updated_at=NOW() WHERE id=$1`,
+      [req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── API — Sync ───────────────────────────────────────────────────────────────
+
 app.post('/api/sync/auto', async (req, res) => {
   const actual = mesActual();
-
-  // Meses ya sincronizados
   const { rows } = await pool.query('SELECT mes FROM meses_sincronizados');
   const sincronizados = new Set(rows.map(r => r.mes));
 
-  // Últimos 3 meses + siempre el actual
-  const ultimos3 = rangoDeMeses(
-    (() => { const d = new Date(); d.setMonth(d.getMonth() - 2); return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}`; })(),
-    actual
-  );
-  const pendientes = ultimos3.filter(m => m === actual || !sincronizados.has(m));
+  const desde3 = (() => { const d = new Date(); d.setMonth(d.getMonth()-2); return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}`; })();
+  const pendientes = rangoDeMeses(desde3, actual).filter(m => m === actual || !sincronizados.has(m));
 
-  if (!pendientes.length) {
-    return res.json({ ok: true, mensaje: 'Todo al día', meses: [] });
-  }
+  if (!pendientes.length) return res.json({ ok: true, mensaje: 'Todo al día', meses: [] });
 
-  console.log(`[auto] Meses pendientes: ${pendientes.join(', ')}`);
   let sesion;
-  try {
-    sesion = await abrirSesionSII();
-  } catch (err) {
-    return res.status(502).json({ error: err.message });
-  }
+  try { sesion = await abrirSesionSII(); }
+  catch (err) { return res.status(502).json({ error: err.message }); }
 
   const resultado = [];
   try {
@@ -240,39 +311,29 @@ app.post('/api/sync/auto', async (req, res) => {
       const docs = await getFacturasMes(sesion.context, sesion.conversationId, mes);
       const { insertadas, actualizadas } = await upsertFacturas(docs);
       await pool.query(
-        `INSERT INTO meses_sincronizados (mes, total) VALUES ($1,$2)
-         ON CONFLICT (mes) DO UPDATE SET total=$2, synced_at=NOW()`,
+        `INSERT INTO meses_sincronizados (mes,total) VALUES ($1,$2) ON CONFLICT (mes) DO UPDATE SET total=$2, synced_at=NOW()`,
         [mes, docs.length]
       );
       resultado.push({ mes, total: docs.length, insertadas, actualizadas });
-      console.log(`[auto] ${mes}: ${docs.length} facturas`);
     }
-  } finally {
-    await sesion.browser.close();
-  }
+  } finally { await sesion.browser.close(); }
 
   res.json({ ok: true, meses: resultado });
 });
 
-// POST /api/sync/historico?desde=202401 — trae todo desde una fecha
-// Omite meses ya sincronizados (excepto el actual)
 app.post('/api/sync/historico', async (req, res) => {
   const actual = mesActual();
   const desde  = req.query.desde ?? req.body?.desde ?? (() => {
-    const d = new Date(); d.setFullYear(d.getFullYear() - 2);
+    const d = new Date(); d.setFullYear(d.getFullYear()-2);
     return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}`;
   })();
 
   const { rows } = await pool.query('SELECT mes FROM meses_sincronizados');
   const sincronizados = new Set(rows.map(r => r.mes));
+  const pendientes = rangoDeMeses(desde, actual).filter(m => m === actual || !sincronizados.has(m));
 
-  const todos      = rangoDeMeses(desde, actual);
-  const pendientes = todos.filter(m => m === actual || !sincronizados.has(m));
-
-  console.log(`[historico] ${pendientes.length} meses por sincronizar (desde ${desde})`);
   if (!pendientes.length) return res.json({ ok: true, mensaje: 'Todo ya sincronizado' });
 
-  // Responde de inmediato y procesa en background
   res.json({ ok: true, mensaje: `Sincronizando ${pendientes.length} meses en background...`, meses: pendientes });
 
   let sesion;
@@ -282,53 +343,14 @@ app.post('/api/sync/historico', async (req, res) => {
       const docs = await getFacturasMes(sesion.context, sesion.conversationId, mes);
       await upsertFacturas(docs);
       await pool.query(
-        `INSERT INTO meses_sincronizados (mes, total) VALUES ($1,$2)
-         ON CONFLICT (mes) DO UPDATE SET total=$2, synced_at=NOW()`,
+        `INSERT INTO meses_sincronizados (mes,total) VALUES ($1,$2) ON CONFLICT (mes) DO UPDATE SET total=$2, synced_at=NOW()`,
         [mes, docs.length]
       );
       console.log(`[historico] ${mes}: ${docs.length} facturas`);
     }
     console.log('[historico] Completado');
-  } catch (err) {
-    console.error('[historico] Error:', err.message);
-  } finally {
-    sesion?.browser.close();
-  }
-});
-
-// PUT /api/facturas/:id/vencimientos
-app.put('/api/facturas/:id/vencimientos', async (req, res) => {
-  const { vcto_1, monto_1, vcto_2, monto_2 } = req.body;
-  try {
-    await pool.query(
-      `UPDATE facturas_recibidas SET
-         vcto_1=COALESCE($2,vcto_1), monto_1=COALESCE($3,monto_1),
-         vcto_2=COALESCE($4,vcto_2), monto_2=COALESCE($5,monto_2),
-         updated_at=NOW()
-       WHERE id=$1`,
-      [req.params.id, vcto_1??null, monto_1??null, vcto_2??null, monto_2??null]
-    );
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// PUT /api/facturas/:id/pagar/:cuota
-app.put('/api/facturas/:id/pagar/:cuota', async (req, res) => {
-  const { cuota } = req.params;
-  if (!['1','2'].includes(cuota)) return res.status(400).json({ error: 'cuota debe ser 1 o 2' });
-  try {
-    await pool.query(
-      `UPDATE facturas_recibidas SET
-         pagado_${cuota}=TRUE, pagado_${cuota}_at=NOW(), updated_at=NOW()
-       WHERE id=$1`,
-      [req.params.id]
-    );
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { console.error('[historico] Error:', err.message); }
+  finally { sesion?.browser.close(); }
 });
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
