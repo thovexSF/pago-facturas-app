@@ -259,16 +259,20 @@ async function loginSII(page) {
       console.log(`[SII login] campos encontrados: rut="${rutSel}" clave="${claveSel}"`);
       await page.fill(rutSel,   SII_RUT);
       await page.fill(claveSel, SII_PASSWORD);
-      // networkidle igual que abrirSesionSII (espera toda la cadena de redirects)
       await Promise.all([
         page.waitForLoadState('networkidle').catch(() => {}),
         page.keyboard.press('Enter'),
       ]);
-      // Esperar a salir de zeusr.sii.cl antes de continuar
-      await page.waitForURL(u => !u.includes('zeusr.sii.cl'), { timeout: 15000 }).catch(() => {});
-      await page.waitForTimeout(1000);
-      const afterUrl = page.url();
-      console.log(`[SII login] post-login URL: ${afterUrl}`);
+      await page.waitForTimeout(2000);
+      console.log(`[SII login] post-Enter URL: ${page.url()}`);
+
+      // Navegar a misiir.sii.cl explícitamente para inicializar sesión en www1
+      // (el sync también pasa por aquí; sin esto mipeGesDocRcp retorna 501)
+      await page.goto('https://misiir.sii.cl/cgi_misii/siihome.cgi',
+        { waitUntil: 'load', timeout: 30000 }
+      ).catch(e => console.warn('[SII login] misiir error:', e.message));
+      await page.waitForTimeout(1500);
+      console.log(`[SII login] post-misiir URL: ${page.url()}`);
       return; // éxito
     }
 
