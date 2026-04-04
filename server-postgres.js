@@ -441,9 +441,10 @@ async function descargarPdfSII(folio, rutEmisor) {
   pdfEnCurso = true;
   let sesion;
   try {
-    // abrirSesionSII ya hace login + empresa en www1 → sesión establecida
     sesion = await abrirSesionSII();
     const page = await sesion.context.newPage();
+    // La nueva página no hereda el estado de Portal001 → reseleccionar empresa
+    await seleccionarEmpresa(page);
 
     const encontrado = await navegarADetalleDte(page, folio, rutEmisor);
     if (!encontrado) throw new Error(`Folio ${folio} no encontrado en SII`);
@@ -474,9 +475,10 @@ async function descargarPdfsBulkSII() {
   let descargadas = 0, errores = 0;
 
   try {
-    // abrirSesionSII hace login + selección de empresa en www1 → sesión lista
     sesion = await abrirSesionSII();
     const page = await sesion.context.newPage();
+    // La nueva página no hereda el estado de Portal001 → reseleccionar empresa
+    await seleccionarEmpresa(page);
     console.log(`[PDF bulk] Sesión lista. Descargando ${sinPdf.length} PDFs...`);
 
     for (const f of sinPdf) {
