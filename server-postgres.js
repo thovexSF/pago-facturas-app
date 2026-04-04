@@ -272,12 +272,19 @@ async function loginSII(page) {
       const postUrl = page.url();
       console.log(`[SII login] post-login URL: ${postUrl}`);
 
-      // Log del HTML si quedamos en CAutInicio (entender qué bloquea el redirect)
+      // Log del HTML y links si quedamos en CAutInicio (entender qué bloquea el redirect)
       if (postUrl.includes('CAutInicio') || (postUrl.includes('zeusr') && !postUrl.includes('IngresoRutClave'))) {
         const htmlSnip = await page.evaluate(() =>
-          (document.body?.innerHTML ?? '').replace(/\s+/g,' ').trim().slice(0, 600)
+          (document.body?.innerHTML ?? '').replace(/\s+/g,' ').trim().slice(0, 1200)
         ).catch(() => '');
         console.log(`[SII login] CAutInicio HTML: ${htmlSnip}`);
+        // Log todos los links a dominios SII (útil para ver qué paths tienen tokens)
+        const links = await page.evaluate(() =>
+          Array.from(document.querySelectorAll('a[href*="sii.cl"]'))
+            .map(a => `"${a.textContent.trim().slice(0,30)}" → ${a.href.slice(0,120)}`)
+            .slice(0, 15)
+        ).catch(() => []);
+        if (links.length) console.log(`[SII login] Links SII en CAutInicio:\n  ${links.join('\n  ')}`);
       }
 
       // Rechazo: volvió al formulario de login
@@ -324,13 +331,59 @@ async function seleccionarEmpresa(page) {
       await page.fill(rutSel,   SII_RUT);
       await page.fill(claveSel, SII_PASSWORD);
       await page.keyboard.press('Enter');
-      // Esperar redirect a www1 (return URL era www1)
+      // Login puede ir primero a CAutInicio antes de llegar a www1
       try {
-        await page.waitForURL(u => u.includes('www1.sii.cl'), { timeout: 30000 });
+        await page.waitForURL(u => u.includes('www1.sii.cl') || u.includes('CAutInicio'), { timeout: 30000 });
       } catch { /* timeout */ }
       await page.waitForTimeout(2000);
       url = page.url();
       console.log(`[SII empresa] Post-auth URL: ${url}`);
+
+      // Si aterrizamos en CAutInicio (no en www1), buscar un link a Portal001 desde ahí
+      if (!url.includes('www1.sii.cl')) {
+        console.log('[SII empresa] CAutInicio — buscando links Portal001...');
+        const linksWww1 = await page.locator('a[href*="www1.sii.cl"]').all();
+        console.log(`[SII empresa] Links www1 en CAutInicio: ${linksWww1.length}`);
+        for (let i = 0; i < Math.min(linksWww1.length, 8); i++) {
+          const h = await linksWww1[i].getAttribute('href').catch(() => '');
+          const t = (await linksWww1[i].textContent().catch(() => '')).trim().slice(0, 40);
+          console.log(`[SII empresa]   [${i}] "${t}" → ${(h ?? '').slice(0, 120)}`);
+        }
+
+        const linkPortal = page.locator('a[href*="www1.sii.cl/cgi-bin/Portal001"]').first();
+        if (await linkPortal.count()) {
+          const href = await linkPortal.getAttribute('href');
+          console.log(`[SII empresa] Navegando Portal001 desde CAutInicio: ${href?.slice(0, 80)}`);
+          await page.goto(href, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+          await page.waitForTimeout(2000);
+          url = page.url();
+          console.log(`[SII empresa] Post-Portal001 URL: ${url}`);
+        } else {
+          // Fallback: ir a homer.sii.cl (enlace "Inicio" en CAutInicio) y buscar Portal001 ahí
+          console.log('[SII empresa] Sin links Portal001 en CAutInicio, probando homer.sii.cl...');
+          await page.goto('http://homer.sii.cl/', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+          await page.waitForTimeout(2000);
+          url = page.url();
+          console.log(`[SII empresa] Post-homer URL: ${url}`);
+
+          const linkHomer = page.locator('a[href*="www1.sii.cl/cgi-bin/Portal001"]').first();
+          if (await linkHomer.count()) {
+            const href = await linkHomer.getAttribute('href');
+            console.log(`[SII empresa] Navegando Portal001 desde homer: ${href?.slice(0, 80)}`);
+            await page.goto(href, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+            await page.waitForTimeout(2000);
+            url = page.url();
+            console.log(`[SII empresa] Post-Portal001-homer URL: ${url}`);
+          } else {
+            // Último recurso: TARGET directo con la sesión recién renovada
+            console.log('[SII empresa] Sin links Portal001 en homer, reintentando TARGET directo...');
+            await page.goto(TARGET, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+            await page.waitForTimeout(2000);
+            url = page.url();
+            console.log(`[SII empresa] Post-TARGET-retry URL: ${url}`);
+          }
+        }
+      }
     } else {
       console.warn('[SII empresa] Sin campos de login en zeusr');
     }
@@ -405,8 +458,10 @@ async function abrirSesionPDF() {
     await loginSII(page);
     await seleccionarEmpresa(page);
     // page está ahora en www1.sii.cl/Portal001 con la empresa seleccionada
-    console.log(`[PDF] Sesión www1 lista | URL: ${page.url()}`);
-    return { browser, page };
+    // Capturar csrt: Portal001 lo exige en cada URL CGI posterior
+    const csrt = new URL(page.url()).searchParams.get('csrt') ?? '';
+    console.log(`[PDF] Sesión www1 lista | URL: ${page.url()} | csrt: ${csrt ? csrt.slice(0,8)+'…' : 'ninguno'}`);
+    return { browser, page, csrt };
   } catch (err) {
     siiEnCurso = false;
     await browser.close().catch(() => {});
@@ -432,12 +487,14 @@ async function clickYDescargarPdf(page) {
 // El detalle está en mipeGesDocRcp.cgi?CODIGO=X&csrt=Y — solo accesible
 // clicando el ícono desde la lista (CODIGO y csrt no son predecibles).
 // Devuelve true si llegamos a la página con botón "VISUALIZACIÓN DOCUMENTO".
-async function navegarADetalleDte(page, folio, rutEmisor) {
+async function navegarADetalleDte(page, folio, rutEmisor, csrt = '') {
   const [rutNum] = rutEmisor.split('-');
   const folioStr = String(folio);
 
+  // csrt: token CSRF que Portal001 requiere en cada URL CGI
+  const csrtParam = csrt ? `&csrt=${csrt}` : '';
   // Navegar a la lista filtrada por folio y emisor
-  const listUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeAdminDocsRcp.cgi?RUT_EMI=${rutNum}&FOLIO=${folioStr}&RZN_SOC=&FEC_DESDE=&FEC_HASTA=&TPO_DOC=33&ESTADO=&ORDEN=`;
+  const listUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeAdminDocsRcp.cgi?RUT_EMI=${rutNum}&FOLIO=${folioStr}&RZN_SOC=&FEC_DESDE=&FEC_HASTA=&TPO_DOC=33&ESTADO=&ORDEN=${csrtParam}`;
   await page.goto(listUrl, { waitUntil: 'load', timeout: 30000 })
     .catch(e => console.warn('[PDF] goto lista error:', e.message));
   await page.waitForTimeout(2000);
@@ -500,7 +557,7 @@ async function descargarPdfSII(folio, rutEmisor) {
   try {
     // abrirSesionPDF: login + empresa → devuelve la página original (con sesión www1)
     sesion = await abrirSesionPDF();
-    const encontrado = await navegarADetalleDte(sesion.page, folio, rutEmisor);
+    const encontrado = await navegarADetalleDte(sesion.page, folio, rutEmisor, sesion.csrt);
     if (!encontrado) throw new Error(`Folio ${folio} no encontrado en SII`);
     return await clickYDescargarPdf(sesion.page);
   } finally {
@@ -534,7 +591,7 @@ async function descargarPdfsBulkSII() {
 
     for (const f of sinPdf) {
       try {
-        const encontrado = await navegarADetalleDte(sesion.page, f.folio, f.rut_emisor);
+        const encontrado = await navegarADetalleDte(sesion.page, f.folio, f.rut_emisor, sesion.csrt);
         if (!encontrado) throw new Error('no encontrado en SII');
 
         const buf    = await clickYDescargarPdf(sesion.page);
