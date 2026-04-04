@@ -92,13 +92,29 @@ body {
 .fc-event { font-size: 11px !important; cursor: pointer; }
 
 /* ── Filter bar ── */
-.filter-bar { margin-bottom: 12px; }
-.filter-bar select {
+.filter-bar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.filter-bar select,
+.filter-bar input {
   padding: 6px 10px;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   font-size: 13px;
   color: #4a5568;
+  background: #fff;
+}
+.filter-bar input { min-width: 200px; }
+
+/* ── Table wrapper con scroll ── */
+.table-wrapper {
+  max-height: calc(100vh - 320px);
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
 }
 
 /* ── Table ── */
@@ -106,11 +122,11 @@ body {
   width: 100%;
   border-collapse: collapse;
   background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  overflow: hidden;
 }
 .facturas-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   background: #f7fafc;
   padding: 10px 14px;
   text-align: left;

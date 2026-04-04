@@ -157,10 +157,15 @@ function renderStats() {
 // ─── Tabla ────────────────────────────────────────────────────────────────────
 
 function renderTabla() {
-  const filtro = document.getElementById('filter-estado').value;
+  const filtro  = document.getElementById('filter-estado').value;
+  const busqueda = (document.getElementById('filter-emisor')?.value ?? '').toLowerCase().trim();
   let lista = facturas;
-  if (filtro === 'pendiente') lista = facturas.filter(f => !f.pagado_1 || !f.pagado_2);
-  if (filtro === 'pagada')    lista = facturas.filter(f => f.pagado_1 && f.pagado_2);
+  if (filtro === 'pendiente') lista = lista.filter(f => !f.pagado_1 || !f.pagado_2);
+  if (filtro === 'pagada')    lista = lista.filter(f => f.pagado_1 && f.pagado_2);
+  if (busqueda) lista = lista.filter(f =>
+    (f.razon_social ?? '').toLowerCase().includes(busqueda) ||
+    (f.rut_emisor   ?? '').toLowerCase().includes(busqueda)
+  );
 
   const tbody = document.getElementById('facturas-tbody');
   const empty = document.getElementById('empty-state');

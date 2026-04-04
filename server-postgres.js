@@ -79,11 +79,17 @@ async function setupDb() {
     FROM facturas_recibidas
     ON CONFLICT (rut_emisor) DO NOTHING
   `);
+  // Rellenar monto_total si es NULL (registros viejos sin IVA calculado)
+  await pool.query(`
+    UPDATE facturas_recibidas SET
+      monto_total = ROUND(monto_neto * 1.19)
+    WHERE monto_total IS NULL AND monto_neto IS NOT NULL
+  `);
   // Corregir facturas contado: una sola cuota por el total, vcto = fecha emisión
   await pool.query(`
     UPDATE facturas_recibidas f SET
       vcto_1      = f.fecha_emision,
-      monto_1     = f.monto_total,
+      monto_1     = COALESCE(f.monto_total, ROUND(f.monto_neto * 1.19)),
       pagado_1    = TRUE,
       pagado_1_at = COALESCE(f.pagado_1_at, f.created_at),
       vcto_2      = NULL,

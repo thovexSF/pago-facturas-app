@@ -60,11 +60,13 @@
     <div class="tab-content" id="tab-lista">
       <div class="filter-bar">
         <select id="filter-estado">
-          <option value="">Todos</option>
+          <option value="">Todos los estados</option>
           <option value="pendiente">Pendientes</option>
           <option value="pagada">Pagadas</option>
         </select>
+        <input id="filter-emisor" type="text" placeholder="Buscar emisor..." oninput="renderTabla()">
       </div>
+      <div class="table-wrapper">
       <table class="facturas-table">
         <thead>
           <tr>
@@ -80,6 +82,7 @@
         </thead>
         <tbody id="facturas-tbody"></tbody>
       </table>
+      </div><!-- /table-wrapper -->
       <div id="empty-state" class="empty-state" style="display:none">
         <p>No hay facturas. Haz clic en <strong>Sincronizar SII</strong> para cargar.</p>
       </div>
