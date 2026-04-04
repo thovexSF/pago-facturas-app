@@ -151,14 +151,11 @@ async function upsertFacturas(docs) {
   for (const d of docs) {
     const rut = `${d.detRutDoc}-${d.detDvDoc}`;
     const prov = await getProveedor(rut, d.detRznSoc);
-    const montoTotal = Math.round(d.detMntNeto * 1.19);
-    const monto1 = Math.round(montoTotal * prov.pct_1 / 100);
-    const monto2 = montoTotal - monto1;
-    const esContado  = prov.condicion === 'contado';
+    const montoTotal   = Math.round(d.detMntNeto * 1.19);
+    const esContado    = prov.condicion === 'contado';
     const fechaEmision = parseDate(d.detFchDoc);
     const monto1 = esContado ? montoTotal : Math.round(montoTotal * prov.pct_1 / 100);
     const monto2 = esContado ? null       : montoTotal - monto1;
-    const vcto2  = esContado ? null       : fechaEmision; // se calcula en SQL con +dias_2
 
     const r = await pool.query(
       `INSERT INTO facturas_recibidas
@@ -408,10 +405,14 @@ app.get('/health', (req, res) => res.json({ status: 'ok', db: dbReady }));
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
-// Levantar servidor primero para pasar healthcheck, luego inicializar DB
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Puerto ${PORT}`);
+process.on('uncaughtException',  err => console.error('[CRASH] uncaughtException:', err));
+process.on('unhandledRejection', err => console.error('[CRASH] unhandledRejection:', err));
+
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Puerto ${PORT} — servidor listo`);
   setupDb()
-    .then(() => { dbReady = true; })
-    .catch(err => console.error('[DB] Error en setup:', err.message));
+    .then(() => { dbReady = true; console.log('[DB] lista'); })
+    .catch(err => console.error('[DB] Error setup:', err.message));
 });
+
+server.on('error', err => console.error('[SERVER] Error:', err));
