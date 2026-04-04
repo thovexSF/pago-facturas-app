@@ -160,7 +160,7 @@ function renderStats() {
   document.getElementById('stat-total').textContent    = pendC1.length + pendC2.length;
   document.getElementById('stat-vencidas').textContent  = vencidas;
   document.getElementById('stat-monto').textContent    = '$' + formatMonto(montoPendiente);
-  document.getElementById('stat-pagadas').textContent  = facturas.filter(f => f.pagado_1 && f.pagado_2).length;
+  document.getElementById('stat-pagadas').textContent  = facturas.filter(f => f.pagado_1 && (!f.vcto_2 || f.pagado_2)).length;
 }
 
 // ─── Tabla ────────────────────────────────────────────────────────────────────
@@ -169,8 +169,8 @@ function renderTabla() {
   const filtro  = document.getElementById('filter-estado').value;
   const busqueda = (document.getElementById('filter-emisor')?.value ?? '').toLowerCase().trim();
   let lista = facturas;
-  if (filtro === 'pendiente') lista = lista.filter(f => !f.pagado_1 || !f.pagado_2);
-  if (filtro === 'pagada')    lista = lista.filter(f => f.pagado_1 && f.pagado_2);
+  if (filtro === 'pendiente') lista = lista.filter(f => !f.pagado_1 || (f.vcto_2 && !f.pagado_2));
+  if (filtro === 'pagada')    lista = lista.filter(f => f.pagado_1 && (!f.vcto_2 || f.pagado_2));
   if (busqueda) lista = lista.filter(f =>
     (f.razon_social ?? '').toLowerCase().includes(busqueda) ||
     (f.rut_emisor   ?? '').toLowerCase().includes(busqueda)
@@ -183,7 +183,7 @@ function renderTabla() {
 
   const hoy = new Date();
   tbody.innerHTML = lista.map(f => {
-    const ambaPagada = f.pagado_1 && f.pagado_2;
+    const ambaPagada = f.pagado_1 && (!f.vcto_2 || f.pagado_2);
     const vencida = (!f.pagado_1 && f.vcto_1 && new Date(f.vcto_1) < hoy)
                  || (!f.pagado_2 && f.vcto_2 && new Date(f.vcto_2) < hoy);
     const estadoClass = ambaPagada ? 'badge-success' : vencida ? 'badge-danger' : 'badge-warning';
