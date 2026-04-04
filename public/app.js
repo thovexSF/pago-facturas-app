@@ -208,6 +208,7 @@ function renderProveedores() {
     <table class="facturas-table">
       <thead><tr>
         <th>Proveedor</th>
+        <th>Categoría</th>
         <th>Condición</th>
         <th>Cuota 1</th>
         <th>Cuota 2</th>
@@ -219,6 +220,12 @@ function renderProveedores() {
             <td>
               <div class="emisor-nombre">${esc(p.razon_social||'—')}</div>
               <div class="emisor-rut">${esc(p.rut_emisor)}</div>
+            </td>
+            <td>
+              <input class="prov-input prov-input-cat" type="text"
+                placeholder="Sin categoría"
+                value="${esc(p.categoria||'')}"
+                onchange="actualizarProveedor('${p.rut_emisor}','categoria',this.value||null)">
             </td>
             <td>
               <select class="prov-select" onchange="actualizarProveedor('${p.rut_emisor}','condicion',this.value)">

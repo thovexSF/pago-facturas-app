@@ -24,7 +24,8 @@ async function setupDb() {
     CREATE TABLE IF NOT EXISTS proveedores (
       rut_emisor   VARCHAR(20) PRIMARY KEY,
       razon_social VARCHAR(255),
-      condicion    VARCHAR(10) DEFAULT 'contado',  -- 'contado' | 'credito'
+        condicion    VARCHAR(10) DEFAULT 'contado',  -- 'contado' | 'credito'
+      categoria    VARCHAR(100),
       dias_1       INTEGER DEFAULT 30,
       pct_1        INTEGER DEFAULT 50,
       dias_2       INTEGER DEFAULT 40,
@@ -64,6 +65,7 @@ async function setupDb() {
     )
   `);
   // Migraciones
+  await pool.query(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS categoria VARCHAR(100)`).catch(() => {});
   for (const [col, type] of [
     ['monto_neto','BIGINT'],['monto_total','BIGINT'],['estado_sii','VARCHAR(50)'],
     ['vcto_1','DATE'],['monto_1','BIGINT'],['pagado_1','BOOLEAN DEFAULT FALSE'],['pagado_1_at','TIMESTAMP'],
@@ -281,19 +283,22 @@ app.get('/api/proveedores', async (req, res) => {
 });
 
 app.put('/api/proveedores/:rut', async (req, res) => {
-  const { condicion, dias_1, pct_1, dias_2, pct_2, en_agenda } = req.body;
+  const { condicion, categoria, dias_1, pct_1, dias_2, pct_2, en_agenda } = req.body;
   try {
     await pool.query(
       `UPDATE proveedores SET
          condicion  = COALESCE($2, condicion),
-         dias_1     = COALESCE($3, dias_1),
-         pct_1      = COALESCE($4, pct_1),
-         dias_2     = COALESCE($5, dias_2),
-         pct_2      = COALESCE($6, pct_2),
-         en_agenda  = COALESCE($7, en_agenda),
+         categoria  = CASE WHEN $3::boolean THEN $4 ELSE categoria END,
+         dias_1     = COALESCE($5, dias_1),
+         pct_1      = COALESCE($6, pct_1),
+         dias_2     = COALESCE($7, dias_2),
+         pct_2      = COALESCE($8, pct_2),
+         en_agenda  = COALESCE($9, en_agenda),
          updated_at = NOW()
        WHERE rut_emisor = $1`,
-      [req.params.rut, condicion??null, dias_1??null, pct_1??null, dias_2??null, pct_2??null, en_agenda??null]
+      [req.params.rut, condicion??null,
+       categoria !== undefined, categoria ?? null,
+       dias_1??null, pct_1??null, dias_2??null, pct_2??null, en_agenda??null]
     );
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }

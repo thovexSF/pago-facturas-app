@@ -297,7 +297,8 @@ body {
   font-size: 12px;
   text-align: center;
 }
-.prov-input-sm { width: 40px; }
+.prov-input-sm  { width: 40px; }
+.prov-input-cat { width: 130px; text-align: left; }
 .prov-disabled { opacity: .4; }
 .empty-prov { color: #a0aec0; padding: 40px; text-align: center; }
 
