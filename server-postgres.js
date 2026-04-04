@@ -228,8 +228,13 @@ async function loginSII(page) {
 
   for (let intento = 1; intento <= 3; intento++) {
     const url = loginUrls[Math.min(intento - 1, loginUrls.length - 1)];
-    await page.goto(url, { waitUntil: 'load', timeout: 45000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+    // Sin .catch: necesitamos ver el error real si falla
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    } catch (gotoErr) {
+      console.warn(`[SII login] intento ${intento} goto error: ${gotoErr.message}`);
+    }
+    await page.waitForTimeout(3000);
 
     const diagUrl   = page.url();
     const diagTitle = await page.title().catch(() => '?');
@@ -286,7 +291,7 @@ async function seleccionarEmpresa(page) {
 async function abrirSesionSII() {
   const { chromium } = require('playwright');
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  const context = await browser.newContext({ ignoreHTTPSErrors: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' });
   const page    = await context.newPage();
 
   let conversationId = null;
@@ -418,7 +423,7 @@ async function descargarPdfSII(folio, rutEmisor) {
   pdfEnCurso = true;
   const { chromium } = require('playwright');
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  const context = await browser.newContext({ ignoreHTTPSErrors: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' });
   const page    = await context.newPage();
 
   try {
@@ -452,7 +457,7 @@ async function descargarPdfsBulkSII() {
 
   const { chromium } = require('playwright');
   const browser = await chromium.launch({ headless: true });
-  const ctx  = await browser.newContext({ ignoreHTTPSErrors: true });
+  const ctx  = await browser.newContext({ ignoreHTTPSErrors: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' });
   const page = await ctx.newPage();
   let descargadas = 0, errores = 0;
 
