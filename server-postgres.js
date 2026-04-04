@@ -71,6 +71,24 @@ async function setupDb() {
   ]) {
     await pool.query(`ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
   }
+  // Crear proveedores desde facturas existentes que no tengan proveedor aún
+  await pool.query(`
+    INSERT INTO proveedores (rut_emisor, razon_social, condicion)
+    SELECT DISTINCT rut_emisor, razon_social, 'contado'
+    FROM facturas_recibidas
+    ON CONFLICT (rut_emisor) DO NOTHING
+  `);
+  // Marcar como pagadas las facturas contado que aún figuran pendientes
+  await pool.query(`
+    UPDATE facturas_recibidas f SET
+      pagado_1 = TRUE, pagado_1_at = COALESCE(pagado_1_at, f.created_at),
+      pagado_2 = TRUE, pagado_2_at = COALESCE(pagado_2_at, f.created_at),
+      updated_at = NOW()
+    FROM proveedores p
+    WHERE f.rut_emisor = p.rut_emisor
+      AND p.condicion = 'contado'
+      AND (f.pagado_1 = FALSE OR f.pagado_2 = FALSE)
+  `);
   console.log('[DB] Tablas listas');
 }
 
@@ -120,6 +138,8 @@ async function upsertFacturas(docs) {
     const monto1 = Math.round(montoTotal * prov.pct_1 / 100);
     const monto2 = montoTotal - monto1;
     const esContado = prov.condicion === 'contado';
+    const dias1 = esContado ? 0 : prov.dias_1;
+    const dias2 = esContado ? 0 : prov.dias_2;
 
     const r = await pool.query(
       `INSERT INTO facturas_recibidas
@@ -135,15 +155,23 @@ async function upsertFacturas(docs) {
          monto_neto   = EXCLUDED.monto_neto,
          monto_total  = EXCLUDED.monto_total,
          estado_sii   = EXCLUDED.estado_sii,
+         pagado_1     = EXCLUDED.pagado_1,
+         pagado_1_at  = EXCLUDED.pagado_1_at,
+         pagado_2     = EXCLUDED.pagado_2,
+         pagado_2_at  = EXCLUDED.pagado_2_at,
+         vcto_1       = EXCLUDED.vcto_1,
+         monto_1      = EXCLUDED.monto_1,
+         vcto_2       = EXCLUDED.vcto_2,
+         monto_2      = EXCLUDED.monto_2,
          updated_at   = NOW()
        RETURNING (xmax = 0) AS inserted`,
       [
         String(d.detCodigo), rut, d.detRznSoc, d.detNroDoc,
         parseDate(d.detFchDoc), d.detMntNeto, montoTotal,
         d.dcvEstadoContab ?? 'REGISTRO',
-        prov.dias_1, monto1,
+        dias1, monto1,
         esContado, esContado ? new Date() : null,
-        prov.dias_2, monto2,
+        dias2, monto2,
       ]
     );
     r.rows[0].inserted ? insertadas++ : actualizadas++;
