@@ -457,14 +457,7 @@ async function sincronizarHistorico() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Error');
     mostrarToast(data.mensaje ?? 'Sincronización iniciada', 'success');
-    setTimeout(async () => {
-      await cargarTodo();
-      // Disparar descarga de PDFs faltantes en background
-      fetch('/api/pdf/sync', { method: 'POST' })
-        .then(r => r.json())
-        .then(d => { if (d.pendientes > 0) mostrarToast(`Descargando ${d.pendientes} PDFs…`, 'info'); })
-        .catch(() => {});
-    }, 5000);
+    setTimeout(cargarTodo, 5000);
   } catch (err) { mostrarToast('Error: '+err.message, 'error'); }
   finally {
     btn.disabled = false;
