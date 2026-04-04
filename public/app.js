@@ -48,24 +48,26 @@ function cargarEventosCalendar() {
 
   facturas.forEach(f => {
     if (!filtrados.has(f.rut_emisor)) return;
-    if (f.vcto_1 && !f.pagado_1) {
-      const vencida = new Date(f.vcto_1) < new Date();
+    if (f.vcto_1) {
+      const vencida = !f.pagado_1 && new Date(f.vcto_1) < new Date();
       calendar.addEvent({
         id: `${f.id}-1`,
         title: `C1 Factura N° ${f.folio} $${formatMonto(f.monto_1)}`,
         start: f.vcto_1.split('T')[0],
-        backgroundColor: vencida ? '#e53e3e' : '#3182ce',
-        borderColor:     vencida ? '#c53030' : '#2b6cb0',
+        backgroundColor: f.pagado_1 ? '#48bb78' : vencida ? '#e53e3e' : '#3182ce',
+        borderColor:     f.pagado_1 ? '#276749' : vencida ? '#c53030' : '#2b6cb0',
+        textColor:       '#fff',
       });
     }
-    if (f.vcto_2 && !f.pagado_2) {
-      const vencida = new Date(f.vcto_2) < new Date();
+    if (f.vcto_2) {
+      const vencida = !f.pagado_2 && new Date(f.vcto_2) < new Date();
       calendar.addEvent({
         id: `${f.id}-2`,
         title: `C2 Factura N° ${f.folio} $${formatMonto(f.monto_2)}`,
         start: f.vcto_2.split('T')[0],
-        backgroundColor: vencida ? '#e53e3e' : '#38a169',
-        borderColor:     vencida ? '#c53030' : '#276749',
+        backgroundColor: f.pagado_2 ? '#48bb78' : vencida ? '#e53e3e' : '#3182ce',
+        borderColor:     f.pagado_2 ? '#276749' : vencida ? '#c53030' : '#2b6cb0',
+        textColor:       '#fff',
       });
     }
   });
