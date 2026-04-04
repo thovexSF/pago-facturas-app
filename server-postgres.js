@@ -317,9 +317,9 @@ async function descargarPdfSII(folio, rutEmisor) {
   }
 }
 
-// Descarga PDFs en lote con una sola sesión SII
-// Construye un mapa de toda la lista de documentos paginando una sola vez,
-// luego navega directamente al detalle de cada uno.
+// Descarga PDFs en lote con una sola sesión SII.
+// Estrategia: construir un mapa de TODA la lista (paginando una vez)
+// y luego navegar directo al detalle de cada factura.
 async function descargarPdfsBulkSII() {
   const { rows: sinPdf } = await pool.query(
     `SELECT id, folio, rut_emisor FROM facturas_recibidas WHERE pdf_data IS NULL ORDER BY fecha_emision DESC`
@@ -331,6 +331,9 @@ async function descargarPdfsBulkSII() {
   const ctx  = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await ctx.newPage();
   let descargadas = 0, errores = 0;
+
+  // helper: normaliza texto quitando puntos de miles chilenos y espacios extras
+  const norm = str => str.replace(/\./g, '').replace(/\s+/g, ' ').trim();
 
   try {
     // Login
@@ -345,33 +348,83 @@ async function descargarPdfsBulkSII() {
       await Promise.all([page.waitForLoadState('networkidle').catch(() => {}), page.locator('[type=submit]').first().click()]);
     }
 
-    // Paginar lista completa UNA sola vez y construir mapa folio|rut → href
-    console.log('[PDF bulk] Construyendo mapa de documentos...');
-    const allRows = [];
+    // ── Construir mapa de documentos ─────────────────────────────────────────
+    // Intentar con rango de fechas amplio vía parámetros GET
+    const hoy   = new Date();
+    const hace2 = new Date(); hace2.setFullYear(hoy.getFullYear() - 2);
+    const dFmt  = d => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
+
     await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi', { waitUntil: 'networkidle' });
-    for (let pg = 0; pg < 200; pg++) {
+    await page.waitForTimeout(2000);
+
+    // ── Diagnóstico (se logea una vez para ayudar a depurar) ─────────────────
+    const diagTitle  = await page.title().catch(() => '?');
+    const diagUrl    = page.url();
+    const diagInputs = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('input')).map(i =>
+        `${i.type}[name=${i.name || i.id}]=${i.value}`
+      ).filter(Boolean)
+    ).catch(() => []);
+    const diagRows   = await page.locator('table tr').count().catch(() => 0);
+    console.log(`[PDF bulk] Página: "${diagTitle}" | ${diagUrl}`);
+    console.log(`[PDF bulk] Inputs: ${diagInputs.join(' | ')}`);
+    console.log(`[PDF bulk] Filas en tabla al cargar: ${diagRows}`);
+
+    // Intentar expandir rango de fechas llenando los inputs de fecha que existan
+    const fechaCandidatos = [
+      ['input[name="FEC_DESDE"],input[name="FDESDE"],input[id*="desde"],input[id*="Desde"],input[placeholder*="desde"],input[placeholder*="Desde"]', dFmt(hace2)],
+      ['input[name="FEC_HASTA"],input[name="FHASTA"],input[id*="hasta"],input[id*="Hasta"],input[placeholder*="hasta"],input[placeholder*="Hasta"]', dFmt(hoy)],
+    ];
+    let fechaSet = false;
+    for (const [sel, val] of fechaCandidatos) {
+      const el = page.locator(sel).first();
+      if (await el.count()) { await el.fill(val); fechaSet = true; }
+    }
+    if (fechaSet) {
+      const btnBuscar = page.locator('input[type=submit], button[type=submit], button:has-text("Buscar"), input[value*="Buscar"]').first();
+      if (await btnBuscar.count()) {
+        await Promise.all([page.waitForLoadState('networkidle').catch(() => {}), btnBuscar.click()]);
+        await page.waitForTimeout(2000);
+      }
+    }
+
+    // ── Paginar y recopilar todas las filas ──────────────────────────────────
+    const allRows = [];
+    for (let pg = 0; pg < 300; pg++) {
+      await page.waitForTimeout(400);
       const rows = await page.evaluate(() =>
-        Array.from(document.querySelectorAll('table tr')).map(row => ({
+        Array.from(document.querySelectorAll('table tr, tbody tr')).map(row => ({
           text: (row.innerText ?? '').replace(/\s+/g, ' ').trim(),
           href: row.querySelector('a[href]')?.getAttribute('href') ?? null,
         })).filter(r => r.href && r.text.length > 5)
       );
       allRows.push(...rows);
-      const next = page.locator('a').filter({ hasText: /^>$/ }).last();
+      const next = page.locator('a').filter({ hasText: /^[>»→]$/ }).last();
       if (!await next.count()) break;
       await Promise.all([page.waitForLoadState('networkidle'), next.click()]);
     }
-    console.log(`[PDF bulk] Mapa listo: ${allRows.length} filas para ${sinPdf.length} facturas`);
 
-    // Por cada factura sin PDF, buscar en el mapa y descargar
+    console.log(`[PDF bulk] Mapa: ${allRows.length} filas`);
+    if (allRows.length > 0) {
+      console.log(`[PDF bulk] Muestra primera fila: "${allRows[0].text.slice(0, 120)}"`);
+    } else {
+      console.warn('[PDF bulk] ADVERTENCIA: mapa vacío — la página no devolvió filas con links');
+    }
+
+    // ── Descargar PDF por cada factura ───────────────────────────────────────
     for (const f of sinPdf) {
       try {
-        const rutNum   = String(f.rut_emisor).split('-')[0];
         const folioStr = String(f.folio);
-        const row = allRows.find(r => r.text.includes(folioStr) && r.text.includes(rutNum));
+        const rutNum   = f.rut_emisor.split('-')[0];
+
+        // Buscar con texto normalizado (sin puntos de miles)
+        const row = allRows.find(r => {
+          const t = norm(r.text);
+          return t.includes(folioStr) && t.includes(rutNum);
+        });
 
         if (!row?.href) {
-          console.warn(`[PDF bulk] Folio ${f.folio} no encontrado`);
+          console.warn(`[PDF bulk] Folio ${f.folio} (RUT ${rutNum}) no encontrado en mapa`);
           errores++;
           continue;
         }

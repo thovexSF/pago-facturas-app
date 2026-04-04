@@ -6,8 +6,9 @@ let facturaActiva = null;
 // Chips: set de rut_emisor visibles en calendario (persistido en localStorage)
 let chipsFiltro = new Set(JSON.parse(localStorage.getItem('chipsFiltro') ?? 'null') ?? []);
 
-// Chips del gráfico: set de razon_social (vacío = todos)
+// Filtro del gráfico: Set de razon_social seleccionados (vacío antes de inicializar)
 let graficoProvsFiltro = new Set();
+let graficoFiltroIniciado = false;
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
@@ -481,23 +482,25 @@ const COLORES = [
 function renderGraficoDropdown(proveedoresOrdenados) {
   const list = document.getElementById('prov-check-list');
   if (!list) return;
-  const todosCheck = document.getElementById('prov-check-all');
-  const ninguno = graficoProvsFiltro.size === 0;
-  if (todosCheck) todosCheck.checked = ninguno;
+
+  // "Todos" activo = ningún filtro individual activo
+  const todosActivo = graficoProvsFiltro.size === 0;
+  const todosBtn = document.getElementById('prov-check-all');
+  if (todosBtn) todosBtn.classList.toggle('todos-activo', todosActivo);
 
   list.innerHTML = proveedoresOrdenados.map(prov => `
     <label class="prov-check-row">
-      <input type="checkbox" ${graficoProvsFiltro.has(prov) || ninguno ? 'checked' : ''}
+      <input type="checkbox" ${graficoProvsFiltro.has(prov) ? 'checked' : ''}
         onchange="toggleGraficoProveedor(${JSON.stringify(prov)}, this.checked)">
       ${esc(prov)}
     </label>`).join('');
 
-  // Actualizar label del botón
+  // Label del botón desplegable
   const label = document.getElementById('prov-dropdown-label');
   if (label) {
-    label.textContent = ninguno
+    label.textContent = todosActivo
       ? '· Todos'
-      : `· ${[...graficoProvsFiltro].length} seleccionado${graficoProvsFiltro.size > 1 ? 's' : ''}`;
+      : `· ${graficoProvsFiltro.size} seleccionado${graficoProvsFiltro.size > 1 ? 's' : ''}`;
   }
 }
 
@@ -505,22 +508,18 @@ function toggleProvDropdown() {
   document.getElementById('prov-dropdown-panel').classList.toggle('open');
 }
 
-function toggleGraficoTodos(checked) {
-  if (checked) graficoProvsFiltro.clear();
+// "Todos" = limpiar filtro individual → mostrar todos los proveedores
+function toggleGraficoTodos() {
+  graficoProvsFiltro.clear();
   renderGrafico();
 }
 
 function toggleGraficoProveedor(prov, checked) {
-  // Desmarcar "Todos" si el usuario elige individualmente
-  const todosCheck = document.getElementById('prov-check-all');
   if (checked) {
     graficoProvsFiltro.add(prov);
   } else {
     graficoProvsFiltro.delete(prov);
   }
-  if (todosCheck) todosCheck.checked = false;
-  // Si deseleccionaron todos individualmente → volver a "Todos"
-  if (graficoProvsFiltro.size === 0 && todosCheck) todosCheck.checked = true;
   renderGrafico();
 }
 
@@ -549,6 +548,13 @@ function renderGrafico() {
     totProv[p] = (totProv[p] || 0) + v;
   }));
   const proveedoresOrdenados = Object.keys(totProv).sort((a, b) => totProv[b] - totProv[a]);
+
+  // Primera carga: pre-seleccionar Arabica por defecto
+  if (!graficoFiltroIniciado && proveedoresOrdenados.length > 0) {
+    graficoFiltroIniciado = true;
+    const arabica = proveedoresOrdenados.find(p => p.toLowerCase().includes('arabica'));
+    graficoProvsFiltro = new Set(arabica ? [arabica] : []);
+  }
 
   // Renderizar dropdown (con la lista ordenada)
   renderGraficoDropdown(proveedoresOrdenados);
