@@ -214,29 +214,55 @@ async function ngSelect(page, selector, value) {
   }, { sel: selector, val: value });
 }
 
-// Login compartido: espera networkidle, reintenta si #rutcntr no aparece
+// Login compartido — robusto: múltiples selectores, URL alternativa, diagnóstico
 async function loginSII(page) {
-  for (let intento = 1; intento <= 3; intento++) {
-    await page.goto(
-      'https://zeusr.sii.cl//AUT2000/InicioAutenticacion/IngresoRutClave.html?https://misiir.sii.cl/cgi_misii/siihome.cgi',
-      { waitUntil: 'networkidle', timeout: 45000 }
-    );
-    await page.waitForTimeout(1000);
+  // Posibles selectores del campo RUT (SII los ha cambiado en el pasado)
+  const rutSels  = ['#rutcntr', 'input[name="rutcntr"]', 'input[name="rut"]', '#rut', 'input[autocomplete="username"]'];
+  const claveSels = ['#clave', 'input[name="clave"]', 'input[type="password"]'];
 
-    // Verificar que estamos en la página de login
-    const tieneRut = await page.locator('#rutcntr').count();
-    if (tieneRut) {
-      await page.fill('#rutcntr', SII_RUT);
-      await page.fill('#clave',   SII_PASSWORD);
-      await Promise.all([page.waitForLoadState('networkidle'), page.keyboard.press('Enter')]);
-      return; // login exitoso
+  const loginUrls = [
+    'https://zeusr.sii.cl//AUT2000/InicioAutenticacion/IngresoRutClave.html?https://misiir.sii.cl/cgi_misii/siihome.cgi',
+    'https://zeusr.sii.cl/AUT2000/InicioAutenticacion/IngresoRutClave.html',
+    'https://herculesr.sii.cl/cgi_AUT/CAutInicio.html?https://misiir.sii.cl/cgi_misii/siihome.cgi',
+  ];
+
+  for (let intento = 1; intento <= 3; intento++) {
+    const url = loginUrls[Math.min(intento - 1, loginUrls.length - 1)];
+    await page.goto(url, { waitUntil: 'load', timeout: 45000 }).catch(() => {});
+    await page.waitForTimeout(2000);
+
+    const diagUrl   = page.url();
+    const diagTitle = await page.title().catch(() => '?');
+    // Loguear primeras 300 chars del body para entender qué página es
+    const bodySnip  = await page.evaluate(() =>
+      (document.body?.innerText ?? '').replace(/\s+/g,' ').trim().slice(0,300)
+    ).catch(() => '');
+    console.log(`[SII login] intento ${intento} | URL: ${diagUrl} | título: "${diagTitle}"`);
+    console.log(`[SII login] texto página: "${bodySnip}"`);
+
+    // Buscar campo RUT con cualquier selector conocido
+    let rutSel = null;
+    for (const s of rutSels) {
+      if (await page.locator(s).count()) { rutSel = s; break; }
+    }
+    let claveSel = null;
+    for (const s of claveSels) {
+      if (await page.locator(s).count()) { claveSel = s; break; }
     }
 
-    // Si no está el input, tomar screenshot de debug y reintentar
-    const diagUrl = page.url();
-    const diagTitle = await page.title().catch(() => '?');
-    console.warn(`[SII login] intento ${intento}: sin #rutcntr. URL="${diagUrl}" título="${diagTitle}"`);
-    if (intento < 3) await page.waitForTimeout(3000);
+    if (rutSel && claveSel) {
+      console.log(`[SII login] campos encontrados: rut="${rutSel}" clave="${claveSel}"`);
+      await page.fill(rutSel,   SII_RUT);
+      await page.fill(claveSel, SII_PASSWORD);
+      await Promise.all([page.waitForLoadState('load').catch(() => {}), page.keyboard.press('Enter')]);
+      await page.waitForTimeout(2000);
+      const afterUrl = page.url();
+      console.log(`[SII login] post-login URL: ${afterUrl}`);
+      return; // éxito
+    }
+
+    console.warn(`[SII login] intento ${intento}: sin formulario de login`);
+    if (intento < 3) await page.waitForTimeout(5000);
   }
   throw new Error('No se pudo encontrar formulario de login SII después de 3 intentos');
 }
