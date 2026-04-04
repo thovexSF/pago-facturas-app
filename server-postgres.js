@@ -203,7 +203,9 @@ async function upsertFacturas(docs) {
 
 // ─── SII ──────────────────────────────────────────────────────────────────────
 
-// Mutex: evitar múltiples browsers PDF simultáneos (SII bloquea concurrencia)
+// Mutex global: SII bloquea sesiones concurrentes del mismo RUT
+let siiEnCurso = false;
+// Alias para compatibilidad con rutas que chequeaban pdfEnCurso
 let pdfEnCurso = false;
 
 async function ngSelect(page, selector, value) {
@@ -259,21 +261,28 @@ async function loginSII(page) {
       console.log(`[SII login] campos encontrados: rut="${rutSel}" clave="${claveSel}"`);
       await page.fill(rutSel,   SII_RUT);
       await page.fill(claveSel, SII_PASSWORD);
-      await Promise.all([
-        page.waitForLoadState('networkidle').catch(() => {}),
-        page.keyboard.press('Enter'),
-      ]);
-      await page.waitForTimeout(2000);
-      console.log(`[SII login] post-Enter URL: ${page.url()}`);
 
-      // Navegar a misiir.sii.cl explícitamente para inicializar sesión en www1
-      // (el sync también pasa por aquí; sin esto mipeGesDocRcp retorna 501)
-      await page.goto('https://misiir.sii.cl/cgi_misii/siihome.cgi',
-        { waitUntil: 'load', timeout: 30000 }
-      ).catch(e => console.warn('[SII login] misiir error:', e.message));
-      await page.waitForTimeout(1500);
-      console.log(`[SII login] post-misiir URL: ${page.url()}`);
-      return; // éxito
+      // Submit y esperar a que la URL salga de CAutInicio / página de login
+      await page.keyboard.press('Enter');
+      try {
+        await page.waitForURL(
+          u => !u.includes('CAutInicio') && !u.includes('IngresoRutClave'),
+          { timeout: 25000 }
+        );
+      } catch { /* timeout — revisamos URL abajo */ }
+      await page.waitForTimeout(2000);
+
+      const postUrl = page.url();
+      console.log(`[SII login] post-login URL: ${postUrl}`);
+
+      if (postUrl.includes('IngresoRutClave') || postUrl.includes('CAutInicio')) {
+        console.warn(`[SII login] intento ${intento}: credenciales rechazadas → ${postUrl}`);
+        if (intento < 3) await page.waitForTimeout(3000);
+        continue; // reintentar con siguiente URL
+      }
+
+      console.log('[SII login] ✓ Autenticación exitosa');
+      return; // éxito real
     }
 
     console.warn(`[SII login] intento ${intento}: sin formulario de login`);
@@ -299,6 +308,9 @@ async function seleccionarEmpresa(page) {
 }
 
 async function abrirSesionSII() {
+  if (siiEnCurso) throw new Error('Ya hay una operación SII en curso, espera unos minutos');
+  siiEnCurso = true;
+
   const { chromium } = require('playwright');
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ ignoreHTTPSErrors: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' });
@@ -314,19 +326,26 @@ async function abrirSesionSII() {
     }
   });
 
-  await loginSII(page);
-  await seleccionarEmpresa(page);
+  try {
+    await loginSII(page);
+    await seleccionarEmpresa(page);
 
-  await page.goto('https://www4.sii.cl/consdcvinternetui/', { waitUntil: 'networkidle' });
-  await page.waitForTimeout(3000);
+    await page.goto('https://www4.sii.cl/consdcvinternetui/', { waitUntil: 'networkidle' });
+    await page.waitForTimeout(3000);
 
-  if (!conversationId) {
-    await ngSelect(page, 'select[name="rut"]', SII_EMPRESA_RUT);
-    await page.waitForTimeout(2000);
+    if (!conversationId) {
+      await ngSelect(page, 'select[name="rut"]', SII_EMPRESA_RUT);
+      await page.waitForTimeout(2000);
+    }
+
+    if (!conversationId) throw new Error('No se pudo obtener conversationId de SII');
+    // siiEnCurso permanece true — el LLAMADOR debe liberarlo al cerrar browser
+    return { browser, context, conversationId };
+  } catch (err) {
+    siiEnCurso = false; // liberar solo en error (el browser nunca llegó a usarse)
+    await browser.close().catch(() => {});
+    throw err;
   }
-
-  if (!conversationId) throw new Error('No se pudo obtener conversationId de SII');
-  return { browser, context, conversationId };
 }
 
 // Dado una página que ya muestra el detalle del DTE, hace click en el botón
@@ -424,7 +443,7 @@ async function navegarADetalleDte(page, folio, rutEmisor) {
 
 // Descarga el PDF de UNA factura
 async function descargarPdfSII(folio, rutEmisor) {
-  if (pdfEnCurso) throw new Error('Ya hay una descarga de PDF en curso, intenta en unos minutos');
+  if (pdfEnCurso || siiEnCurso) throw new Error('Ya hay una operación SII en curso, intenta en unos minutos');
   pdfEnCurso = true;
   let sesion;
   try {
@@ -438,6 +457,7 @@ async function descargarPdfSII(folio, rutEmisor) {
     return await clickYDescargarPdf(page);
   } finally {
     pdfEnCurso = false;
+    siiEnCurso = false;
     await sesion?.browser.close();
   }
 }
@@ -445,8 +465,8 @@ async function descargarPdfSII(folio, rutEmisor) {
 // Descarga PDFs en lote reutilizando una sola sesión SII.
 // Usa abrirSesionSII() (igual que descargarPdfSII) + navegarADetalleDte() por cada factura.
 async function descargarPdfsBulkSII() {
-  if (pdfEnCurso) {
-    console.warn('[PDF bulk] Ya hay una sesión PDF en curso, abortando');
+  if (pdfEnCurso || siiEnCurso) {
+    console.warn('[PDF bulk] Ya hay una operación SII en curso, abortando');
     return { descargadas: 0, errores: 0, total: 0 };
   }
   pdfEnCurso = true;
@@ -485,6 +505,7 @@ async function descargarPdfsBulkSII() {
     }
   } finally {
     pdfEnCurso = false;
+    siiEnCurso = false;
     await sesion?.browser.close();
   }
 
@@ -601,7 +622,7 @@ app.get('/api/facturas/:id/pdf', async (req, res) => {
 // POST /api/pdf/sync — descarga en background todos los PDFs faltantes
 app.post('/api/pdf/sync', async (req, res) => {
   try {
-    if (pdfEnCurso) return res.json({ ok: false, mensaje: 'Ya hay una descarga de PDFs en curso', pendientes: 0 });
+    if (pdfEnCurso || siiEnCurso) return res.json({ ok: false, mensaje: 'Ya hay una operación SII en curso, espera unos minutos', pendientes: 0 });
 
     const { rows } = await pool.query(
       `SELECT COUNT(*) FROM facturas_recibidas WHERE pdf_data IS NULL`
@@ -619,7 +640,7 @@ app.post('/api/pdf/sync', async (req, res) => {
 
 // GET /api/pdf/test/:folio — prueba de descarga con UNA factura (debug)
 app.get('/api/pdf/test/:folio', async (req, res) => {
-  if (pdfEnCurso) return res.status(409).json({ error: 'PDF en curso, espera' });
+  if (pdfEnCurso || siiEnCurso) return res.status(409).json({ error: 'Operación SII en curso, espera' });
   const { rows } = await pool.query(
     `SELECT id, folio, rut_emisor FROM facturas_recibidas WHERE folio=$1 LIMIT 1`,
     [req.params.folio]
@@ -702,7 +723,7 @@ app.post('/api/sync/auto', async (req, res) => {
       );
       resultado.push({ mes, total: docs.length, insertadas, actualizadas });
     }
-  } finally { await sesion.browser.close(); }
+  } finally { siiEnCurso = false; await sesion.browser.close(); }
 
   res.json({ ok: true, meses: resultado });
 });
@@ -736,7 +757,7 @@ app.post('/api/sync/historico', async (req, res) => {
     }
     console.log('[historico] Completado');
   } catch (err) { console.error('[historico] Error:', err.message); }
-  finally { sesion?.browser.close(); }
+  finally { siiEnCurso = false; sesion?.browser.close(); }
 });
 
 let dbReady = false;
