@@ -357,6 +357,30 @@ async function abrirSesionSII() {
   }
 }
 
+// Sesión liviana solo para PDFs: login + empresa en www1, sin navegar a www4.
+// Devuelve { browser, page } donde page ya tiene la sesión de Portal001 activa.
+async function abrirSesionPDF() {
+  if (siiEnCurso) throw new Error('Ya hay una operación SII en curso, espera unos minutos');
+  siiEnCurso = true;
+
+  const { chromium } = require('playwright');
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ ignoreHTTPSErrors: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' });
+  const page    = await context.newPage();
+
+  try {
+    await loginSII(page);
+    await seleccionarEmpresa(page);
+    // page está ahora en www1.sii.cl/Portal001 con la empresa seleccionada
+    console.log(`[PDF] Sesión www1 lista | URL: ${page.url()}`);
+    return { browser, page };
+  } catch (err) {
+    siiEnCurso = false;
+    await browser.close().catch(() => {});
+    throw err;
+  }
+}
+
 // Dado una página que ya muestra el detalle del DTE, hace click en el botón
 // de visualización y devuelve el buffer del PDF.
 async function clickYDescargarPdf(page) {
@@ -441,15 +465,11 @@ async function descargarPdfSII(folio, rutEmisor) {
   pdfEnCurso = true;
   let sesion;
   try {
-    sesion = await abrirSesionSII();
-    const page = await sesion.context.newPage();
-    // La nueva página no hereda el estado de Portal001 → reseleccionar empresa
-    await seleccionarEmpresa(page);
-
-    const encontrado = await navegarADetalleDte(page, folio, rutEmisor);
+    // abrirSesionPDF: login + empresa → devuelve la página original (con sesión www1)
+    sesion = await abrirSesionPDF();
+    const encontrado = await navegarADetalleDte(sesion.page, folio, rutEmisor);
     if (!encontrado) throw new Error(`Folio ${folio} no encontrado en SII`);
-
-    return await clickYDescargarPdf(page);
+    return await clickYDescargarPdf(sesion.page);
   } finally {
     pdfEnCurso = false;
     siiEnCurso = false;
@@ -475,18 +495,16 @@ async function descargarPdfsBulkSII() {
   let descargadas = 0, errores = 0;
 
   try {
-    sesion = await abrirSesionSII();
-    const page = await sesion.context.newPage();
-    // La nueva página no hereda el estado de Portal001 → reseleccionar empresa
-    await seleccionarEmpresa(page);
+    // abrirSesionPDF: login + empresa → página original con sesión www1 activa
+    sesion = await abrirSesionPDF();
     console.log(`[PDF bulk] Sesión lista. Descargando ${sinPdf.length} PDFs...`);
 
     for (const f of sinPdf) {
       try {
-        const encontrado = await navegarADetalleDte(page, f.folio, f.rut_emisor);
+        const encontrado = await navegarADetalleDte(sesion.page, f.folio, f.rut_emisor);
         if (!encontrado) throw new Error('no encontrado en SII');
 
-        const buf    = await clickYDescargarPdf(page);
+        const buf    = await clickYDescargarPdf(sesion.page);
         const nombre = `factura_${f.folio}_${f.rut_emisor}.pdf`;
         await pool.query(
           `UPDATE facturas_recibidas SET pdf_data=$1, pdf_nombre=$2, pdf_at=NOW(), updated_at=NOW() WHERE id=$3`,
