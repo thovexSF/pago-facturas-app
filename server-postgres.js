@@ -262,11 +262,12 @@ async function loginSII(page) {
       await page.fill(rutSel,   SII_RUT);
       await page.fill(claveSel, SII_PASSWORD);
 
-      // Submit y esperar a que la URL salga de CAutInicio / página de login
+      // Submit y esperar a que la URL salga de IngresoRutClave (= dejar la página de login)
+      // CAutInicio.cgi es la URL de ÉXITO del auth (procesa credenciales, setea cookies)
       await page.keyboard.press('Enter');
       try {
         await page.waitForURL(
-          u => !u.includes('CAutInicio') && !u.includes('IngresoRutClave'),
+          u => !u.includes('IngresoRutClave'),
           { timeout: 25000 }
         );
       } catch { /* timeout — revisamos URL abajo */ }
@@ -275,14 +276,16 @@ async function loginSII(page) {
       const postUrl = page.url();
       console.log(`[SII login] post-login URL: ${postUrl}`);
 
-      if (postUrl.includes('IngresoRutClave') || postUrl.includes('CAutInicio')) {
+      // Rechazo real: volvió al formulario de login
+      if (postUrl.includes('IngresoRutClave')) {
         console.warn(`[SII login] intento ${intento}: credenciales rechazadas → ${postUrl}`);
         if (intento < 3) await page.waitForTimeout(3000);
-        continue; // reintentar con siguiente URL
+        continue;
       }
 
-      console.log('[SII login] ✓ Autenticación exitosa');
-      return; // éxito real
+      // Éxito: CAutInicio.cgi (auth procesado, cookies seteadas) o cualquier otra URL post-login
+      console.log(`[SII login] ✓ Autenticación exitosa en ${postUrl}`);
+      return;
     }
 
     console.warn(`[SII login] intento ${intento}: sin formulario de login`);
