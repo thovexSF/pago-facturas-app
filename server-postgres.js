@@ -283,8 +283,14 @@ async function loginSII(page) {
         continue;
       }
 
-      // Éxito: CAutInicio.cgi (auth procesado, cookies seteadas) o cualquier otra URL post-login
-      console.log(`[SII login] ✓ Autenticación exitosa en ${postUrl}`);
+      // Éxito: CAutInicio.cgi procesó el auth y seteó cookies.
+      // Navegar a misiir completa la cadena zeusr → misiir → www1
+      await page.goto('https://misiir.sii.cl/cgi_misii/siihome.cgi',
+        { waitUntil: 'load', timeout: 30000 }
+      ).catch(e => console.warn('[SII login] misiir goto error:', e.message));
+      await page.waitForTimeout(1500);
+      const misiirUrl = page.url();
+      console.log(`[SII login] ✓ Autenticación exitosa | misiir URL: ${misiirUrl}`);
       return;
     }
 
