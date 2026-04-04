@@ -300,12 +300,54 @@ async function loginSII(page) {
   throw new Error('No se pudo encontrar formulario de login SII después de 3 intentos');
 }
 
-// Selecciona la empresa en el portal www1 (ignora ERR_ABORTED de redirects JS)
+// Selecciona la empresa en el portal www1.
+// www1/Portal001 requiere venir desde misiir con el token de sesión en la URL.
 async function seleccionarEmpresa(page) {
-  await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi',
-    { waitUntil: 'load', timeout: 30000 }
-  ).catch(() => {});
-  await page.waitForTimeout(1000);
+  // Asegurar que estamos en misiir antes de navegar a www1
+  if (!page.url().includes('misiir.sii.cl')) {
+    await page.goto('https://misiir.sii.cl/cgi_misii/siihome.cgi',
+      { waitUntil: 'load', timeout: 30000 }
+    ).catch(() => {});
+    await page.waitForTimeout(1500);
+  }
+
+  // Log: links a www1 disponibles en la página misiir (tienen token de sesión)
+  const todosLinks = await page.locator('a[href*="www1.sii.cl"]').all();
+  console.log(`[SII empresa] Links a www1 en misiir: ${todosLinks.length}`);
+  for (let i = 0; i < Math.min(todosLinks.length, 8); i++) {
+    const href = await todosLinks[i].getAttribute('href').catch(() => '');
+    const txt  = (await todosLinks[i].textContent().catch(() => '')).trim().slice(0, 40);
+    console.log(`[SII empresa]   [${i}] "${txt}" → ${(href ?? '').slice(0, 120)}`);
+  }
+
+  // Buscar link a Portal001/mipeSelEmpresa (incluye token)
+  const linkEmpresa = page.locator('a[href*="Portal001/mipeSelEmpresa"]').first();
+  if (await linkEmpresa.count()) {
+    const href = await linkEmpresa.getAttribute('href');
+    console.log(`[SII empresa] Navegando via link: ${href?.slice(0, 120)}`);
+    await page.goto(href.startsWith('http') ? href : `https://www1.sii.cl${href}`,
+      { waitUntil: 'load', timeout: 30000 }
+    ).catch(() => {});
+  } else {
+    // Fallback: link genérico a www1 (el primero disponible, suele tener token)
+    const linkWww1 = page.locator('a[href*="www1.sii.cl/cgi-bin/Portal001"]').first();
+    if (await linkWww1.count()) {
+      const href = await linkWww1.getAttribute('href');
+      console.log(`[SII empresa] Navegando via Portal001 genérico: ${href?.slice(0, 120)}`);
+      await page.goto(href.startsWith('http') ? href : `https://www1.sii.cl${href}`,
+        { waitUntil: 'load', timeout: 30000 }
+      ).catch(() => {});
+    } else {
+      // Sin link: navegación directa (puede fallar sin token)
+      console.warn('[SII empresa] Sin link a www1 en misiir, intentando directo');
+      await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi',
+        { waitUntil: 'load', timeout: 30000 }
+      ).catch(() => {});
+    }
+  }
+  await page.waitForTimeout(1500);
+  console.log(`[SII empresa] Post-nav URL: ${page.url()}`);
+
   if (await page.locator('select[name="RUT_EMP"]').count()) {
     await page.locator('select[name="RUT_EMP"]').selectOption(SII_EMPRESA_RUT);
     await Promise.all([
@@ -313,6 +355,9 @@ async function seleccionarEmpresa(page) {
       page.locator('[type=submit]').first().click(),
     ]);
     await page.waitForTimeout(1000);
+    console.log(`[SII empresa] Post-selección URL: ${page.url()}`);
+  } else {
+    console.warn(`[SII empresa] Sin selector de empresa en: ${page.url()}`);
   }
 }
 
