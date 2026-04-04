@@ -110,23 +110,26 @@
             <span class="detail-label">Fecha Emisión</span>
             <span class="detail-value" id="modal-fecha-emision">—</span>
           </div>
-          <div class="detail-row">
-            <span class="detail-label">Vencimiento</span>
-            <span class="detail-value" id="modal-vencimiento">—</span>
-          </div>
           <div class="detail-row highlight">
-            <span class="detail-label">Monto</span>
+            <span class="detail-label">Monto total</span>
             <span class="detail-value" id="modal-monto">—</span>
           </div>
           <div class="detail-row">
             <span class="detail-label">Estado SII</span>
             <span class="detail-value" id="modal-estado-sii">—</span>
           </div>
+          <div class="detail-row" style="margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0">
+            <span class="detail-label">Cuota 1 · día 30</span>
+            <span class="detail-value"><span id="modal-vcto-1">—</span> &nbsp; <strong id="modal-monto-1">—</strong></span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Cuota 2 · día 40</span>
+            <span class="detail-value"><span id="modal-vcto-2">—</span> &nbsp; <strong id="modal-monto-2">—</strong></span>
+          </div>
         </div>
 
         <div class="pago-info" id="pago-info">
           <h3>Datos para transferencia</h3>
-          <p class="pago-instruccion">Realiza la transferencia a tu banco con los datos del emisor. Luego marca como pagada.</p>
           <div class="copy-row">
             <span id="pago-rut-copy">—</span>
             <button class="btn-copy" onclick="copiarTexto('pago-rut-copy')">Copiar RUT</button>
@@ -138,7 +141,8 @@
         </div>
       </div>
       <div class="modal-footer" id="modal-footer">
-        <button class="btn btn-pay" id="btn-pagar">✓ Marcar como pagada</button>
+        <button class="btn btn-pay" id="btn-pagar-1">Pagar 50%</button>
+        <button class="btn btn-pay" id="btn-pagar-2">Pagar 50%</button>
         <button class="btn btn-secondary" id="modal-cancel">Cerrar</button>
       </div>
     </div>

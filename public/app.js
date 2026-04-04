@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initTabs();
   initModal();
   cargarFacturas();
-  syncAuto(); // sincroniza meses recientes que falten al cargar
+  syncAuto();
 
   document.getElementById('btn-sync').addEventListener('click', sincronizarHistorico);
   document.getElementById('filter-estado').addEventListener('change', renderTabla);
@@ -29,11 +29,8 @@ function initCalendar() {
       right: 'dayGridMonth,listMonth',
     },
     eventClick: (info) => {
-      const f = facturas.find(x => String(x.id) === info.event.id);
+      const f = facturas.find(x => String(x.id) === info.event.id.split('-')[0]);
       if (f) abrirModal(f);
-    },
-    eventDidMount: (info) => {
-      info.el.title = `${info.event.title} — $${formatMonto(info.event.extendedProps.monto)}`;
     },
   });
   calendar.render();
@@ -41,17 +38,30 @@ function initCalendar() {
 
 function cargarEventosCalendar() {
   calendar.removeAllEvents();
-  const pendientes = facturas.filter(f => f.estado_pago === 'pendiente' && f.fecha_vencimiento);
-  const eventos = pendientes.map(f => {
-    const vencida = new Date(f.fecha_vencimiento) < new Date();
-    return {
-      id: String(f.id),
-      title: f.razon_social || f.rut_emisor || 'Factura',
-      start: f.fecha_vencimiento,
-      backgroundColor: vencida ? '#e53e3e' : '#3182ce',
-      borderColor: vencida ? '#c53030' : '#2b6cb0',
-      extendedProps: { monto: f.monto },
-    };
+  const eventos = [];
+  facturas.forEach(f => {
+    if (f.vcto_1 && !f.pagado_1) {
+      const vencida = new Date(f.vcto_1) < new Date();
+      eventos.push({
+        id: `${f.id}-1`,
+        title: `50% ${f.razon_social || f.rut_emisor}`,
+        start: f.vcto_1.split('T')[0],
+        backgroundColor: vencida ? '#e53e3e' : '#3182ce',
+        borderColor:     vencida ? '#c53030' : '#2b6cb0',
+        extendedProps: { monto: f.monto_1, cuota: 1 },
+      });
+    }
+    if (f.vcto_2 && !f.pagado_2) {
+      const vencida = new Date(f.vcto_2) < new Date();
+      eventos.push({
+        id: `${f.id}-2`,
+        title: `50% ${f.razon_social || f.rut_emisor}`,
+        start: f.vcto_2.split('T')[0],
+        backgroundColor: vencida ? '#e53e3e' : '#38a169',
+        borderColor:     vencida ? '#c53030' : '#276749',
+        extendedProps: { monto: f.monto_2, cuota: 2 },
+      });
+    }
   });
   calendar.addEventSource(eventos);
 }
@@ -88,39 +98,50 @@ async function cargarFacturas() {
 
 function renderStats() {
   const hoy = new Date();
-  const inicioMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
 
-  const pendientes = facturas.filter(f => f.estado_pago === 'pendiente');
-  const vencidas = pendientes.filter(f => f.fecha_vencimiento && new Date(f.fecha_vencimiento) < hoy);
-  const montoPendiente = pendientes.reduce((s, f) => s + (parseInt(f.monto) || 0), 0);
-  const pagadasMes = facturas.filter(f => f.estado_pago === 'pagada' && f.pagada_at && new Date(f.pagada_at) >= inicioMes);
+  const pendC1 = facturas.filter(f => !f.pagado_1 && f.vcto_1);
+  const pendC2 = facturas.filter(f => !f.pagado_2 && f.vcto_2);
 
-  document.getElementById('stat-total').textContent = pendientes.length;
-  document.getElementById('stat-vencidas').textContent = vencidas.length;
-  document.getElementById('stat-monto').textContent = '$' + formatMonto(montoPendiente);
-  document.getElementById('stat-pagadas').textContent = pagadasMes.length;
+  const vencidasC1 = pendC1.filter(f => new Date(f.vcto_1) < hoy);
+  const vencidasC2 = pendC2.filter(f => new Date(f.vcto_2) < hoy);
+
+  const montoPendiente = [
+    ...pendC1.map(f => parseInt(f.monto_1) || 0),
+    ...pendC2.map(f => parseInt(f.monto_2) || 0),
+  ].reduce((s, v) => s + v, 0);
+
+  document.getElementById('stat-total').textContent   = pendC1.length + pendC2.length;
+  document.getElementById('stat-vencidas').textContent = vencidasC1.length + vencidasC2.length;
+  document.getElementById('stat-monto').textContent   = '$' + formatMonto(montoPendiente);
+  document.getElementById('stat-pagadas').textContent =
+    facturas.filter(f => f.pagado_1 && f.pagado_2).length;
 }
 
 // ─── Tabla ────────────────────────────────────────────────────────────────────
 
 function renderTabla() {
   const filtro = document.getElementById('filter-estado').value;
-  const lista = filtro ? facturas.filter(f => f.estado_pago === filtro) : facturas;
+  let lista = facturas;
+  if (filtro === 'pendiente') lista = facturas.filter(f => !f.pagado_1 || !f.pagado_2);
+  if (filtro === 'pagada')    lista = facturas.filter(f => f.pagado_1 && f.pagado_2);
+
   const tbody = document.getElementById('facturas-tbody');
   const empty = document.getElementById('empty-state');
 
-  if (lista.length === 0) {
-    tbody.innerHTML = '';
-    empty.style.display = 'block';
-    return;
-  }
+  if (!lista.length) { tbody.innerHTML = ''; empty.style.display = 'block'; return; }
   empty.style.display = 'none';
 
   const hoy = new Date();
   tbody.innerHTML = lista.map(f => {
-    const vencida = f.fecha_vencimiento && new Date(f.fecha_vencimiento) < hoy && f.estado_pago === 'pendiente';
-    const estadoClass = f.estado_pago === 'pagada' ? 'badge-success' : vencida ? 'badge-danger' : 'badge-warning';
-    const estadoLabel = f.estado_pago === 'pagada' ? 'Pagada' : vencida ? 'Vencida' : 'Pendiente';
+    const ambaPagada = f.pagado_1 && f.pagado_2;
+    const vencida = (!f.pagado_1 && f.vcto_1 && new Date(f.vcto_1) < hoy)
+                 || (!f.pagado_2 && f.vcto_2 && new Date(f.vcto_2) < hoy);
+    const estadoClass = ambaPagada ? 'badge-success' : vencida ? 'badge-danger' : 'badge-warning';
+    const estadoLabel = ambaPagada ? 'Pagada' : vencida ? 'Vencida' : 'Pendiente';
+
+    // Mostrar próximo vencimiento pendiente
+    const proxVcto = !f.pagado_1 && f.vcto_1 ? f.vcto_1 : f.vcto_2;
+
     return `
       <tr class="${vencida ? 'row-vencida' : ''}" onclick="abrirModal(facturas.find(x=>x.id===${f.id}))" style="cursor:pointer">
         <td>
@@ -129,11 +150,11 @@ function renderTabla() {
         </td>
         <td>${f.folio || '—'}</td>
         <td>${formatFecha(f.fecha_emision)}</td>
-        <td class="${vencida ? 'text-danger' : ''}">${formatFecha(f.fecha_vencimiento)}</td>
-        <td class="monto">$${formatMonto(f.monto)}</td>
+        <td class="${vencida ? 'text-danger' : ''}">${formatFecha(proxVcto)}</td>
+        <td class="monto">$${formatMonto(f.monto_total)}</td>
         <td><span class="badge ${estadoClass}">${estadoLabel}</span></td>
         <td>
-          ${f.estado_pago === 'pendiente' ? `<button class="btn btn-sm btn-pay" onclick="event.stopPropagation();abrirModal(facturas.find(x=>x.id===${f.id}))">Pagar</button>` : ''}
+          ${!ambaPagada ? `<button class="btn btn-sm btn-pay" onclick="event.stopPropagation();abrirModal(facturas.find(x=>x.id===${f.id}))">Pagar</button>` : ''}
         </td>
       </tr>
     `;
@@ -148,29 +169,41 @@ function initModal() {
   document.getElementById('modal').addEventListener('click', e => {
     if (e.target === document.getElementById('modal')) cerrarModal();
   });
-  document.getElementById('btn-pagar').addEventListener('click', marcarPagada);
 }
 
 function abrirModal(f) {
   if (!f) return;
   facturaActiva = f;
-  const hoy = new Date();
-  const vencida = f.fecha_vencimiento && new Date(f.fecha_vencimiento) < hoy;
 
-  document.getElementById('modal-titulo').textContent = `Factura ${f.folio ? '#' + f.folio : ''}`;
-  document.getElementById('modal-emisor').textContent = f.razon_social || '—';
-  document.getElementById('modal-rut').textContent = f.rut_emisor || '—';
-  document.getElementById('modal-folio').textContent = f.folio || '—';
-  document.getElementById('modal-fecha-emision').textContent = formatFecha(f.fecha_emision);
-  document.getElementById('modal-vencimiento').textContent = formatFecha(f.fecha_vencimiento) + (vencida ? ' ⚠️ Vencida' : '');
-  document.getElementById('modal-monto').textContent = '$' + formatMonto(f.monto);
-  document.getElementById('modal-estado-sii').textContent = f.estado_sii || '—';
+  document.getElementById('modal-titulo').textContent       = `Factura ${f.folio ? '#' + f.folio : ''}`;
+  document.getElementById('modal-emisor').textContent       = f.razon_social || '—';
+  document.getElementById('modal-rut').textContent          = f.rut_emisor || '—';
+  document.getElementById('modal-folio').textContent        = f.folio || '—';
+  document.getElementById('modal-fecha-emision').textContent= formatFecha(f.fecha_emision);
+  document.getElementById('modal-estado-sii').textContent   = f.estado_sii || '—';
+  document.getElementById('modal-monto').textContent        = '$' + formatMonto(f.monto_total);
+  document.getElementById('pago-rut-copy').textContent      = f.rut_emisor || '—';
+  document.getElementById('pago-monto-copy').textContent    = f.monto_total || '—';
 
-  document.getElementById('pago-rut-copy').textContent = f.rut_emisor || '—';
-  document.getElementById('pago-monto-copy').textContent = f.monto || '—';
+  // Cuota 1
+  const c1Pagada = !!f.pagado_1;
+  document.getElementById('modal-vcto-1').textContent  = formatFecha(f.vcto_1);
+  document.getElementById('modal-monto-1').textContent = '$' + formatMonto(f.monto_1);
+  const btn1 = document.getElementById('btn-pagar-1');
+  btn1.textContent   = c1Pagada ? '✓ Pagada' : 'Pagar 50%';
+  btn1.disabled      = c1Pagada;
+  btn1.className     = `btn btn-sm ${c1Pagada ? 'btn-success' : 'btn-pay'}`;
+  btn1.onclick       = () => marcarCuota(1);
 
-  const btnPagar = document.getElementById('btn-pagar');
-  btnPagar.style.display = f.estado_pago === 'pagada' ? 'none' : '';
+  // Cuota 2
+  const c2Pagada = !!f.pagado_2;
+  document.getElementById('modal-vcto-2').textContent  = formatFecha(f.vcto_2);
+  document.getElementById('modal-monto-2').textContent = '$' + formatMonto(f.monto_2);
+  const btn2 = document.getElementById('btn-pagar-2');
+  btn2.textContent   = c2Pagada ? '✓ Pagada' : 'Pagar 50%';
+  btn2.disabled      = c2Pagada;
+  btn2.className     = `btn btn-sm ${c2Pagada ? 'btn-success' : 'btn-pay'}`;
+  btn2.onclick       = () => marcarCuota(2);
 
   document.getElementById('modal').style.display = 'flex';
 }
@@ -180,12 +213,12 @@ function cerrarModal() {
   facturaActiva = null;
 }
 
-async function marcarPagada() {
+async function marcarCuota(cuota) {
   if (!facturaActiva) return;
   try {
-    const res = await fetch(`/api/facturas/${facturaActiva.id}/pagar`, { method: 'PUT' });
-    if (!res.ok) throw new Error('Error al marcar como pagada');
-    mostrarToast('Factura marcada como pagada', 'success');
+    const res = await fetch(`/api/facturas/${facturaActiva.id}/pagar/${cuota}`, { method: 'PUT' });
+    if (!res.ok) throw new Error('Error al marcar cuota');
+    mostrarToast(`Cuota ${cuota} marcada como pagada`, 'success');
     cerrarModal();
     await cargarFacturas();
   } catch (err) {
@@ -195,7 +228,6 @@ async function marcarPagada() {
 
 // ─── Sincronizar ──────────────────────────────────────────────────────────────
 
-// Al cargar: sincroniza solo los meses recientes que falten (silencioso)
 async function syncAuto() {
   try {
     const res  = await fetch('/api/sync/auto', { method: 'POST' });
@@ -210,7 +242,6 @@ async function syncAuto() {
   } catch (_) { /* silencioso */ }
 }
 
-// Botón manual: sincroniza TODO el historial (últimos 2 años)
 async function sincronizarHistorico() {
   const btn = document.getElementById('btn-sync');
   btn.disabled = true;
@@ -219,8 +250,7 @@ async function sincronizarHistorico() {
     const res  = await fetch('/api/sync/historico', { method: 'POST' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Error sincronizando');
-    mostrarToast(data.mensaje ?? 'Sincronización histórica iniciada en background', 'success');
-    // Recargar facturas después de un momento (el proceso sigue en background)
+    mostrarToast(data.mensaje ?? 'Sincronización histórica iniciada', 'success');
     setTimeout(cargarFacturas, 5000);
   } catch (err) {
     mostrarToast('Error: ' + err.message, 'error');
@@ -239,17 +269,13 @@ function formatMonto(monto) {
 function formatFecha(fecha) {
   if (!fecha) return '—';
   try {
-    return new Date(fecha + 'T12:00:00').toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const solo = fecha.split('T')[0]; // "2026-04-01T00:00:00Z" → "2026-04-01"
+    return new Date(solo + 'T12:00:00').toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit', year: 'numeric' });
   } catch { return fecha; }
 }
 
 function esc(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function copiarTexto(elementId) {
-  const texto = document.getElementById(elementId)?.textContent || '';
-  navigator.clipboard.writeText(texto).then(() => mostrarToast('Copiado', 'success'));
 }
 
 function mostrarToast(msg, tipo = 'info') {
