@@ -259,8 +259,14 @@ async function loginSII(page) {
       console.log(`[SII login] campos encontrados: rut="${rutSel}" clave="${claveSel}"`);
       await page.fill(rutSel,   SII_RUT);
       await page.fill(claveSel, SII_PASSWORD);
-      await Promise.all([page.waitForLoadState('load').catch(() => {}), page.keyboard.press('Enter')]);
-      await page.waitForTimeout(2000);
+      // networkidle igual que abrirSesionSII (espera toda la cadena de redirects)
+      await Promise.all([
+        page.waitForLoadState('networkidle').catch(() => {}),
+        page.keyboard.press('Enter'),
+      ]);
+      // Esperar a salir de zeusr.sii.cl antes de continuar
+      await page.waitForURL(u => !u.includes('zeusr.sii.cl'), { timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(1000);
       const afterUrl = page.url();
       console.log(`[SII login] post-login URL: ${afterUrl}`);
       return; // éxito
@@ -357,16 +363,11 @@ async function navegarADetalleDte(page, folio, rutEmisor) {
     }
   }
 
-  // ── Intento 2: buscar en la lista con rango extendido ────────────────────
-  const hace3 = new Date(); hace3.setFullYear(hace3.getFullYear() - 3);
-  const hoy   = new Date();
-  const dFmt  = d => `${String(d.getDate()).padStart(2,'0')}%2F${String(d.getMonth()+1).padStart(2,'0')}%2F${d.getFullYear()}`;
-
-  // Probar con parámetros GET en la URL
+  // ── Intento 2: buscar en la lista (sin params GET — el CGI no los acepta) ──
   await page.goto(
-    `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi?FEC_DESDE=${dFmt(hace3)}&FEC_HASTA=${dFmt(hoy)}&TIPO_DOC=33`,
+    'https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi',
     { waitUntil: 'load', timeout: 30000 }
-  ).catch(() => {});
+  ).catch(e => console.warn('[PDF] goto lista error:', e.message));
   await page.waitForTimeout(2000);
 
   // Diagnóstico
