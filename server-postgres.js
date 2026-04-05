@@ -232,6 +232,8 @@ function siiCookieHeader(cookies) {
 
 const SII_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 // ── Autenticación directa vía CAutInicio.cgi (HTTP, sin browser) ──────────────
 // Rápida pero puede fallar desde IPs de nube (Railway). Devuelve cookies o null.
 async function autenticarHTTP() {
@@ -325,25 +327,40 @@ async function autenticarSIIdirecto() {
 async function buscarCodigoPdf(cookies, folio, rutEmisor) {
   const [rutNum] = rutEmisor.replace(/\./g, '').split('-');
   const folioStr = String(folio);
-
   const url = `https://www1.sii.cl/cgi-bin/Portal001/mipeAdminDocsRcp.cgi?RUT_EMI=${rutNum}&FOLIO=${folioStr}&RZN_SOC=&FEC_DESDE=&FEC_HASTA=&TPO_DOC=&ESTADO=&ORDEN=&NUM_PAG=1`;
-  const resp = await axios.get(url, {
-    maxRedirects: 3, validateStatus: () => true,
-    headers: {
-      'Cookie': siiCookieHeader(cookies),
-      'Referer': 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4',
-      'User-Agent': SII_UA,
-    },
-  });
 
-  const body = typeof resp.data === 'string' ? resp.data : '';
-  const m = body.match(/\/cgi-bin\/Portal001\/mipeGesDocRcp\.cgi\?CODIGO=(\d+)/);
-  if (!m) {
-    const titulo = (body.match(/<title>([^<]*)<\/title>/i) ?? [])[1] ?? '?';
-    console.warn(`[SII pdf] Folio ${folio} no encontrado. Título: "${titulo}" | body: ${body.slice(0, 200)}`);
-    return null;
+  // Hasta 4 intentos con backoff: 2s, 4s, 8s entre reintentos por 503
+  for (let intento = 1; intento <= 4; intento++) {
+    const resp = await axios.get(url, {
+      maxRedirects: 3, validateStatus: () => true,
+      headers: {
+        'Cookie': siiCookieHeader(cookies),
+        'Referer': 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4',
+        'User-Agent': SII_UA,
+      },
+    });
+
+    const body = typeof resp.data === 'string' ? resp.data : '';
+
+    // SII sobrecargado — reintentar con backoff
+    if (resp.status === 503 || body.includes('503 Service Temporarily')) {
+      const espera = intento * 2000;
+      console.warn(`[SII pdf] Folio ${folio} → 503, reintento ${intento}/4 en ${espera/1000}s...`);
+      await sleep(espera);
+      continue;
+    }
+
+    const m = body.match(/\/cgi-bin\/Portal001\/mipeGesDocRcp\.cgi\?CODIGO=(\d+)/);
+    if (!m) {
+      const titulo = (body.match(/<title>([^<]*)<\/title>/i) ?? [])[1] ?? '?';
+      console.warn(`[SII pdf] Folio ${folio} no encontrado. Título: "${titulo}" | body: ${body.slice(0, 200)}`);
+      return null;
+    }
+    return m[1];
   }
-  return m[1];
+
+  console.warn(`[SII pdf] Folio ${folio} → 503 persistente tras 4 intentos`);
+  return null;
 }
 
 // ── Descargar PDF de un documento dado su CODIGO interno ─────────────────────
@@ -680,10 +697,17 @@ async function descargarPdfsBulkSII() {
     const cookies = await autenticarSIIdirecto();
     console.log(`[PDF bulk] Sesión lista. Descargando ${sinPdf.length} PDFs...`);
 
+    let sesionErrores = 0;
     for (const f of sinPdf) {
+      // Pausa cortés entre documentos para no saturar SII
+      await sleep(400);
       try {
         const codigo = await buscarCodigoPdf(cookies, f.folio, f.rut_emisor);
-        if (!codigo) throw new Error('no encontrado en SII');
+        if (!codigo) {
+          errores++;
+          console.warn(`[PDF bulk] ✗ Folio ${f.folio}: no encontrado en SII`);
+          continue;
+        }
 
         const buf    = await descargarPdfPorCodigo(cookies, codigo);
         const nombre = `factura_${f.folio}_${f.rut_emisor}.pdf`;
@@ -692,10 +716,24 @@ async function descargarPdfsBulkSII() {
           [buf, nombre, f.id]
         );
         descargadas++;
+        sesionErrores = 0;
         console.log(`[PDF bulk] ✓ Folio ${f.folio} CODIGO ${codigo} (${descargadas}/${sinPdf.length})`);
       } catch (err) {
+        sesionErrores++;
         errores++;
         console.error(`[PDF bulk] ✗ Folio ${f.folio}: ${err.message}`);
+        // Si 3 errores seguidos, la sesión probablemente expiró → re-autenticar
+        if (sesionErrores >= 3) {
+          console.warn('[PDF bulk] 3 errores seguidos → re-autenticando sesión SII...');
+          try {
+            cookies = await autenticarSIIdirecto();
+            sesionErrores = 0;
+            console.log('[PDF bulk] Re-autenticación OK');
+          } catch (e) {
+            console.error(`[PDF bulk] Re-auth fallida: ${e.message}`);
+          }
+          await sleep(2000);
+        }
       }
     }
   } finally {
