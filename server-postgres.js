@@ -665,12 +665,12 @@ async function abrirSesionSII() {
 
 
 // Descarga el PDF de UNA factura (HTTP directo, sin Playwright)
-async function descargarPdfSII(folio, rutEmisor) {
+async function descargarPdfSII(folio, rutEmisor, codigoBd = null) {
   if (pdfEnCurso || siiEnCurso) throw new Error('Ya hay una operación SII en curso, intenta en unos minutos');
   pdfEnCurso = true;
   try {
     const cookies = await autenticarSIIdirecto();
-    const codigo  = await buscarCodigoPdf(cookies, folio, rutEmisor);
+    const codigo  = codigoBd || await buscarCodigoPdf(cookies, folio, rutEmisor);
     if (!codigo) throw new Error(`Folio ${folio} no encontrado en SII`);
     console.log(`[SII pdf] Folio ${folio} → CODIGO ${codigo}`);
     return await descargarPdfPorCodigo(cookies, codigo);
@@ -688,7 +688,7 @@ async function descargarPdfsBulkSII() {
   pdfEnCurso = true;
 
   const { rows: sinPdf } = await pool.query(
-    `SELECT id, folio, rut_emisor FROM facturas_recibidas WHERE pdf_data IS NULL ORDER BY fecha_emision DESC`
+    `SELECT id, folio, rut_emisor, codigo FROM facturas_recibidas WHERE pdf_data IS NULL ORDER BY fecha_emision DESC`
   );
   if (!sinPdf.length) { pdfEnCurso = false; return { descargadas: 0, errores: 0, total: 0 }; }
 
@@ -702,10 +702,15 @@ async function descargarPdfsBulkSII() {
       // Pausa cortés entre documentos para no saturar SII
       await sleep(400);
       try {
-        const codigo = await buscarCodigoPdf(cookies, f.folio, f.rut_emisor);
+        // Usar CODIGO guardado en BD directamente (viene de detCodigo al sincronizar)
+        // Fallback: buscar en mipeAdminDocsRcp si no está en BD (documentos antiguos)
+        let codigo = f.codigo;
+        if (!codigo) {
+          codigo = await buscarCodigoPdf(cookies, f.folio, f.rut_emisor);
+        }
         if (!codigo) {
           errores++;
-          console.warn(`[PDF bulk] ✗ Folio ${f.folio}: no encontrado en SII`);
+          console.warn(`[PDF bulk] ✗ Folio ${f.folio}: sin CODIGO en BD ni en SII`);
           continue;
         }
 
@@ -873,13 +878,13 @@ app.post('/api/pdf/sync', async (req, res) => {
 app.get('/api/pdf/test/:folio', async (req, res) => {
   if (pdfEnCurso || siiEnCurso) return res.status(409).json({ error: 'Operación SII en curso, espera' });
   const { rows } = await pool.query(
-    `SELECT id, folio, rut_emisor FROM facturas_recibidas WHERE folio=$1 LIMIT 1`,
+    `SELECT id, folio, rut_emisor, codigo FROM facturas_recibidas WHERE folio=$1 LIMIT 1`,
     [req.params.folio]
   );
   if (!rows.length) return res.status(404).json({ error: 'Folio no encontrado en DB' });
   const f = rows[0];
   try {
-    const buf = await descargarPdfSII(f.folio, f.rut_emisor);
+    const buf = await descargarPdfSII(f.folio, f.rut_emisor, f.codigo);
     const nombre = `factura_${f.folio}_${f.rut_emisor}.pdf`;
     await pool.query(
       `UPDATE facturas_recibidas SET pdf_data=$1, pdf_nombre=$2, pdf_at=NOW(), updated_at=NOW() WHERE id=$3`,
