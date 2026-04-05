@@ -153,7 +153,11 @@
       <!-- Panel izquierdo: detalle + edición -->
       <div class="modal-panel-left">
         <div class="modal-header">
-          <h2 id="modal-titulo">Factura</h2>
+          <div class="modal-nav">
+            <button class="modal-nav-btn" id="btn-modal-prev" onclick="navegarModal(-1)" title="Anterior">‹</button>
+            <h2 id="modal-titulo">Factura</h2>
+            <button class="modal-nav-btn" id="btn-modal-next" onclick="navegarModal(1)" title="Siguiente">›</button>
+          </div>
           <button class="modal-close" id="modal-close">✕</button>
         </div>
         <div class="modal-body">

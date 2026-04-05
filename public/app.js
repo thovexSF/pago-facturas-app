@@ -2,6 +2,9 @@ let facturas    = [];
 let proveedores = [];
 let calendar    = null;
 let facturaActiva = null;
+let modalLista    = [];   // lista filtrada visible al abrir el modal
+let modalIndex    = -1;   // índice de facturaActiva en modalLista
+let listaActual   = [];   // última lista renderizada en la tabla (para navegación)
 
 // Chips: set de rut_emisor visibles en calendario (persistido en localStorage)
 let chipsFiltro = new Set(JSON.parse(localStorage.getItem('chipsFiltro') ?? 'null') ?? []);
@@ -192,6 +195,7 @@ function renderTabla() {
   const empty = document.getElementById('empty-state');
   if (!lista.length) { tbody.innerHTML = ''; empty.style.display = 'block'; return; }
   empty.style.display = 'none';
+  listaActual = lista;  // exponer para onclick inline
 
   const hoy = new Date();
   tbody.innerHTML = lista.map(f => {
@@ -202,7 +206,7 @@ function renderTabla() {
     const estadoLabel = ambaPagada ? 'Pagada' : vencida ? 'Vencida' : 'Pendiente';
     const proxVcto    = !f.pagado_1 && f.vcto_1 ? f.vcto_1 : f.vcto_2;
     return `
-      <tr class="${vencida?'row-vencida':''}" onclick="abrirModal(facturas.find(x=>x.id===${f.id}))" style="cursor:pointer">
+      <tr class="${vencida?'row-vencida':''}" onclick="abrirModal(facturas.find(x=>x.id===${f.id}),listaActual)" style="cursor:pointer">
         <td>
           <div class="emisor-nombre">${esc(f.razon_social||'—')}</div>
           <div class="emisor-rut">${esc(f.rut_emisor||'—')}</div>
@@ -309,9 +313,18 @@ function initModal() {
   // btn-modal-pdf onclick se asigna dinámicamente en abrirModal
 }
 
-function abrirModal(f) {
+function abrirModal(f, lista) {
   if (!f) return;
   facturaActiva = f;
+  // Si se pasa una lista (desde la tabla), actualizarla; si no, reusar la actual
+  if (lista) modalLista = lista;
+  modalIndex = modalLista.findIndex(x => x.id === f.id);
+
+  // Flechas
+  const prev = document.getElementById('btn-modal-prev');
+  const next = document.getElementById('btn-modal-next');
+  if (prev) prev.disabled = modalIndex <= 0;
+  if (next) next.disabled = modalIndex >= modalLista.length - 1;
   const prov = proveedores.find(p => p.rut_emisor === f.rut_emisor);
 
   document.getElementById('modal-titulo').textContent        = `Factura ${f.folio?'#'+f.folio:''}`;
@@ -383,10 +396,18 @@ function abrirModal(f) {
   document.getElementById('modal').style.display = 'flex';
 }
 
+function navegarModal(dir) {
+  const nuevo = modalIndex + dir;
+  if (nuevo < 0 || nuevo >= modalLista.length) return;
+  abrirModal(modalLista[nuevo]);
+}
+
 function cerrarModal() {
   document.getElementById('modal-pdf-iframe').src = '';
   document.getElementById('modal').style.display = 'none';
   facturaActiva = null;
+  modalLista = [];
+  modalIndex = -1;
 }
 
 async function marcarCuota(cuota) {
