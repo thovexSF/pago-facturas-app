@@ -68,13 +68,15 @@
           <option value="pendiente">Pendientes</option>
           <option value="pagada">Pagadas</option>
         </select>
-        <input id="filter-emisor" type="text" placeholder="Buscar emisor..." oninput="renderTabla()">
       </div>
       <div class="table-wrapper">
       <table class="facturas-table">
         <thead>
           <tr>
-            <th>Emisor</th>
+            <th>
+              Emisor
+              <input id="filter-emisor" type="text" placeholder="Buscar…" oninput="renderTabla()" class="th-filter-input">
+            </th>
             <th>Folio</th>
             <th>Emisión</th>
             <th>Próx. vencimiento</th>
