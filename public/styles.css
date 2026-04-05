@@ -108,27 +108,100 @@ body {
   color: #4a5568;
   background: #fff;
 }
-.th-filter-input {
-  display: block;
-  margin-top: 5px;
-  width: 100%;
-  padding: 4px 8px;
-  font-size: 11px;
+/* ── Filtro tipo Excel en columna Emisor ── */
+#th-emisor { position: relative; }
+
+.th-emisor-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.th-filter-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+  color: #a0aec0;
+  padding: 0 2px;
+  line-height: 1;
+  border-radius: 3px;
+  transition: color .15s, background .15s;
+}
+.th-filter-btn:hover,
+.th-filter-btn.active { color: #667eea; background: #ebf4ff; }
+.th-filter-btn.active { color: #5a67d8; }
+
+.th-filter-panel {
+  display: none;
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 100;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.12);
+  min-width: 220px;
+  max-width: 300px;
+  padding: 8px 0 6px;
   font-weight: 400;
   text-transform: none;
   letter-spacing: 0;
   color: #2d3748;
-  background: #fff;
+}
+.th-filter-panel.open { display: block; }
+
+.th-filter-actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 10px 6px;
+  border-bottom: 1px solid #f0f4f8;
+}
+.th-filter-actions button {
+  flex: 1;
+  padding: 4px 0;
+  font-size: 11px;
+  background: #f7fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  cursor: pointer;
+  color: #4a5568;
+}
+.th-filter-actions button:hover { background: #edf2f7; }
+
+.th-filter-search {
+  padding: 6px 10px;
+  border-bottom: 1px solid #f0f4f8;
+}
+.th-filter-search input {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 12px;
   border: 1px solid #e2e8f0;
   border-radius: 5px;
   box-sizing: border-box;
-  min-width: 140px;
+  color: #2d3748;
 }
-.th-filter-input:focus {
-  outline: none;
-  border-color: #667eea;
-  box-shadow: 0 0 0 2px rgba(102,126,234,.15);
+.th-filter-search input:focus { outline: none; border-color: #667eea; }
+
+.th-filter-items {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px 0;
 }
+.th-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #2d3748;
+}
+.th-filter-item:hover { background: #f7fafc; }
+.th-filter-item input[type=checkbox] { accent-color: #667eea; width: 13px; height: 13px; cursor: pointer; }
+.th-filter-item.hidden { display: none; }
 
 /* ── Table wrapper con scroll ── */
 .table-wrapper {

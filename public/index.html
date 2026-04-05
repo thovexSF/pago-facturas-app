@@ -73,9 +73,21 @@
       <table class="facturas-table">
         <thead>
           <tr>
-            <th>
-              Emisor
-              <input id="filter-emisor" type="text" placeholder="Buscar…" oninput="renderTabla()" class="th-filter-input">
+            <th id="th-emisor">
+              <div class="th-emisor-label">
+                Emisor
+                <button class="th-filter-btn" id="btn-filter-emisor" onclick="toggleFiltroEmisor(event)">▾</button>
+              </div>
+              <div class="th-filter-panel" id="filter-emisor-panel">
+                <div class="th-filter-actions">
+                  <button onclick="filtroEmisorTodos(event)">Todos</button>
+                  <button onclick="filtroEmisorNinguno(event)">Ninguno</button>
+                </div>
+                <div class="th-filter-search">
+                  <input type="text" placeholder="Buscar…" oninput="filtrarItemsEmisor(this.value)" onclick="event.stopPropagation()">
+                </div>
+                <div class="th-filter-items" id="filter-emisor-items"></div>
+              </div>
             </th>
             <th>Folio</th>
             <th>Emisión</th>

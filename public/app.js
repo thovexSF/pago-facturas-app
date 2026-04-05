@@ -10,6 +10,9 @@ let chipsFiltro = new Set(JSON.parse(localStorage.getItem('chipsFiltro') ?? 'nul
 let graficoProvsFiltro = new Set();
 let graficoFiltroIniciado = false;
 
+// Filtro tipo Excel de la columna Emisor: null = todos, Set = seleccionados
+let filtroEmisores = null;
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -24,12 +27,15 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('filter-estado').addEventListener('change', renderTabla);
   document.getElementById('grafico-tipo').addEventListener('change', renderGrafico);
 
-  // Cerrar dropdown de proveedores al hacer click fuera
+  // Cerrar dropdowns al hacer click fuera
   document.addEventListener('click', e => {
     const dd = document.getElementById('prov-dropdown');
-    if (dd && !dd.contains(e.target)) {
+    if (dd && !dd.contains(e.target))
       document.getElementById('prov-dropdown-panel')?.classList.remove('open');
-    }
+
+    const thEmisor = document.getElementById('th-emisor');
+    if (thEmisor && !thEmisor.contains(e.target))
+      cerrarFiltroEmisor();
   });
 });
 
@@ -175,15 +181,12 @@ function renderStats() {
 // ─── Tabla ────────────────────────────────────────────────────────────────────
 
 function renderTabla() {
-  const filtro  = document.getElementById('filter-estado').value;
-  const busqueda = (document.getElementById('filter-emisor')?.value ?? '').toLowerCase().trim();
+  const filtro = document.getElementById('filter-estado').value;
   let lista = facturas;
   if (filtro === 'pendiente') lista = lista.filter(f => !f.pagado_1 || (f.vcto_2 && !f.pagado_2));
   if (filtro === 'pagada')    lista = lista.filter(f => f.pagado_1 && (!f.vcto_2 || f.pagado_2));
-  if (busqueda) lista = lista.filter(f =>
-    (f.razon_social ?? '').toLowerCase().includes(busqueda) ||
-    (f.rut_emisor   ?? '').toLowerCase().includes(busqueda)
-  );
+  if (filtroEmisores !== null) lista = lista.filter(f => filtroEmisores.has(f.rut_emisor));
+  actualizarBtnFiltroEmisor();
 
   const tbody = document.getElementById('facturas-tbody');
   const empty = document.getElementById('empty-state');
@@ -618,6 +621,90 @@ function esc(str) {
 function copiarTexto(id) {
   navigator.clipboard.writeText(document.getElementById(id)?.textContent||'')
     .then(() => mostrarToast('Copiado','success'));
+}
+
+// ─── Filtro tipo Excel — columna Emisor ───────────────────────────────────────
+
+function toggleFiltroEmisor(e) {
+  e.stopPropagation();
+  const panel = document.getElementById('filter-emisor-panel');
+  const btn   = document.getElementById('btn-filter-emisor');
+  const abierto = panel.classList.contains('open');
+  if (abierto) { cerrarFiltroEmisor(); return; }
+
+  // Construir items con los emisores únicos de facturas
+  const emisores = [...new Map(
+    facturas.map(f => [f.rut_emisor, f.razon_social || f.rut_emisor])
+  ).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+
+  const items = document.getElementById('filter-emisor-items');
+  items.innerHTML = emisores.map(([rut, nombre]) => {
+    const checked = filtroEmisores === null || filtroEmisores.has(rut);
+    return `<label class="th-filter-item" data-rut="${rut}" data-nombre="${nombre.toLowerCase()}">
+      <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleEmisor('${rut}',this.checked)" onclick="event.stopPropagation()">
+      <span>${esc(nombre)}</span>
+    </label>`;
+  }).join('');
+
+  // Limpiar búsqueda previa
+  const searchInput = panel.querySelector('.th-filter-search input');
+  if (searchInput) searchInput.value = '';
+
+  panel.classList.add('open');
+  btn.classList.add('active');
+}
+
+function cerrarFiltroEmisor() {
+  document.getElementById('filter-emisor-panel')?.classList.remove('open');
+  document.getElementById('btn-filter-emisor')?.classList.remove('active');
+  actualizarBtnFiltroEmisor();
+}
+
+function toggleEmisor(rut, checked) {
+  // Primera interacción: inicializar con todos seleccionados
+  if (filtroEmisores === null) {
+    filtroEmisores = new Set(facturas.map(f => f.rut_emisor));
+  }
+  if (checked) filtroEmisores.add(rut);
+  else         filtroEmisores.delete(rut);
+
+  // Si todos seleccionados → volver a null (sin filtro)
+  const total = new Set(facturas.map(f => f.rut_emisor)).size;
+  if (filtroEmisores.size === total) filtroEmisores = null;
+
+  renderTabla();
+}
+
+function filtroEmisorTodos(e) {
+  e.stopPropagation();
+  filtroEmisores = null;
+  // Marcar todos los checkboxes
+  document.querySelectorAll('#filter-emisor-items input[type=checkbox]')
+    .forEach(cb => cb.checked = true);
+  renderTabla();
+}
+
+function filtroEmisorNinguno(e) {
+  e.stopPropagation();
+  filtroEmisores = new Set();
+  document.querySelectorAll('#filter-emisor-items input[type=checkbox]')
+    .forEach(cb => cb.checked = false);
+  renderTabla();
+}
+
+function filtrarItemsEmisor(q) {
+  const texto = q.toLowerCase();
+  document.querySelectorAll('#filter-emisor-items .th-filter-item').forEach(el => {
+    el.classList.toggle('hidden', texto && !el.dataset.nombre.includes(texto));
+  });
+}
+
+function actualizarBtnFiltroEmisor() {
+  const btn = document.getElementById('btn-filter-emisor');
+  if (!btn) return;
+  const activo = filtroEmisores !== null;
+  btn.classList.toggle('active', activo);
+  btn.textContent = activo ? '▾●' : '▾';
 }
 
 function mostrarToast(msg, tipo='info') {
