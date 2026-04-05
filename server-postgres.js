@@ -243,11 +243,22 @@ async function autenticarSIIdirecto() {
   const qs = new URLSearchParams({ rutcntr: empresaRut, rut: rutNum, dv, clave: SII_PASSWORD, referencia: REFERENCIA }).toString();
   const r1 = await axios.get(`https://zeusr.sii.cl/cgi_AUT2000/CAutInicio.cgi?${qs}`, {
     maxRedirects: 0, validateStatus: () => true,
-    headers: { 'User-Agent': SII_UA },
+    headers: {
+      'User-Agent':      SII_UA,
+      'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'es-CL,es;q=0.9,en;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection':      'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+    },
   });
   let cookies = parseSiiCookies(r1.headers['set-cookie']);
-  if (!cookies.some(c => c.name === 'TOKEN'))
+  console.log(`[SII auth] CAutInicio status=${r1.status} cookies=[${cookies.map(c=>c.name).join(',')}]`);
+  if (!cookies.some(c => c.name === 'TOKEN')) {
+    const bodySnip = (typeof r1.data === 'string' ? r1.data : JSON.stringify(r1.data)).replace(/\s+/g,' ').slice(0, 400);
+    console.error(`[SII auth] Sin TOKEN. Location=${r1.headers['location']??'n/a'} body="${bodySnip}"`);
     throw new Error(`CAutInicio no devolvió TOKEN (status ${r1.status})`);
+  }
   console.log(`[SII auth] TOKEN obtenido`);
 
   // PASO 2: POST mipeSelEmpresa.cgi ────────────────────────────────────────────
@@ -535,6 +546,16 @@ async function seleccionarEmpresa(page) {
   }
 }
 
+// Inyecta cookies HTTP en un contexto Playwright
+async function inyectarCookiesEnContexto(context, cookies) {
+  await context.addCookies(cookies.map(c => ({
+    name: c.name, value: c.value,
+    domain: c.domain.startsWith('.') ? c.domain : `.${c.domain}`,
+    path: c.path ?? '/',
+    secure: true, sameSite: 'None',
+  })));
+}
+
 async function abrirSesionSII() {
   if (siiEnCurso) throw new Error('Ya hay una operación SII en curso, espera unos minutos');
   siiEnCurso = true;
@@ -555,15 +576,19 @@ async function abrirSesionSII() {
   });
 
   try {
-    // Auth vía HTTP directo (rápido, sin formulario de browser)
-    const httpCookies = await autenticarSIIdirecto();
-    await context.addCookies(httpCookies.map(c => ({
-      name: c.name, value: c.value,
-      domain: c.domain.startsWith('.') ? c.domain : `.${c.domain}`,
-      path: c.path ?? '/',
-      secure: true, sameSite: 'None',
-    })));
-    console.log('[SII www4] Cookies inyectadas en Playwright');
+    // Intentar auth HTTP directo primero (más rápido)
+    let authViaBrowser = false;
+    try {
+      const httpCookies = await autenticarSIIdirecto();
+      await inyectarCookiesEnContexto(context, httpCookies);
+      console.log('[SII www4] Cookies HTTP inyectadas en Playwright');
+    } catch (httpErr) {
+      console.warn(`[SII www4] Auth HTTP falló (${httpErr.message}), usando formulario browser...`);
+      await loginSII(page);
+      await seleccionarEmpresa(page);
+      authViaBrowser = true;
+      console.log('[SII www4] Auth browser completado');
+    }
 
     await page.goto('https://www4.sii.cl/consdcvinternetui/', { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
