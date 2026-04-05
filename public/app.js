@@ -632,6 +632,12 @@ function toggleFiltroEmisor(e) {
   const abierto = panel.classList.contains('open');
   if (abierto) { cerrarFiltroEmisor(); return; }
 
+  // Si "ninguno" estaba seleccionado (set vacío), resetear a todos al abrir
+  if (filtroEmisores !== null && filtroEmisores.size === 0) {
+    filtroEmisores = null;
+    renderTabla();
+  }
+
   // Construir items con los emisores únicos de facturas
   const emisores = [...new Map(
     facturas.map(f => [f.rut_emisor, f.razon_social || f.rut_emisor])
