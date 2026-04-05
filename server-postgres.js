@@ -389,11 +389,33 @@ async function seleccionarEmpresa(page) {
     }
   }
 
+  // Log diagnóstico de la página actual (formularios, selects, botones)
+  const diagPage = await page.evaluate(() => {
+    const sel = document.querySelector('select[name="RUT_EMP"]');
+    const form = sel?.closest('form');
+    return {
+      tieneRutEmp:  !!sel,
+      formAction:   form?.action ?? '(sin form)',
+      optsCount:    sel?.options?.length ?? 0,
+      optsValues:   Array.from(sel?.options ?? []).map(o => o.value).slice(0, 8),
+      allSubmits:   Array.from(document.querySelectorAll('[type=submit]'))
+                      .map(b => ({ val: b.value?.slice(0, 30), formAction: b.form?.action?.split('/').pop() ?? '?' }))
+                      .slice(0, 6),
+    };
+  }).catch(() => null);
+  if (diagPage) console.log(`[SII empresa] Diag página: ${JSON.stringify(diagPage)}`);
+
   if (await page.locator('select[name="RUT_EMP"]').count()) {
     await page.locator('select[name="RUT_EMP"]').selectOption(SII_EMPRESA_RUT);
+    // Clicar el submit que está DENTRO del mismo form que select[name="RUT_EMP"]
+    // (la página puede tener otros forms con sus propios submit que llevan a factura_sii.htm)
+    const submitEnForm = page.locator('form:has(select[name="RUT_EMP"]) [type=submit]');
+    const submitBtn = await submitEnForm.count()
+      ? submitEnForm.first()
+      : page.locator('[type=submit]').first();
     await Promise.all([
       page.waitForLoadState('load').catch(() => {}),
-      page.locator('[type=submit]').first().click(),
+      submitBtn.click(),
     ]);
     await page.waitForTimeout(1000);
     console.log(`[SII empresa] Post-selección URL: ${page.url()}`);
