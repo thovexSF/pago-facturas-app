@@ -4,7 +4,8 @@ let calendar    = null;
 let facturaActiva = null;
 let modalLista    = [];   // lista filtrada visible al abrir el modal
 let modalIndex    = -1;   // índice de facturaActiva en modalLista
-let listaActual   = [];   // última lista renderizada en la tabla (para navegación)
+let listaActual         = [];   // última lista renderizada en la tabla (para navegación)
+let filtroInicializado  = false;
 
 // Chips: set de rut_emisor visibles en calendario (persistido en localStorage)
 let chipsFiltro = new Set(JSON.parse(localStorage.getItem('chipsFiltro') ?? 'null') ?? []);
@@ -146,6 +147,18 @@ function initTabs() {
 async function cargarFacturas() {
   const res = await fetch('/api/facturas');
   facturas  = await res.json();
+
+  // Filtro por defecto: solo Arabica Spa (solo en la primera carga)
+  if (!filtroInicializado && facturas.length) {
+    filtroInicializado = true;
+    const arabica = facturas.find(f => /arabica/i.test(f.razon_social));
+    if (arabica) {
+      filtroEmisores = new Set([arabica.rut_emisor]);
+      const chk = document.getElementById('chk-emisor-todos');
+      if (chk) chk.checked = false;
+    }
+  }
+
   renderStats();
   renderTabla();
   cargarEventosCalendar();
