@@ -232,54 +232,92 @@ function siiCookieHeader(cookies) {
 
 const SII_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// ── Autenticación directa vía CAutInicio.cgi + mipeSelEmpresa.cgi ─────────────
-// No usa browser. Devuelve array de cookies listas para usar en axios.
-async function autenticarSIIdirecto() {
-  const [rutNum, dv]     = SII_RUT.replace(/\./g, '').split('-');
-  const [empresaRut]     = SII_EMPRESA_RUT.split('-');
-  const REFERENCIA       = 'https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi';
+// ── Autenticación directa vía CAutInicio.cgi (HTTP, sin browser) ──────────────
+// Rápida pero puede fallar desde IPs de nube (Railway). Devuelve cookies o null.
+async function autenticarHTTP() {
+  const [rutNum, dv] = SII_RUT.replace(/\./g, '').split('-');
+  const [empresaRut] = SII_EMPRESA_RUT.split('-');
+  const REFERENCIA   = 'https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi';
 
-  // PASO 1: CAutInicio.cgi ─────────────────────────────────────────────────────
   const qs = new URLSearchParams({ rutcntr: empresaRut, rut: rutNum, dv, clave: SII_PASSWORD, referencia: REFERENCIA }).toString();
   const r1 = await axios.get(`https://zeusr.sii.cl/cgi_AUT2000/CAutInicio.cgi?${qs}`, {
     maxRedirects: 0, validateStatus: () => true,
     headers: {
       'User-Agent':      SII_UA,
-      'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      'Accept-Language': 'es-CL,es;q=0.9,en;q=0.8',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'Connection':      'keep-alive',
-      'Upgrade-Insecure-Requests': '1',
+      'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'es-CL,es;q=0.9',
     },
   });
-  let cookies = parseSiiCookies(r1.headers['set-cookie']);
-  console.log(`[SII auth] CAutInicio status=${r1.status} cookies=[${cookies.map(c=>c.name).join(',')}]`);
-  if (!cookies.some(c => c.name === 'TOKEN')) {
-    const bodySnip = (typeof r1.data === 'string' ? r1.data : JSON.stringify(r1.data)).replace(/\s+/g,' ').slice(0, 400);
-    console.error(`[SII auth] Sin TOKEN. Location=${r1.headers['location']??'n/a'} body="${bodySnip}"`);
-    throw new Error(`CAutInicio no devolvió TOKEN (status ${r1.status})`);
-  }
-  console.log(`[SII auth] TOKEN obtenido`);
+  const cookies = parseSiiCookies(r1.headers['set-cookie']);
+  console.log(`[SII auth] CAutInicio status=${r1.status} cookies=[${cookies.map(c=>c.name).join(',')||'ninguna'}]`);
+  if (!cookies.some(c => c.name === 'TOKEN')) return null;
+  return cookies;
+}
 
-  // PASO 2: POST mipeSelEmpresa.cgi ────────────────────────────────────────────
-  const r2 = await axios.post(
+// ── POST mipeSelEmpresa.cgi con cookies de sesión ────────────────────────────
+async function seleccionarEmpresaHTTP(cookies) {
+  const r = await axios.post(
     'https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi',
     new URLSearchParams({ RUT_EMP: SII_EMPRESA_RUT }).toString(),
     {
       maxRedirects: 0, validateStatus: () => true,
       headers: {
-        'Cookie': siiCookieHeader(cookies),
+        'Cookie':       siiCookieHeader(cookies),
         'Content-Type': 'application/x-www-form-urlencoded',
-        'Referer': 'https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi',
-        'User-Agent': SII_UA,
+        'Referer':      'https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi',
+        'User-Agent':   SII_UA,
       },
     }
   );
-  cookies = mergeSiiCookies(cookies, parseSiiCookies(r2.headers['set-cookie']));
-  if (!cookies.some(c => c.name === 'NETSCAPE_LIVEWIRE.rcmp'))
-    throw new Error(`mipeSelEmpresa no estableció rcmp (empresa no seleccionada)`);
-  console.log(`[SII auth] Empresa seleccionada: rcmp=${cookies.find(c => c.name === 'NETSCAPE_LIVEWIRE.rcmp')?.value}`);
-  return cookies;
+  const all = mergeSiiCookies(cookies, parseSiiCookies(r.headers['set-cookie']));
+  if (!all.some(c => c.name === 'NETSCAPE_LIVEWIRE.rcmp'))
+    throw new Error('mipeSelEmpresa no estableció rcmp (empresa no seleccionada)');
+  console.log(`[SII auth] Empresa rcmp=${all.find(c=>c.name==='NETSCAPE_LIVEWIRE.rcmp')?.value}`);
+  return all;
+}
+
+// ── Autenticación vía formulario browser (Playwright) ────────────────────────
+// Fallback cuando CAutInicio HTTP está bloqueado (ej: IPs de Railway).
+// Hace login con browser, extrae cookies y selecciona empresa vía HTTP.
+async function autenticarViaBrowser() {
+  const { chromium } = require('playwright');
+  const browser = await chromium.launch({ headless: true });
+  const ctx     = await browser.newContext({ ignoreHTTPSErrors: true, userAgent: SII_UA });
+  const page    = await ctx.newPage();
+  try {
+    await loginSII(page);   // form browser → zeusr session
+
+    // Extraer todas las cookies del contexto del browser
+    const rawCookies = await ctx.cookies();
+    const cookies = rawCookies.map(c => ({
+      name: c.name, value: c.value,
+      domain: c.domain.startsWith('.') ? c.domain : `.${c.domain}`,
+      path: c.path ?? '/',
+    })).filter(c => c.value && c.value !== 'DEL');
+
+    if (!cookies.some(c => c.name === 'TOKEN'))
+      throw new Error('Browser login no devolvió TOKEN');
+    console.log(`[SII auth] Cookies extraídas del browser: ${cookies.map(c=>c.name).join(',')}`);
+
+    // Seleccionar empresa vía HTTP con estas cookies (más fiable que navegar en Playwright)
+    return await seleccionarEmpresaHTTP(cookies);
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
+// ── Punto de entrada: intenta HTTP, cae a browser si falla ────────────────────
+async function autenticarSIIdirecto() {
+  // Intento 1: HTTP directo (rápido, funciona desde IPs no bloqueadas)
+  try {
+    const cookies = await autenticarHTTP();
+    if (cookies) return await seleccionarEmpresaHTTP(cookies);
+    console.warn('[SII auth] CAutInicio HTTP sin TOKEN, usando browser...');
+  } catch (err) {
+    console.warn(`[SII auth] CAutInicio HTTP error (${err.message}), usando browser...`);
+  }
+  // Intento 2: formulario browser → extraer cookies → HTTP Portal001
+  return autenticarViaBrowser();
 }
 
 // ── Buscar CODIGO de un documento en mipeAdminDocsRcp ────────────────────────
