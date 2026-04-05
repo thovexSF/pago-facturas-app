@@ -555,10 +555,17 @@ async function abrirSesionSII() {
   });
 
   try {
-    await loginSII(page);
-    await seleccionarEmpresa(page);
+    // Auth vía HTTP directo (rápido, sin formulario de browser)
+    const httpCookies = await autenticarSIIdirecto();
+    await context.addCookies(httpCookies.map(c => ({
+      name: c.name, value: c.value,
+      domain: c.domain.startsWith('.') ? c.domain : `.${c.domain}`,
+      path: c.path ?? '/',
+      secure: true, sameSite: 'None',
+    })));
+    console.log('[SII www4] Cookies inyectadas en Playwright');
 
-    await page.goto('https://www4.sii.cl/consdcvinternetui/', { waitUntil: 'networkidle' });
+    await page.goto('https://www4.sii.cl/consdcvinternetui/', { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
 
     if (!conversationId) {
@@ -570,7 +577,7 @@ async function abrirSesionSII() {
     // siiEnCurso permanece true — el LLAMADOR debe liberarlo al cerrar browser
     return { browser, context, conversationId };
   } catch (err) {
-    siiEnCurso = false; // liberar solo en error (el browser nunca llegó a usarse)
+    siiEnCurso = false;
     await browser.close().catch(() => {});
     throw err;
   }
