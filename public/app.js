@@ -25,6 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initModal();
   cargarTodo();
   syncAuto();
+  cargarBannerVencimientos();
 
   document.getElementById('btn-sync').addEventListener('click', sincronizarHistorico);
   document.getElementById('btn-pdf-sync').addEventListener('click', descargarPdfsPendientes);
@@ -807,4 +808,50 @@ function mostrarToast(msg, tipo='info') {
   t.textContent = msg;
   t.className = `toast toast-${tipo} show`;
   setTimeout(() => { t.className = 'toast'; }, 3500);
+}
+
+// ─── Banner de vencimientos próximos ─────────────────────────────────────────
+
+async function cargarBannerVencimientos() {
+  const DIAS = 5;
+  const STORAGE_KEY = 'banner_vcto_dismissed';
+  const hoy = new Date().toISOString().split('T')[0];
+
+  // No mostrar si ya fue cerrado hoy
+  if (localStorage.getItem(STORAGE_KEY) === hoy) return;
+
+  try {
+    const cuotas = await fetch(`/api/notificaciones/proximos?dias=${DIAS}`).then(r => r.json());
+    if (!cuotas.length) return;
+
+    const fmt = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('es-CL') : '—';
+    const fmtMonto = (n) => n ? new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(n) : '';
+
+    const items = cuotas.map(c => {
+      const partes = [];
+      if (!c.pagado_1 && c.vcto_1) partes.push(`C1 <strong>${fmt(c.vcto_1)}</strong> ${fmtMonto(c.monto_1)}`);
+      if (!c.pagado_2 && c.vcto_2) partes.push(`C2 <strong>${fmt(c.vcto_2)}</strong> ${fmtMonto(c.monto_2)}`);
+      return `<span class="banner-vcto-item"><span class="banner-vcto-nombre">${c.nombre_emisor} #${c.folio}</span> — ${partes.join(' · ')}</span>`;
+    }).join('');
+
+    const banner = document.createElement('div');
+    banner.id = 'banner-vencimientos';
+    banner.className = 'banner-vencimientos';
+    banner.innerHTML = `
+      <span class="banner-vcto-icon">⚠️</span>
+      <div class="banner-vcto-content">
+        <strong>${cuotas.length} cuota${cuotas.length > 1 ? 's' : ''} vence${cuotas.length > 1 ? 'n' : ''} en los próximos ${DIAS} días</strong>
+        <div class="banner-vcto-items">${items}</div>
+      </div>
+      <button class="banner-vcto-close" onclick="cerrarBannerVencimientos()" title="Cerrar">✕</button>
+    `;
+
+    document.querySelector('.app').prepend(banner);
+  } catch (_) { /* silencioso */ }
+}
+
+function cerrarBannerVencimientos() {
+  const hoy = new Date().toISOString().split('T')[0];
+  localStorage.setItem('banner_vcto_dismissed', hoy);
+  document.getElementById('banner-vencimientos')?.remove();
 }

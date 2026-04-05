@@ -1104,6 +1104,110 @@ app.post('/api/sync/historico', async (req, res) => {
   finally { siiEnCurso = false; sesion?.browser?.close(); }
 });
 
+// ─── Notificaciones de vencimiento ───────────────────────────────────────────
+
+const nodemailer = require('nodemailer');
+const cron       = require('node-cron');
+
+const NOTIF_EMAIL_TO   = process.env.NOTIF_EMAIL_TO;
+const NOTIF_EMAIL_FROM = process.env.NOTIF_EMAIL_FROM;
+const NOTIF_EMAIL_PASS = process.env.NOTIF_EMAIL_PASS;
+const NOTIF_DIAS       = parseInt(process.env.NOTIF_DIAS_AVISO ?? '5');
+
+async function getCuotasProximas(dias = NOTIF_DIAS) {
+  const { rows } = await pool.query(`
+    SELECT f.id, f.folio, f.rut_emisor, f.monto_total,
+           p.nombre_emisor,
+           f.vcto_1, f.monto_1, f.pagado_1,
+           f.vcto_2, f.monto_2, f.pagado_2
+    FROM facturas_recibidas f
+    JOIN proveedores p ON f.rut_emisor = p.rut_emisor
+    WHERE (
+      (f.vcto_1 IS NOT NULL AND f.pagado_1 = FALSE
+         AND f.vcto_1 BETWEEN CURRENT_DATE AND CURRENT_DATE + $1)
+      OR
+      (f.vcto_2 IS NOT NULL AND f.pagado_2 = FALSE
+         AND f.vcto_2 BETWEEN CURRENT_DATE AND CURRENT_DATE + $1)
+    )
+    ORDER BY LEAST(
+      CASE WHEN f.pagado_1 = FALSE THEN f.vcto_1 ELSE NULL END,
+      CASE WHEN f.pagado_2 = FALSE THEN f.vcto_2 ELSE NULL END
+    )
+  `, [dias]);
+  return rows;
+}
+
+// GET /api/notificaciones/proximos — para el banner del browser
+app.get('/api/notificaciones/proximos', async (req, res) => {
+  try {
+    const dias = parseInt(req.query.dias ?? NOTIF_DIAS);
+    const rows = await getCuotasProximas(dias);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/notificaciones/enviar — disparo manual o vía cron
+app.post('/api/notificaciones/enviar', async (req, res) => {
+  try {
+    if (!NOTIF_EMAIL_TO || !NOTIF_EMAIL_FROM || !NOTIF_EMAIL_PASS) {
+      return res.status(400).json({ error: 'Variables NOTIF_EMAIL_TO/FROM/PASS no configuradas' });
+    }
+    const cuotas = await getCuotasProximas();
+    if (!cuotas.length) return res.json({ enviado: false, motivo: 'Sin vencimientos próximos' });
+
+    const fmt = (n) => n ? new Intl.NumberFormat('es-CL',{style:'currency',currency:'CLP'}).format(n) : '—';
+    const fmtDate = (d) => d ? new Date(d).toLocaleDateString('es-CL') : '—';
+
+    const filas = cuotas.map(c => {
+      const partes = [];
+      if (!c.pagado_1 && c.vcto_1) partes.push(`C1 ${fmtDate(c.vcto_1)} ${fmt(c.monto_1)}`);
+      if (!c.pagado_2 && c.vcto_2) partes.push(`C2 ${fmtDate(c.vcto_2)} ${fmt(c.monto_2)}`);
+      return `<tr>
+        <td style="padding:6px 12px;border-bottom:1px solid #e2e8f0">${c.nombre_emisor}</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #e2e8f0">${c.folio}</td>
+        <td style="padding:6px 12px;border-bottom:1px solid #e2e8f0">${partes.join(' · ')}</td>
+      </tr>`;
+    }).join('');
+
+    const html = `
+      <h2 style="font-family:sans-serif;color:#1e293b">Facturas con vencimiento próximo</h2>
+      <p style="font-family:sans-serif;color:#64748b">Vencen en los próximos ${NOTIF_DIAS} días:</p>
+      <table style="border-collapse:collapse;font-family:sans-serif;font-size:14px">
+        <thead><tr style="background:#f8fafc">
+          <th style="padding:6px 12px;text-align:left">Proveedor</th>
+          <th style="padding:6px 12px;text-align:left">Folio</th>
+          <th style="padding:6px 12px;text-align:left">Cuotas</th>
+        </tr></thead>
+        <tbody>${filas}</tbody>
+      </table>
+    `;
+
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: NOTIF_EMAIL_FROM, pass: NOTIF_EMAIL_PASS }
+    });
+
+    await transporter.sendMail({
+      from: `Facturas Bioma <${NOTIF_EMAIL_FROM}>`,
+      to: NOTIF_EMAIL_TO,
+      subject: `⚠️ ${cuotas.length} factura(s) vencen en los próximos ${NOTIF_DIAS} días`,
+      html
+    });
+
+    res.json({ enviado: true, total: cuotas.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Cron: lunes a viernes a las 8:00 AM (hora servidor / Railway usa UTC — ajustar si es necesario)
+cron.schedule('0 8 * * 1-5', async () => {
+  if (!NOTIF_EMAIL_TO) return;
+  try {
+    const r = await fetch(`http://localhost:${PORT}/api/notificaciones/enviar`, { method: 'POST' });
+    const j = await r.json();
+    console.log('[CRON notif]', j);
+  } catch (err) { console.error('[CRON notif] Error:', err.message); }
+});
+
 let dbReady = false;
 app.get('/health', (req, res) => res.json({ status: 'ok', db: dbReady }));
 
