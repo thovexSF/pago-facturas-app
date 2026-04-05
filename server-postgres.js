@@ -1,5 +1,6 @@
 const express = require('express');
-const { Pool } = require('pg');
+const { Pool }  = require('pg');
+const axios     = require('axios');
 require('dotenv').config();
 
 const app  = express();
@@ -201,7 +202,117 @@ async function upsertFacturas(docs) {
   return { insertadas, actualizadas };
 }
 
-// ─── SII ──────────────────────────────────────────────────────────────────────
+// ─── SII — HTTP directo (sin Playwright) ─────────────────────────────────────
+
+// ── Helpers cookies HTTP ──────────────────────────────────────────────────────
+
+function parseSiiCookies(rawList) {
+  return [].concat(rawList ?? []).map(h => {
+    const parts  = h.split(';').map(s => s.trim());
+    const eqIdx  = parts[0].indexOf('=');
+    const name   = parts[0].slice(0, eqIdx).trim();
+    const value  = parts[0].slice(eqIdx + 1).trim();
+    const domPt  = parts.find(p => /^domain=/i.test(p));
+    const pathPt = parts.find(p => /^path=/i.test(p));
+    const domain = domPt  ? domPt.split('=')[1].trim()  : '.sii.cl';
+    const path   = pathPt ? pathPt.split('=')[1].trim() : '/';
+    return { name, value, domain, path };
+  }).filter(c => c.name && c.value && c.value !== 'DEL' && !c.name.startsWith('path='));
+}
+
+function mergeSiiCookies(base, extra) {
+  const map = new Map(base.map(c => [c.name, c]));
+  for (const c of extra) map.set(c.name, c);
+  return [...map.values()];
+}
+
+function siiCookieHeader(cookies) {
+  return cookies.map(c => `${c.name}=${c.value}`).join('; ');
+}
+
+const SII_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+// ── Autenticación directa vía CAutInicio.cgi + mipeSelEmpresa.cgi ─────────────
+// No usa browser. Devuelve array de cookies listas para usar en axios.
+async function autenticarSIIdirecto() {
+  const [rutNum, dv]     = SII_RUT.replace(/\./g, '').split('-');
+  const [empresaRut]     = SII_EMPRESA_RUT.split('-');
+  const REFERENCIA       = 'https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi';
+
+  // PASO 1: CAutInicio.cgi ─────────────────────────────────────────────────────
+  const qs = new URLSearchParams({ rutcntr: empresaRut, rut: rutNum, dv, clave: SII_PASSWORD, referencia: REFERENCIA }).toString();
+  const r1 = await axios.get(`https://zeusr.sii.cl/cgi_AUT2000/CAutInicio.cgi?${qs}`, {
+    maxRedirects: 0, validateStatus: () => true,
+    headers: { 'User-Agent': SII_UA },
+  });
+  let cookies = parseSiiCookies(r1.headers['set-cookie']);
+  if (!cookies.some(c => c.name === 'TOKEN'))
+    throw new Error(`CAutInicio no devolvió TOKEN (status ${r1.status})`);
+  console.log(`[SII auth] TOKEN obtenido`);
+
+  // PASO 2: POST mipeSelEmpresa.cgi ────────────────────────────────────────────
+  const r2 = await axios.post(
+    'https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi',
+    new URLSearchParams({ RUT_EMP: SII_EMPRESA_RUT }).toString(),
+    {
+      maxRedirects: 0, validateStatus: () => true,
+      headers: {
+        'Cookie': siiCookieHeader(cookies),
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Referer': 'https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi',
+        'User-Agent': SII_UA,
+      },
+    }
+  );
+  cookies = mergeSiiCookies(cookies, parseSiiCookies(r2.headers['set-cookie']));
+  if (!cookies.some(c => c.name === 'NETSCAPE_LIVEWIRE.rcmp'))
+    throw new Error(`mipeSelEmpresa no estableció rcmp (empresa no seleccionada)`);
+  console.log(`[SII auth] Empresa seleccionada: rcmp=${cookies.find(c => c.name === 'NETSCAPE_LIVEWIRE.rcmp')?.value}`);
+  return cookies;
+}
+
+// ── Buscar CODIGO de un documento en mipeAdminDocsRcp ────────────────────────
+// Devuelve el CODIGO interno del SII para ese folio+emisor (null si no existe).
+async function buscarCodigoPdf(cookies, folio, rutEmisor) {
+  const [rutNum] = rutEmisor.replace(/\./g, '').split('-');
+  const folioStr = String(folio);
+
+  const url = `https://www1.sii.cl/cgi-bin/Portal001/mipeAdminDocsRcp.cgi?RUT_EMI=${rutNum}&FOLIO=${folioStr}&RZN_SOC=&FEC_DESDE=&FEC_HASTA=&TPO_DOC=&ESTADO=&ORDEN=&NUM_PAG=1`;
+  const resp = await axios.get(url, {
+    maxRedirects: 3, validateStatus: () => true,
+    headers: {
+      'Cookie': siiCookieHeader(cookies),
+      'Referer': 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4',
+      'User-Agent': SII_UA,
+    },
+  });
+
+  const body = typeof resp.data === 'string' ? resp.data : '';
+  const m = body.match(/\/cgi-bin\/Portal001\/mipeGesDocRcp\.cgi\?CODIGO=(\d+)/);
+  if (!m) {
+    const titulo = (body.match(/<title>([^<]*)<\/title>/i) ?? [])[1] ?? '?';
+    console.warn(`[SII pdf] Folio ${folio} no encontrado. Título: "${titulo}" | body: ${body.slice(0, 200)}`);
+    return null;
+  }
+  return m[1];
+}
+
+// ── Descargar PDF de un documento dado su CODIGO interno ─────────────────────
+async function descargarPdfPorCodigo(cookies, codigo) {
+  const url  = `https://www1.sii.cl/cgi-bin/Portal001/mipeShowPdf.cgi?CODIGO=${codigo}`;
+  const resp = await axios.get(url, {
+    maxRedirects: 3, validateStatus: () => true, responseType: 'arraybuffer',
+    headers: {
+      'Cookie': siiCookieHeader(cookies),
+      'Referer': `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi?CODIGO=${codigo}&ALL_PAGE_ANT=2`,
+      'User-Agent': SII_UA,
+    },
+  });
+  const buf = Buffer.from(resp.data);
+  if (!buf.slice(0, 5).toString().startsWith('%PDF'))
+    throw new Error(`mipeShowPdf no devolvió PDF (ct=${resp.headers['content-type']}, size=${buf.length})`);
+  return buf;
+}
 
 // Mutex global: SII bloquea sesiones concurrentes del mismo RUT
 let siiEnCurso = false;
@@ -465,132 +576,23 @@ async function abrirSesionSII() {
   }
 }
 
-// Sesión liviana solo para PDFs: login + empresa en www1, sin navegar a www4.
-// Devuelve { browser, page } donde page ya tiene la sesión de Portal001 activa.
-async function abrirSesionPDF() {
-  if (siiEnCurso) throw new Error('Ya hay una operación SII en curso, espera unos minutos');
-  siiEnCurso = true;
 
-  const { chromium } = require('playwright');
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ ignoreHTTPSErrors: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' });
-  const page    = await context.newPage();
-
-  try {
-    await loginSII(page);
-    await seleccionarEmpresa(page);
-    // page está ahora en www1.sii.cl/Portal001 con la empresa seleccionada
-    // Capturar csrt: Portal001 lo exige en cada URL CGI posterior
-    const csrt = new URL(page.url()).searchParams.get('csrt') ?? '';
-    console.log(`[PDF] Sesión www1 lista | URL: ${page.url()} | csrt: ${csrt ? csrt.slice(0,8)+'…' : 'ninguno'}`);
-    return { browser, page, csrt };
-  } catch (err) {
-    siiEnCurso = false;
-    await browser.close().catch(() => {});
-    throw err;
-  }
-}
-
-// Dado una página que ya muestra el detalle del DTE, hace click en el botón
-// de visualización y devuelve el buffer del PDF.
-async function clickYDescargarPdf(page) {
-  const btnSelector = 'input[value*="VISUALIZACI"], button:has-text("VISUALIZACI"), a:has-text("VISUALIZACI"), input[value*="PDF"], a:has-text("PDF")';
-  const [pdfResponse] = await Promise.all([
-    page.waitForResponse(r => {
-      const ct = r.headers()['content-type'] ?? '';
-      return ct.includes('pdf') || r.url().toLowerCase().includes('.pdf') || ct.includes('octet-stream');
-    }, { timeout: 30000 }),
-    page.locator(btnSelector).first().click(),
-  ]);
-  return pdfResponse.body();
-}
-
-// Navega al detalle del DTE usando mipeAdminDocsRcp.cgi (lista real).
-// El detalle está en mipeGesDocRcp.cgi?CODIGO=X&csrt=Y — solo accesible
-// clicando el ícono desde la lista (CODIGO y csrt no son predecibles).
-// Devuelve true si llegamos a la página con botón "VISUALIZACIÓN DOCUMENTO".
-async function navegarADetalleDte(page, folio, rutEmisor, csrt = '') {
-  const [rutNum] = rutEmisor.split('-');
-  const folioStr = String(folio);
-
-  // csrt: token CSRF que Portal001 requiere en cada URL CGI
-  const csrtParam = csrt ? `&csrt=${csrt}` : '';
-  // Navegar a la lista filtrada por folio y emisor
-  const listUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeAdminDocsRcp.cgi?RUT_EMI=${rutNum}&FOLIO=${folioStr}&RZN_SOC=&FEC_DESDE=&FEC_HASTA=&TPO_DOC=33&ESTADO=&ORDEN=${csrtParam}`;
-  await page.goto(listUrl, { waitUntil: 'load', timeout: 30000 })
-    .catch(e => console.warn('[PDF] goto lista error:', e.message));
-  await page.waitForTimeout(2000);
-
-  const diagTitle = await page.title().catch(() => '?');
-  const diagRows  = await page.locator('table tr').count().catch(() => 0);
-  console.log(`[PDF] Lista: "${diagTitle}" | ${diagRows} filas | ${page.url()}`);
-
-  // Paginar y buscar el folio (normalmente con filtro habrá solo 1 fila)
-  for (let p = 0; p < 10; p++) {
-    const filas = page.locator('tr').filter({ hasText: folioStr });
-    const count = await filas.count();
-    for (let i = 0; i < count; i++) {
-      const texto = (await filas.nth(i).textContent() ?? '').replace(/\./g, '');
-      if (texto.includes(rutNum.replace(/\./g, ''))) {
-        // Clic en el primer link de la fila (ícono "Ver" → mipeGesDocRcp.cgi?CODIGO=...&csrt=...)
-        const link = filas.nth(i).locator('a').first();
-        if (!await link.count()) continue;
-        await Promise.all([
-          page.waitForLoadState('load').catch(() => {}),
-          link.click(),
-        ]);
-        await page.waitForTimeout(2000);
-        console.log(`[PDF] Detalle: ${page.url()}`);
-
-        // Expandir "Otros detalles documento" para que aparezca el botón PDF
-        const otrosDetalles = page.locator('a, button, div[role="button"]')
-          .filter({ hasText: /otros detalles documento/i }).first();
-        if (await otrosDetalles.count()) {
-          await otrosDetalles.click().catch(() => {});
-          await page.waitForTimeout(1500);
-        }
-
-        // Verificar botón de visualización
-        const tieneBtn = await page.locator(
-          'input[value*="VISUALIZACI"], a:has-text("VISUALIZACI"), button:has-text("VISUALIZACI")'
-        ).count();
-        if (tieneBtn) {
-          console.log('[PDF] ✓ Botón VISUALIZACIÓN encontrado');
-          return true;
-        }
-        console.warn('[PDF] En detalle pero sin botón VISUALIZACIÓN');
-        return false;
-      }
-    }
-    const next = page.locator('a').filter({ hasText: /^[>»]$/ }).last();
-    if (!await next.count()) break;
-    await Promise.all([page.waitForLoadState('load').catch(() => {}), next.click()]);
-    await page.waitForTimeout(500);
-  }
-
-  return false;
-}
-
-// Descarga el PDF de UNA factura
+// Descarga el PDF de UNA factura (HTTP directo, sin Playwright)
 async function descargarPdfSII(folio, rutEmisor) {
   if (pdfEnCurso || siiEnCurso) throw new Error('Ya hay una operación SII en curso, intenta en unos minutos');
   pdfEnCurso = true;
-  let sesion;
   try {
-    // abrirSesionPDF: login + empresa → devuelve la página original (con sesión www1)
-    sesion = await abrirSesionPDF();
-    const encontrado = await navegarADetalleDte(sesion.page, folio, rutEmisor, sesion.csrt);
-    if (!encontrado) throw new Error(`Folio ${folio} no encontrado en SII`);
-    return await clickYDescargarPdf(sesion.page);
+    const cookies = await autenticarSIIdirecto();
+    const codigo  = await buscarCodigoPdf(cookies, folio, rutEmisor);
+    if (!codigo) throw new Error(`Folio ${folio} no encontrado en SII`);
+    console.log(`[SII pdf] Folio ${folio} → CODIGO ${codigo}`);
+    return await descargarPdfPorCodigo(cookies, codigo);
   } finally {
     pdfEnCurso = false;
-    siiEnCurso = false;
-    await sesion?.browser.close();
   }
 }
 
-// Descarga PDFs en lote reutilizando una sola sesión SII.
-// Usa abrirSesionSII() (igual que descargarPdfSII) + navegarADetalleDte() por cada factura.
+// Descarga PDFs en lote reutilizando una sola sesión HTTP.
 async function descargarPdfsBulkSII() {
   if (pdfEnCurso || siiEnCurso) {
     console.warn('[PDF bulk] Ya hay una operación SII en curso, abortando');
@@ -603,27 +605,24 @@ async function descargarPdfsBulkSII() {
   );
   if (!sinPdf.length) { pdfEnCurso = false; return { descargadas: 0, errores: 0, total: 0 }; }
 
-  let sesion;
   let descargadas = 0, errores = 0;
-
   try {
-    // abrirSesionPDF: login + empresa → página original con sesión www1 activa
-    sesion = await abrirSesionPDF();
+    const cookies = await autenticarSIIdirecto();
     console.log(`[PDF bulk] Sesión lista. Descargando ${sinPdf.length} PDFs...`);
 
     for (const f of sinPdf) {
       try {
-        const encontrado = await navegarADetalleDte(sesion.page, f.folio, f.rut_emisor, sesion.csrt);
-        if (!encontrado) throw new Error('no encontrado en SII');
+        const codigo = await buscarCodigoPdf(cookies, f.folio, f.rut_emisor);
+        if (!codigo) throw new Error('no encontrado en SII');
 
-        const buf    = await clickYDescargarPdf(sesion.page);
+        const buf    = await descargarPdfPorCodigo(cookies, codigo);
         const nombre = `factura_${f.folio}_${f.rut_emisor}.pdf`;
         await pool.query(
           `UPDATE facturas_recibidas SET pdf_data=$1, pdf_nombre=$2, pdf_at=NOW(), updated_at=NOW() WHERE id=$3`,
           [buf, nombre, f.id]
         );
         descargadas++;
-        console.log(`[PDF bulk] ✓ Folio ${f.folio} (${descargadas}/${sinPdf.length})`);
+        console.log(`[PDF bulk] ✓ Folio ${f.folio} CODIGO ${codigo} (${descargadas}/${sinPdf.length})`);
       } catch (err) {
         errores++;
         console.error(`[PDF bulk] ✗ Folio ${f.folio}: ${err.message}`);
@@ -631,8 +630,6 @@ async function descargarPdfsBulkSII() {
     }
   } finally {
     pdfEnCurso = false;
-    siiEnCurso = false;
-    await sesion?.browser.close();
   }
 
   console.log(`[PDF bulk] Completado: ${descargadas} OK, ${errores} errores`);
