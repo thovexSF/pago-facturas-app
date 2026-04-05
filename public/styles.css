@@ -301,18 +301,72 @@ body {
 .modal {
   background: #fff;
   border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.2);
+  /* tamaño por defecto (sin PDF) */
   width: 480px;
   max-width: 95vw;
-  box-shadow: 0 20px 60px rgba(0,0,0,.2);
 }
+.modal.modal-split {
+  display: flex;
+  width: 92vw;
+  max-width: 1300px;
+  height: 88vh;
+  overflow: hidden;
+}
+
+/* ── Panel izquierdo ── */
+.modal-panel-left {
+  display: flex;
+  flex-direction: column;
+  width: 400px;
+  min-width: 360px;
+  flex-shrink: 0;
+  border-right: 1px solid #e2e8f0;
+  overflow: hidden;
+}
+.modal-panel-left .modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+
+/* ── Panel derecho (PDF) ── */
+.modal-panel-pdf {
+  flex: 1;
+  position: relative;
+  background: #f7fafc;
+  display: flex;
+  align-items: stretch;
+}
+#modal-pdf-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: none;
+}
+.pdf-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pdf-placeholder-inner {
+  text-align: center;
+  color: #a0aec0;
+}
+.pdf-placeholder-icon { font-size: 48px; margin-bottom: 12px; }
+.pdf-placeholder-inner p { font-size: 14px; margin-bottom: 16px; }
+
 .modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 24px 16px;
+  padding: 16px 20px;
   border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
 }
-.modal-header h2 { font-size: 18px; font-weight: 700; }
+.modal-header h2 { font-size: 16px; font-weight: 700; }
 .modal-close {
   background: none;
   border: none;
@@ -324,10 +378,11 @@ body {
 .modal-body { padding: 20px 24px; }
 .modal-footer {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   justify-content: flex-end;
-  padding: 16px 24px 20px;
+  padding: 12px 20px;
   border-top: 1px solid #e2e8f0;
+  flex-shrink: 0;
 }
 
 .factura-detail { margin-bottom: 20px; }

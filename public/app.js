@@ -355,17 +355,21 @@ function abrirModal(f) {
     r.style.display = esContado ? 'none' : '';
   });
 
-  // Botón PDF
-  const btnPdf = document.getElementById('btn-modal-pdf');
+  // Panel PDF: iframe si tiene PDF, placeholder si no
+  const iframe      = document.getElementById('modal-pdf-iframe');
+  const placeholder = document.getElementById('modal-pdf-placeholder');
+  const btnPdf      = document.getElementById('btn-modal-pdf');
+
   if (f.has_pdf) {
-    btnPdf.textContent = '📄 Ver PDF';
-    btnPdf.onclick = () => window.open(`/api/facturas/${f.id}/pdf`, '_blank');
-    btnPdf.disabled = false;
-    btnPdf.className = 'btn btn-sm btn-success';
+    iframe.src = `/api/facturas/${f.id}/pdf`;
+    iframe.style.display = 'block';
+    placeholder.style.display = 'none';
   } else {
+    iframe.src = '';
+    iframe.style.display = 'none';
+    placeholder.style.display = 'flex';
     btnPdf.textContent = '⬇ Descargar PDF';
     btnPdf.disabled = false;
-    btnPdf.className = 'btn btn-sm btn-secondary';
     btnPdf.onclick = async () => {
       btnPdf.disabled = true;
       btnPdf.textContent = '⏳ Descargando…';
@@ -380,6 +384,7 @@ function abrirModal(f) {
 }
 
 function cerrarModal() {
+  document.getElementById('modal-pdf-iframe').src = '';
   document.getElementById('modal').style.display = 'none';
   facturaActiva = null;
 }

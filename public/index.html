@@ -146,73 +146,89 @@
 
   <!-- Modal factura -->
   <div class="modal-overlay" id="modal" style="display:none">
-    <div class="modal">
-      <div class="modal-header">
-        <h2 id="modal-titulo">Factura</h2>
-        <button class="modal-close" id="modal-close">✕</button>
-      </div>
-      <div class="modal-body">
-        <div class="factura-detail">
-          <div class="detail-row">
-            <span class="detail-label">Emisor</span>
-            <span class="detail-value" id="modal-emisor">—</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">RUT</span>
-            <span class="detail-value" id="modal-rut">—</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Folio</span>
-            <span class="detail-value" id="modal-folio">—</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Fecha Emisión</span>
-            <span class="detail-value" id="modal-fecha-emision">—</span>
-          </div>
-          <div class="detail-row highlight">
-            <span class="detail-label">Monto total</span>
-            <span class="detail-value" id="modal-monto">—</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Estado SII</span>
-            <span class="detail-value" id="modal-estado-sii">—</span>
-          </div>
-          <div class="detail-row cuota-row" style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0">
-            <span class="detail-label">Vencimiento 1 · <span id="modal-label-1">día 30</span></span>
-            <span class="detail-value vcto-edit-row">
-              <input type="date" id="modal-vcto-1" class="vcto-input"> &nbsp; <strong id="modal-monto-1">—</strong>
-            </span>
-          </div>
-          <div class="detail-row cuota-row">
-            <span class="detail-label">Vencimiento 2 · <span id="modal-label-2">día 40</span></span>
-            <span class="detail-value vcto-edit-row">
-              <input type="date" id="modal-vcto-2" class="vcto-input"> &nbsp; <strong id="modal-monto-2">—</strong>
-            </span>
-          </div>
-          <div class="cuota-row vcto-actions">
-            <button class="btn btn-sm btn-secondary" id="btn-extraer-pdf" onclick="extraerFechasPdf()">🔍 Extraer del PDF</button>
-            <button class="btn btn-sm btn-primary"   id="btn-guardar-vcto" onclick="guardarVencimientos()">Guardar fechas</button>
-          </div>
-        </div>
+    <div class="modal modal-split">
 
-        <div class="pago-info">
-          <h3>Datos para transferencia</h3>
-          <div class="copy-row">
-            <span id="pago-rut-copy">—</span>
-            <button class="btn-copy" onclick="copiarTexto('pago-rut-copy')">Copiar RUT</button>
+      <!-- Panel izquierdo: detalle + edición -->
+      <div class="modal-panel-left">
+        <div class="modal-header">
+          <h2 id="modal-titulo">Factura</h2>
+          <button class="modal-close" id="modal-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="factura-detail">
+            <div class="detail-row">
+              <span class="detail-label">Emisor</span>
+              <span class="detail-value" id="modal-emisor">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">RUT</span>
+              <span class="detail-value" id="modal-rut">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Folio</span>
+              <span class="detail-value" id="modal-folio">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Fecha Emisión</span>
+              <span class="detail-value" id="modal-fecha-emision">—</span>
+            </div>
+            <div class="detail-row highlight">
+              <span class="detail-label">Monto total</span>
+              <span class="detail-value" id="modal-monto">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Estado SII</span>
+              <span class="detail-value" id="modal-estado-sii">—</span>
+            </div>
+            <div class="detail-row cuota-row" style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0">
+              <span class="detail-label">Vcto 1 · <span id="modal-label-1">día 30</span></span>
+              <span class="detail-value vcto-edit-row">
+                <input type="date" id="modal-vcto-1" class="vcto-input"> <strong id="modal-monto-1">—</strong>
+              </span>
+            </div>
+            <div class="detail-row cuota-row">
+              <span class="detail-label">Vcto 2 · <span id="modal-label-2">día 40</span></span>
+              <span class="detail-value vcto-edit-row">
+                <input type="date" id="modal-vcto-2" class="vcto-input"> <strong id="modal-monto-2">—</strong>
+              </span>
+            </div>
+            <div class="cuota-row vcto-actions">
+              <button class="btn btn-sm btn-secondary" id="btn-extraer-pdf" onclick="extraerFechasPdf()">🔍 Extraer del PDF</button>
+              <button class="btn btn-sm btn-primary"   id="btn-guardar-vcto" onclick="guardarVencimientos()">Guardar fechas</button>
+            </div>
           </div>
-          <div class="copy-row">
-            <span id="pago-monto-copy">—</span>
-            <button class="btn-copy" onclick="copiarTexto('pago-monto-copy')">Copiar monto</button>
+
+          <div class="pago-info">
+            <h3>Datos para transferencia</h3>
+            <div class="copy-row">
+              <span id="pago-rut-copy">—</span>
+              <button class="btn-copy" onclick="copiarTexto('pago-rut-copy')">Copiar RUT</button>
+            </div>
+            <div class="copy-row">
+              <span id="pago-monto-copy">—</span>
+              <button class="btn-copy" onclick="copiarTexto('pago-monto-copy')">Copiar monto</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-pay btn-sm" id="btn-pagar-1">Pagar C1</button>
+          <button class="btn btn-pay btn-sm" id="btn-pagar-2">Pagar C2</button>
+          <button class="btn btn-secondary" id="modal-cancel">Cerrar</button>
+        </div>
+      </div>
+
+      <!-- Panel derecho: visor PDF -->
+      <div class="modal-panel-pdf">
+        <iframe id="modal-pdf-iframe" src="" title="Factura PDF"></iframe>
+        <div class="pdf-placeholder" id="modal-pdf-placeholder">
+          <div class="pdf-placeholder-inner">
+            <div class="pdf-placeholder-icon">📄</div>
+            <p>Sin PDF descargado</p>
+            <button class="btn btn-secondary btn-sm" id="btn-modal-pdf">⬇ Descargar PDF</button>
           </div>
         </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn btn-pay" id="btn-pagar-1">Pagar cuota 1</button>
-        <button class="btn btn-pay" id="btn-pagar-2">Pagar cuota 2</button>
-        <button class="btn btn-secondary btn-sm" id="btn-modal-pdf">📄 PDF</button>
-        <button class="btn btn-secondary" id="modal-cancel">Cerrar</button>
-      </div>
+
     </div>
   </div>
 
