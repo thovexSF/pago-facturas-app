@@ -632,12 +632,6 @@ function toggleFiltroEmisor(e) {
   const abierto = panel.classList.contains('open');
   if (abierto) { cerrarFiltroEmisor(); return; }
 
-  // Si "ninguno" estaba seleccionado (set vacío), resetear a todos al abrir
-  if (filtroEmisores !== null && filtroEmisores.size === 0) {
-    filtroEmisores = null;
-    renderTabla();
-  }
-
   // Construir items con los emisores únicos de facturas
   const emisores = [...new Map(
     facturas.map(f => [f.rut_emisor, f.razon_social || f.rut_emisor])
@@ -687,7 +681,6 @@ function filtroEmisorTodos(e) {
   document.querySelectorAll('#filter-emisor-items input[type=checkbox]')
     .forEach(cb => cb.checked = true);
   renderTabla();
-  cerrarFiltroEmisor();
 }
 
 function filtroEmisorNinguno(e) {
@@ -696,7 +689,6 @@ function filtroEmisorNinguno(e) {
   document.querySelectorAll('#filter-emisor-items input[type=checkbox]')
     .forEach(cb => cb.checked = false);
   renderTabla();
-  cerrarFiltroEmisor();
 }
 
 function filtrarItemsEmisor(q) {
