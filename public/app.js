@@ -678,10 +678,10 @@ function toggleEmisor(rut, checked) {
 function filtroEmisorTodos(e) {
   e.stopPropagation();
   filtroEmisores = null;
-  // Marcar todos los checkboxes
   document.querySelectorAll('#filter-emisor-items input[type=checkbox]')
     .forEach(cb => cb.checked = true);
   renderTabla();
+  cerrarFiltroEmisor();
 }
 
 function filtroEmisorNinguno(e) {
@@ -690,6 +690,7 @@ function filtroEmisorNinguno(e) {
   document.querySelectorAll('#filter-emisor-items input[type=checkbox]')
     .forEach(cb => cb.checked = false);
   renderTabla();
+  cerrarFiltroEmisor();
 }
 
 function filtrarItemsEmisor(q) {
@@ -702,9 +703,7 @@ function filtrarItemsEmisor(q) {
 function actualizarBtnFiltroEmisor() {
   const btn = document.getElementById('btn-filter-emisor');
   if (!btn) return;
-  const activo = filtroEmisores !== null;
-  btn.classList.toggle('active', activo);
-  btn.textContent = activo ? '▾●' : '▾';
+  btn.classList.toggle('active', filtroEmisores !== null);
 }
 
 function mostrarToast(msg, tipo='info') {

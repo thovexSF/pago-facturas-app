@@ -118,19 +118,20 @@ body {
 }
 
 .th-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
-  border: none;
+  border: 1px solid #cbd5e0;
   cursor: pointer;
-  font-size: 10px;
-  color: #a0aec0;
-  padding: 0 2px;
+  color: #718096;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color .15s, background .15s, border-color .15s;
   line-height: 1;
-  border-radius: 3px;
-  transition: color .15s, background .15s;
 }
-.th-filter-btn:hover,
-.th-filter-btn.active { color: #667eea; background: #ebf4ff; }
-.th-filter-btn.active { color: #5a67d8; }
+.th-filter-btn:hover { color: #667eea; background: #ebf4ff; border-color: #667eea; }
+.th-filter-btn.active { color: #fff; background: #667eea; border-color: #5a67d8; }
 
 .th-filter-panel {
   display: none;
