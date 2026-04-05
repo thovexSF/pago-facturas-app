@@ -164,8 +164,18 @@ async function upsertFacturas(docs) {
     const montoTotal   = Math.round(d.detMntNeto * 1.19);
     const esContado    = prov.condicion === 'contado';
     const fechaEmision = parseDate(d.detFchDoc);
+    const vctoSII      = d.detFchVcto ? parseDate(d.detFchVcto) : null;
+
+    // vcto desde SII si viene, si no: cálculo por días del proveedor
+    const vcto_1 = esContado ? fechaEmision
+                 : vctoSII   ? vctoSII
+                 : null; // se calculará en SQL: fecha_emision + dias_1
+    const vcto_2 = esContado || vctoSII ? null : null; // se calculará en SQL si aplica
+
     const monto1 = esContado ? montoTotal : Math.round(montoTotal * prov.pct_1 / 100);
-    const monto2 = esContado ? null       : montoTotal - monto1;
+    const monto2 = esContado || vctoSII   ? null : montoTotal - monto1;
+
+    if (vctoSII) console.log(`[SII sync] Folio ${d.detNroDoc} → vcto SII: ${vctoSII}`);
 
     const r = await pool.query(
       `INSERT INTO facturas_recibidas
@@ -174,8 +184,12 @@ async function upsertFacturas(docs) {
           vcto_1, monto_1, pagado_1, pagado_1_at,
           vcto_2, monto_2, pagado_2, pagado_2_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
-          $5::date,           $9,  $10, $11,
-          CASE WHEN $12::boolean THEN NULL ELSE $5::date + $13::integer END,
+          CASE WHEN $9::date IS NOT NULL THEN $9::date
+               WHEN $10::boolean THEN $5::date
+               ELSE $5::date + $11::integer END,
+          $12, $10, CASE WHEN $10 THEN NOW() ELSE NULL END,
+          CASE WHEN $9::date IS NOT NULL OR $10::boolean THEN NULL
+               ELSE $5::date + $13::integer END,
           $14, FALSE, NULL)
        ON CONFLICT (codigo) DO UPDATE SET
          razon_social = EXCLUDED.razon_social,
@@ -186,17 +200,24 @@ async function upsertFacturas(docs) {
          pagado_1_at  = EXCLUDED.pagado_1_at,
          pagado_2     = EXCLUDED.pagado_2,
          pagado_2_at  = EXCLUDED.pagado_2_at,
-         vcto_1       = EXCLUDED.vcto_1,
          monto_1      = EXCLUDED.monto_1,
-         vcto_2       = EXCLUDED.vcto_2,
          monto_2      = EXCLUDED.monto_2,
+         -- Solo actualizar fechas si SII trae fecha explícita (respeta edits manuales)
+         vcto_1       = CASE WHEN $9::date IS NOT NULL THEN EXCLUDED.vcto_1
+                             ELSE facturas_recibidas.vcto_1 END,
+         vcto_2       = CASE WHEN $9::date IS NOT NULL THEN NULL
+                             ELSE facturas_recibidas.vcto_2 END,
          updated_at   = NOW()
        RETURNING (xmax = 0) AS inserted`,
       [
         String(d.detCodigo), rut, d.detRznSoc, d.detNroDoc,
         fechaEmision, d.detMntNeto, montoTotal, d.dcvEstadoContab ?? 'REGISTRO',
-        monto1, esContado, esContado ? new Date() : null,  // cuota 1
-        esContado, prov.dias_2, monto2,                    // cuota 2 (null si contado)
+        vcto_1,        // $9  — null si no hay vctoSII y no es contado
+        esContado,     // $10
+        prov.dias_1,   // $11 — para cálculo fallback cuota 1
+        monto1,        // $12
+        prov.dias_2,   // $13 — para cálculo fallback cuota 2
+        monto2,        // $14
       ]
     );
     r.rows[0].inserted ? insertadas++ : actualizadas++;
