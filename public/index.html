@@ -178,16 +178,20 @@
             <span class="detail-value" id="modal-estado-sii">—</span>
           </div>
           <div class="detail-row cuota-row" style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0">
-            <span class="detail-label">Cuota 1 · <span id="modal-label-1">día 30</span></span>
-            <span class="detail-value">
-              <span id="modal-vcto-1">—</span> &nbsp; <strong id="modal-monto-1">—</strong>
+            <span class="detail-label">Vencimiento 1 · <span id="modal-label-1">día 30</span></span>
+            <span class="detail-value vcto-edit-row">
+              <input type="date" id="modal-vcto-1" class="vcto-input"> &nbsp; <strong id="modal-monto-1">—</strong>
             </span>
           </div>
           <div class="detail-row cuota-row">
-            <span class="detail-label">Cuota 2 · <span id="modal-label-2">día 40</span></span>
-            <span class="detail-value">
-              <span id="modal-vcto-2">—</span> &nbsp; <strong id="modal-monto-2">—</strong>
+            <span class="detail-label">Vencimiento 2 · <span id="modal-label-2">día 40</span></span>
+            <span class="detail-value vcto-edit-row">
+              <input type="date" id="modal-vcto-2" class="vcto-input"> &nbsp; <strong id="modal-monto-2">—</strong>
             </span>
+          </div>
+          <div class="cuota-row vcto-actions">
+            <button class="btn btn-sm btn-secondary" id="btn-extraer-pdf" onclick="extraerFechasPdf()">🔍 Extraer del PDF</button>
+            <button class="btn btn-sm btn-primary"   id="btn-guardar-vcto" onclick="guardarVencimientos()">Guardar fechas</button>
           </div>
         </div>
 

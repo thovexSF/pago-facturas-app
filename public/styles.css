@@ -57,6 +57,25 @@ body {
 
 .btn-sync { background: #2b6cb0; color: #fff; }
 .btn-pay  { background: #276749; color: #fff; }
+.btn-primary { background: #667eea; color: #fff; border-color: #5a67d8; }
+.btn-primary:hover { background: #5a67d8; }
+
+.vcto-input {
+  padding: 3px 7px;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  font-size: 13px;
+  color: #2d3748;
+  background: #fff;
+}
+.vcto-input:focus { outline: none; border-color: #667eea; }
+
+.vcto-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-top: 8px;
+}
 .btn-secondary { background: #edf2f7; color: #4a5568; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .sync-icon { font-size: 16px; }

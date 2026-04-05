@@ -156,6 +156,8 @@ async function getProveedor(rut, razonSocial) {
 
 async function upsertFacturas(docs) {
   let insertadas = 0, actualizadas = 0;
+  // Log de campos del primer documento para descubrir campos disponibles
+  if (docs.length > 0) console.log('[SII sync] Campos disponibles en doc:', Object.keys(docs[0]).join(', '));
   for (const d of docs) {
     const rut = `${d.detRutDoc}-${d.detDvDoc}`;
     const prov = await getProveedor(rut, d.detRznSoc);
@@ -904,6 +906,65 @@ app.get('/api/pdf/status', async (req, res) => {
     );
     res.json({ total: parseInt(rows[0].total), con_pdf: parseInt(rows[0].con_pdf) });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/facturas/:id/extraer-fechas — extrae fechas de vencimiento del PDF guardado
+app.post('/api/facturas/:id/extraer-fechas', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT pdf_data, fecha_emision FROM facturas_recibidas WHERE id=$1', [req.params.id]
+    );
+    if (!rows.length)        return res.status(404).json({ error: 'Factura no encontrada' });
+    if (!rows[0].pdf_data)   return res.status(404).json({ error: 'Sin PDF descargado' });
+
+    const pdfParse = require('pdf-parse');
+    const data = await pdfParse(rows[0].pdf_data);
+    const texto = data.text;
+
+    const fechaEmision = new Date(rows[0].fecha_emision);
+    const resultado = { texto_raw: texto.slice(0, 1000), vcto_1: null, vcto_2: null };
+
+    // 1) Fecha explícita DD/MM/YYYY o DD-MM-YYYY cerca de palabras clave
+    const patronFecha = /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/g;
+    const keywordsVcto = /vencim|fecha\s+pago|fecha\s+de\s+pago|f\.?\s*pago|plazo|condici/i;
+
+    // Buscar líneas con palabras clave de vencimiento
+    const lineas = texto.split(/\r?\n/);
+    const fechasEncontradas = [];
+    for (const linea of lineas) {
+      if (!keywordsVcto.test(linea)) continue;
+      let m;
+      while ((m = patronFecha.exec(linea)) !== null) {
+        const [, d, mo, y] = m;
+        const fecha = new Date(`${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`);
+        if (!isNaN(fecha) && fecha > fechaEmision) {
+          fechasEncontradas.push(fecha.toISOString().split('T')[0]);
+        }
+      }
+      patronFecha.lastIndex = 0;
+    }
+
+    // 2) Si no encontró fechas explícitas, buscar plazo en días
+    if (!fechasEncontradas.length) {
+      const mPlazo = texto.match(/(?:plazo|condici[oó]n[^:]*|net)\D{0,5}(\d{1,3})\s*d[ií]as?/i)
+                  ?? texto.match(/(\d{1,3})\s*d[ií]as?\s*(?:de\s+)?(?:plazo|cr[eé]dito)/i);
+      if (mPlazo) {
+        const dias = parseInt(mPlazo[1]);
+        if (dias > 0 && dias <= 365) {
+          const vcto = new Date(fechaEmision);
+          vcto.setDate(vcto.getDate() + dias);
+          fechasEncontradas.push(vcto.toISOString().split('T')[0]);
+        }
+      }
+    }
+
+    if (fechasEncontradas.length >= 1) resultado.vcto_1 = fechasEncontradas[0];
+    if (fechasEncontradas.length >= 2) resultado.vcto_2 = fechasEncontradas[1];
+
+    res.json(resultado);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.put('/api/facturas/:id/vencimientos', async (req, res) => {

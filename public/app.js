@@ -329,10 +329,14 @@ function abrirModal(f) {
   document.getElementById('modal-label-1').textContent = esContado ? 'contado' : `día ${prov?.dias_1??30}`;
   document.getElementById('modal-label-2').textContent = esContado ? 'contado' : `día ${prov?.dias_2??40}`;
 
-  document.getElementById('modal-vcto-1').textContent  = formatFecha(f.vcto_1);
+  document.getElementById('modal-vcto-1').value = f.vcto_1 ? f.vcto_1.split('T')[0] : '';
   document.getElementById('modal-monto-1').textContent = '$'+formatMonto(f.monto_1);
-  document.getElementById('modal-vcto-2').textContent  = formatFecha(f.vcto_2);
+  document.getElementById('modal-vcto-2').value = f.vcto_2 ? f.vcto_2.split('T')[0] : '';
   document.getElementById('modal-monto-2').textContent = '$'+formatMonto(f.monto_2);
+
+  // Botón extraer PDF solo si tiene PDF descargado
+  const btnExtraer = document.getElementById('btn-extraer-pdf');
+  if (btnExtraer) btnExtraer.style.display = f.has_pdf ? '' : 'none';
 
   const btn1 = document.getElementById('btn-pagar-1');
   btn1.textContent = f.pagado_1 ? '✓ Cuota 1 pagada' : 'Pagar cuota 1';
@@ -616,6 +620,52 @@ function formatFecha(fecha) {
 
 function esc(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function guardarVencimientos() {
+  if (!facturaActiva) return;
+  const vcto_1 = document.getElementById('modal-vcto-1').value || null;
+  const vcto_2 = document.getElementById('modal-vcto-2').value || null;
+  const btn = document.getElementById('btn-guardar-vcto');
+  btn.disabled = true; btn.textContent = 'Guardando…';
+  try {
+    const r = await fetch(`/api/facturas/${facturaActiva.id}/vencimientos`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vcto_1, vcto_2 }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    mostrarToast('Fechas guardadas', 'success');
+    await cargarFacturas();
+    // Actualizar la factura activa con los nuevos datos
+    facturaActiva = facturas.find(f => f.id === facturaActiva.id) ?? facturaActiva;
+  } catch (e) {
+    mostrarToast('Error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Guardar fechas';
+  }
+}
+
+async function extraerFechasPdf() {
+  if (!facturaActiva) return;
+  const btn = document.getElementById('btn-extraer-pdf');
+  btn.disabled = true; btn.textContent = '⏳ Extrayendo…';
+  try {
+    const r = await fetch(`/api/facturas/${facturaActiva.id}/extraer-fechas`, { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error ?? 'Error');
+    if (data.vcto_1) {
+      document.getElementById('modal-vcto-1').value = data.vcto_1;
+      mostrarToast(`Vencimiento encontrado: ${data.vcto_1}`, 'success');
+    } else {
+      mostrarToast('No se encontró fecha de vencimiento en el PDF', 'info');
+    }
+    if (data.vcto_2) document.getElementById('modal-vcto-2').value = data.vcto_2;
+  } catch (e) {
+    mostrarToast('Error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '🔍 Extraer del PDF';
+  }
 }
 
 function copiarTexto(id) {
