@@ -701,6 +701,10 @@ function toggleFiltroEmisor(e) {
     </label>`;
   }).join('');
 
+  // Sincronizar checkbox TODOS
+  const chkTodos = document.getElementById('chk-emisor-todos');
+  if (chkTodos) chkTodos.checked = filtroEmisores === null;
+
   // Limpiar búsqueda previa
   const searchInput = panel.querySelector('.th-filter-search input');
   if (searchInput) searchInput.value = '';
@@ -721,7 +725,6 @@ function cerrarFiltroEmisor() {
 }
 
 function toggleEmisor(rut, checked) {
-  // Primera interacción: inicializar con todos seleccionados
   if (filtroEmisores === null) {
     filtroEmisores = new Set(facturas.map(f => f.rut_emisor));
   }
@@ -732,22 +735,23 @@ function toggleEmisor(rut, checked) {
   const total = new Set(facturas.map(f => f.rut_emisor)).size;
   if (filtroEmisores.size === total) filtroEmisores = null;
 
+  // Sincronizar checkbox TODOS
+  const chkTodos = document.getElementById('chk-emisor-todos');
+  if (chkTodos) chkTodos.checked = filtroEmisores === null;
+
   renderTabla();
 }
 
-function filtroEmisorTodos(e) {
-  e.stopPropagation();
-  filtroEmisores = null;
-  document.querySelectorAll('#filter-emisor-items input[type=checkbox]')
-    .forEach(cb => cb.checked = true);
-  renderTabla();
-}
-
-function filtroEmisorNinguno(e) {
-  e.stopPropagation();
-  filtroEmisores = new Set();
-  document.querySelectorAll('#filter-emisor-items input[type=checkbox]')
-    .forEach(cb => cb.checked = false);
+function toggleFiltroEmisorTodos(checked) {
+  if (checked) {
+    filtroEmisores = null;
+    document.querySelectorAll('#filter-emisor-items input[type=checkbox]')
+      .forEach(cb => cb.checked = true);
+  } else {
+    filtroEmisores = new Set();
+    document.querySelectorAll('#filter-emisor-items input[type=checkbox]')
+      .forEach(cb => cb.checked = false);
+  }
   renderTabla();
 }
 

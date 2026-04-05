@@ -83,8 +83,10 @@
               </div>
               <div class="th-filter-panel" id="filter-emisor-panel">
                 <div class="th-filter-actions">
-                  <button onclick="filtroEmisorTodos(event)">Todos</button>
-                  <button onclick="filtroEmisorNinguno(event)">Ninguno</button>
+                  <label class="th-filter-item th-filter-todos" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="chk-emisor-todos" checked onchange="toggleFiltroEmisorTodos(this.checked)">
+                    <span>TODOS</span>
+                  </label>
                 </div>
                 <div class="th-filter-search">
                   <input type="text" placeholder="Buscar…" oninput="filtrarItemsEmisor(this.value)" onclick="event.stopPropagation()">

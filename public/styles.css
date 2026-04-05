@@ -171,22 +171,16 @@ body {
 .th-filter-panel.open { display: block; }
 
 .th-filter-actions {
-  display: flex;
-  gap: 6px;
-  padding: 0 10px 6px;
-  border-bottom: 1px solid #f0f4f8;
+  padding: 2px 0 2px;
+  border-bottom: 1px solid #e2e8f0;
 }
-.th-filter-actions button {
-  flex: 1;
-  padding: 4px 0;
+.th-filter-todos {
+  font-weight: 700;
   font-size: 11px;
-  background: #f7fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 5px;
-  cursor: pointer;
   color: #4a5568;
+  letter-spacing: .04em;
+  background: #f7fafc;
 }
-.th-filter-actions button:hover { background: #edf2f7; }
 
 .th-filter-search {
   padding: 6px 10px;
