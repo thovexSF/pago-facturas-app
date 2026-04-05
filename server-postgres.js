@@ -154,26 +154,24 @@ async function getProveedor(rut, razonSocial) {
            dias_1: 30, pct_1: 50, dias_2: 40, pct_2: 50 };
 }
 
-async function upsertFacturas(docs) {
+// forzar=true → re-escribe vcto_1/vcto_2 en registros existentes (sync histórico)
+// forzar=false → preserva edits manuales del usuario (sync regular)
+async function upsertFacturas(docs, forzar = false) {
   let insertadas = 0, actualizadas = 0;
-  // Log de campos del primer documento para descubrir campos disponibles
   if (docs.length > 0) console.log('[SII sync] Campos disponibles en doc:', Object.keys(docs[0]).join(', '));
   for (const d of docs) {
     const rut = `${d.detRutDoc}-${d.detDvDoc}`;
     const prov = await getProveedor(rut, d.detRznSoc);
     const montoTotal   = Math.round(d.detMntNeto * 1.19);
     const esContado    = prov.condicion === 'contado';
+    const esCredito    = !esContado;
     const fechaEmision = parseDate(d.detFchDoc);
     const vctoSII      = d.detFchVcto ? parseDate(d.detFchVcto) : null;
 
-    // vcto desde SII si viene, si no: cálculo por días del proveedor
-    const vcto_1 = esContado ? fechaEmision
-                 : vctoSII   ? vctoSII
-                 : null; // se calculará en SQL: fecha_emision + dias_1
-    const vcto_2 = esContado || vctoSII ? null : null; // se calculará en SQL si aplica
-
+    // vcto_1: SII > cálculo crédito > fecha emisión (contado) > null
+    // vcto_2: solo si es crédito Y no hay vctoSII
     const monto1 = esContado ? montoTotal : Math.round(montoTotal * prov.pct_1 / 100);
-    const monto2 = esContado || vctoSII   ? null : montoTotal - monto1;
+    const monto2 = esContado || vctoSII   ? null : esCredito ? montoTotal - monto1 : null;
 
     if (vctoSII) console.log(`[SII sync] Folio ${d.detNroDoc} → vcto SII: ${vctoSII}`);
 
@@ -184,13 +182,15 @@ async function upsertFacturas(docs) {
           vcto_1, monto_1, pagado_1, pagado_1_at,
           vcto_2, monto_2, pagado_2, pagado_2_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
+          -- vcto_1 INSERT: SII > crédito calculado > contado (fecha emisión)
           CASE WHEN $9::date IS NOT NULL THEN $9::date
-               WHEN $10::boolean THEN $5::date
+               WHEN $10::boolean         THEN $5::date
                ELSE $5::date + $11::integer END,
           $12, $10, CASE WHEN $10 THEN NOW() ELSE NULL END,
-          CASE WHEN $9::date IS NOT NULL OR $10::boolean THEN NULL
-               ELSE $5::date + $13::integer END,
-          $14, FALSE, NULL)
+          -- vcto_2 INSERT: solo crédito sin vctoSII
+          CASE WHEN $9::date IS NOT NULL OR NOT $13::boolean THEN NULL
+               ELSE $5::date + $14::integer END,
+          $15, FALSE, NULL)
        ON CONFLICT (codigo) DO UPDATE SET
          razon_social = EXCLUDED.razon_social,
          monto_neto   = EXCLUDED.monto_neto,
@@ -202,22 +202,26 @@ async function upsertFacturas(docs) {
          pagado_2_at  = EXCLUDED.pagado_2_at,
          monto_1      = EXCLUDED.monto_1,
          monto_2      = EXCLUDED.monto_2,
-         -- Solo actualizar fechas si SII trae fecha explícita (respeta edits manuales)
-         vcto_1       = CASE WHEN $9::date IS NOT NULL THEN EXCLUDED.vcto_1
-                             ELSE facturas_recibidas.vcto_1 END,
-         vcto_2       = CASE WHEN $9::date IS NOT NULL THEN NULL
-                             ELSE facturas_recibidas.vcto_2 END,
+         -- vcto: actualizar si SII trae fecha O si es sync forzado
+         vcto_1 = CASE WHEN $9::date IS NOT NULL OR $16::boolean
+                        THEN EXCLUDED.vcto_1
+                        ELSE facturas_recibidas.vcto_1 END,
+         vcto_2 = CASE WHEN $9::date IS NOT NULL OR $16::boolean
+                        THEN EXCLUDED.vcto_2
+                        ELSE facturas_recibidas.vcto_2 END,
          updated_at   = NOW()
        RETURNING (xmax = 0) AS inserted`,
       [
         String(d.detCodigo), rut, d.detRznSoc, d.detNroDoc,
         fechaEmision, d.detMntNeto, montoTotal, d.dcvEstadoContab ?? 'REGISTRO',
-        vcto_1,        // $9  — null si no hay vctoSII y no es contado
+        vctoSII,       // $9  — fecha SII o null
         esContado,     // $10
-        prov.dias_1,   // $11 — para cálculo fallback cuota 1
+        prov.dias_1,   // $11 — fallback cuota 1 (crédito)
         monto1,        // $12
-        prov.dias_2,   // $13 — para cálculo fallback cuota 2
-        monto2,        // $14
+        esCredito,     // $13 — es crédito → puede tener vcto_2
+        prov.dias_2,   // $14 — fallback cuota 2
+        monto2,        // $15
+        forzar,        // $16 — forzar re-escritura de vcto en ON CONFLICT
       ]
     );
     r.rows[0].inserted ? insertadas++ : actualizadas++;
@@ -1046,68 +1050,40 @@ app.post('/api/sync/auto', async (req, res) => {
   res.json({ ok: true, meses: resultado });
 });
 
-// POST /api/sync/vcto — re-sincroniza fechas de vencimiento para un proveedor (o todos)
-// Body: { rut: '12345678-9' }  → filtra por ese RUT
-// Sin body → actualiza todos (mismo comportamiento que historico)
-app.post('/api/sync/vcto', async (req, res) => {
-  if (siiEnCurso) return res.status(409).json({ error: 'Operación SII en curso' });
-  const rutFiltro = req.body?.rut ?? null;
-  const desde = (() => { const d = new Date(); d.setFullYear(d.getFullYear()-2);
-    return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}`; })();
-  const meses = rangoDeMeses(desde, mesActual());
-
-  res.json({ ok: true, mensaje: `Re-sincronizando ${meses.length} meses${rutFiltro ? ` para ${rutFiltro}` : ''}...` });
-
-  let sesion;
-  try {
-    sesion = await abrirSesionSII();
-    let total = 0;
-    for (const mes of meses) {
-      const docs = await getFacturasMes(sesion.context, sesion.conversationId, mes);
-      const filtrados = rutFiltro
-        ? docs.filter(d => `${d.detRutDoc}-${d.detDvDoc}` === rutFiltro)
-        : docs;
-      if (filtrados.length) {
-        await upsertFacturas(filtrados);
-        total += filtrados.length;
-        console.log(`[sync/vcto] ${mes}: ${filtrados.length} docs${rutFiltro ? ` de ${rutFiltro}` : ''}`);
-      }
-    }
-    console.log(`[sync/vcto] Completado: ${total} facturas actualizadas`);
-  } catch (err) { console.error('[sync/vcto] Error:', err.message); }
-  finally { siiEnCurso = false; sesion?.browser?.close(); }
-});
-
+// POST /api/sync/historico
+// ?forzar=true → re-procesa TODOS los meses (aunque ya sincronizados) para actualizar vcto
 app.post('/api/sync/historico', async (req, res) => {
-  const actual = mesActual();
-  const desde  = req.query.desde ?? req.body?.desde ?? (() => {
+  const actual  = mesActual();
+  const forzar  = req.query.forzar === 'true' || req.body?.forzar === true;
+  const desde   = req.query.desde ?? req.body?.desde ?? (() => {
     const d = new Date(); d.setFullYear(d.getFullYear()-2);
     return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}`;
   })();
 
   const { rows } = await pool.query('SELECT mes FROM meses_sincronizados');
   const sincronizados = new Set(rows.map(r => r.mes));
-  const pendientes = rangoDeMeses(desde, actual).filter(m => m === actual || !sincronizados.has(m));
+  const todos = rangoDeMeses(desde, actual);
+  const pendientes = forzar ? todos : todos.filter(m => m === actual || !sincronizados.has(m));
 
   if (!pendientes.length) return res.json({ ok: true, mensaje: 'Todo ya sincronizado' });
 
-  res.json({ ok: true, mensaje: `Sincronizando ${pendientes.length} meses en background...`, meses: pendientes });
+  res.json({ ok: true, mensaje: `Sincronizando ${pendientes.length} meses en background${forzar?' (forzado)':''}...`, meses: pendientes });
 
   let sesion;
   try {
     sesion = await abrirSesionSII();
     for (const mes of pendientes) {
       const docs = await getFacturasMes(sesion.context, sesion.conversationId, mes);
-      await upsertFacturas(docs);
+      await upsertFacturas(docs, forzar);
       await pool.query(
         `INSERT INTO meses_sincronizados (mes,total) VALUES ($1,$2) ON CONFLICT (mes) DO UPDATE SET total=$2, synced_at=NOW()`,
         [mes, docs.length]
       );
-      console.log(`[historico] ${mes}: ${docs.length} facturas`);
+      console.log(`[historico] ${mes}: ${docs.length} facturas${forzar?' (forzado)':''}`);
     }
     console.log('[historico] Completado');
   } catch (err) { console.error('[historico] Error:', err.message); }
-  finally { siiEnCurso = false; sesion?.browser.close(); }
+  finally { siiEnCurso = false; sesion?.browser?.close(); }
 });
 
 let dbReady = false;

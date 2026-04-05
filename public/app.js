@@ -244,7 +244,6 @@ function renderProveedores() {
         <th>Cuota 1</th>
         <th>Cuota 2</th>
         <th>En agenda</th>
-        <th></th>
       </tr></thead>
       <tbody>
         ${proveedores.map(p => `
@@ -284,9 +283,6 @@ function renderProveedores() {
             <td>
               <input type="checkbox" ${p.en_agenda?'checked':''}
                 onchange="actualizarProveedor('${p.rut_emisor}','en_agenda',this.checked)">
-            </td>
-            <td>
-              <button class="btn btn-sm btn-secondary" onclick="resincVcto('${p.rut_emisor}', this)" title="Re-sincronizar fechas de vencimiento desde SII">↻ Fechas</button>
             </td>
           </tr>`).join('')}
       </tbody>
@@ -624,27 +620,6 @@ function formatFecha(fecha) {
 
 function esc(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-async function resincVcto(rut, btn) {
-  btn.disabled = true;
-  btn.textContent = '⏳';
-  try {
-    const r = await fetch('/api/sync/vcto', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rut }),
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error ?? 'Error');
-    mostrarToast(data.mensaje, 'success');
-    setTimeout(() => cargarFacturas(), 8000); // esperar a que termine en background
-  } catch (e) {
-    mostrarToast('Error: ' + e.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '↻ Fechas';
-  }
 }
 
 async function guardarVencimientos() {
