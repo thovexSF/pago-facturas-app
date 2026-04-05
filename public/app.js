@@ -650,6 +650,11 @@ function toggleFiltroEmisor(e) {
   const searchInput = panel.querySelector('.th-filter-search input');
   if (searchInput) searchInput.value = '';
 
+  // Posicionar el panel usando fixed (evita clipping por overflow del table-wrapper)
+  const rect = btn.getBoundingClientRect();
+  panel.style.top  = (rect.bottom + 4) + 'px';
+  panel.style.left = rect.left + 'px';
+
   panel.classList.add('open');
   btn.classList.add('active');
 }
