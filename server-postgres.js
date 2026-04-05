@@ -949,24 +949,42 @@ app.post('/api/facturas/:id/extraer-fechas', async (req, res) => {
     const fechaEmision = new Date(rows[0].fecha_emision);
     const resultado = { texto_raw: texto.slice(0, 1000), vcto_1: null, vcto_2: null };
 
-    // 1) Fecha explícita DD/MM/YYYY o DD-MM-YYYY cerca de palabras clave
-    const patronFecha = /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/g;
-    const keywordsVcto = /vencim|fecha\s+pago|fecha\s+de\s+pago|f\.?\s*pago|plazo|condici/i;
+    // 1) Fecha explícita cerca de palabras clave (DD/MM/YYYY, DD-MM-YYYY, YYYY-MM-DD)
+    const patronFechaDMY  = /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/g;
+    const patronFechaISO  = /(\d{4})-(\d{2})-(\d{2})/g;
+    const keywordsVcto = /vencim|fecha\s+pago|fecha\s+de\s+pago|f\.?\s*pago|plazo|condici|pagos/i;
 
-    // Buscar líneas con palabras clave de vencimiento
+    const extraerDeFecha = (linea) => {
+      const out = [];
+      let m;
+      patronFechaDMY.lastIndex = 0;
+      while ((m = patronFechaDMY.exec(linea)) !== null) {
+        const [, d, mo, y] = m;
+        const f = new Date(`${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`);
+        if (!isNaN(f) && f > fechaEmision) out.push(f.toISOString().split('T')[0]);
+      }
+      patronFechaISO.lastIndex = 0;
+      while ((m = patronFechaISO.exec(linea)) !== null) {
+        const [, y, mo, d] = m;
+        const f = new Date(`${y}-${mo}-${d}`);
+        if (!isNaN(f) && f > fechaEmision) out.push(f.toISOString().split('T')[0]);
+      }
+      return out;
+    };
+
+    // Buscar líneas con palabras clave; también inspeccionar las 5 líneas siguientes
+    // (para cubrir casos como "Pagos:\n2026-04-22 ...")
     const lineas = texto.split(/\r?\n/);
     const fechasEncontradas = [];
-    for (const linea of lineas) {
-      if (!keywordsVcto.test(linea)) continue;
-      let m;
-      while ((m = patronFecha.exec(linea)) !== null) {
-        const [, d, mo, y] = m;
-        const fecha = new Date(`${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`);
-        if (!isNaN(fecha) && fecha > fechaEmision) {
-          fechasEncontradas.push(fecha.toISOString().split('T')[0]);
+    const vistas = new Set();
+    for (let i = 0; i < lineas.length; i++) {
+      if (!keywordsVcto.test(lineas[i])) continue;
+      const ventana = lineas.slice(i, Math.min(i + 6, lineas.length));
+      for (const l of ventana) {
+        for (const f of extraerDeFecha(l)) {
+          if (!vistas.has(f)) { vistas.add(f); fechasEncontradas.push(f); }
         }
       }
-      patronFecha.lastIndex = 0;
     }
 
     // 2) Si no encontró fechas explícitas, buscar plazo en días
