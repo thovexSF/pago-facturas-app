@@ -1046,6 +1046,38 @@ app.post('/api/sync/auto', async (req, res) => {
   res.json({ ok: true, meses: resultado });
 });
 
+// POST /api/sync/vcto — re-sincroniza fechas de vencimiento para un proveedor (o todos)
+// Body: { rut: '12345678-9' }  → filtra por ese RUT
+// Sin body → actualiza todos (mismo comportamiento que historico)
+app.post('/api/sync/vcto', async (req, res) => {
+  if (siiEnCurso) return res.status(409).json({ error: 'Operación SII en curso' });
+  const rutFiltro = req.body?.rut ?? null;
+  const desde = (() => { const d = new Date(); d.setFullYear(d.getFullYear()-2);
+    return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}`; })();
+  const meses = rangoDeMeses(desde, mesActual());
+
+  res.json({ ok: true, mensaje: `Re-sincronizando ${meses.length} meses${rutFiltro ? ` para ${rutFiltro}` : ''}...` });
+
+  let sesion;
+  try {
+    sesion = await abrirSesionSII();
+    let total = 0;
+    for (const mes of meses) {
+      const docs = await getFacturasMes(sesion.context, sesion.conversationId, mes);
+      const filtrados = rutFiltro
+        ? docs.filter(d => `${d.detRutDoc}-${d.detDvDoc}` === rutFiltro)
+        : docs;
+      if (filtrados.length) {
+        await upsertFacturas(filtrados);
+        total += filtrados.length;
+        console.log(`[sync/vcto] ${mes}: ${filtrados.length} docs${rutFiltro ? ` de ${rutFiltro}` : ''}`);
+      }
+    }
+    console.log(`[sync/vcto] Completado: ${total} facturas actualizadas`);
+  } catch (err) { console.error('[sync/vcto] Error:', err.message); }
+  finally { siiEnCurso = false; sesion?.browser?.close(); }
+});
+
 app.post('/api/sync/historico', async (req, res) => {
   const actual = mesActual();
   const desde  = req.query.desde ?? req.body?.desde ?? (() => {
