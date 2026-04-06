@@ -81,8 +81,8 @@ function cargarEventosCalendar() {
         id: `${f.id}-1`,
         title: `C1 Factura N° ${f.folio} $${formatMonto(f.monto_1)}`,
         start: f.vcto_1.split('T')[0],
-        backgroundColor: f.pagado_1 ? '#48bb78' : vencida ? '#e53e3e' : '#3182ce',
-        borderColor:     f.pagado_1 ? '#276749' : vencida ? '#c53030' : '#2b6cb0',
+        backgroundColor: f.pagado_1 ? '#276749' : vencida ? '#e53e3e' : (f.vcto_2 ? '#38a169' : '#3182ce'),
+        borderColor:     f.pagado_1 ? '#1a4731' : vencida ? '#c53030' : (f.vcto_2 ? '#276749' : '#2b6cb0'),
         textColor:       '#fff',
       });
     }
@@ -92,8 +92,8 @@ function cargarEventosCalendar() {
         id: `${f.id}-2`,
         title: `C2 Factura N° ${f.folio} $${formatMonto(f.monto_2)}`,
         start: f.vcto_2.split('T')[0],
-        backgroundColor: f.pagado_2 ? '#48bb78' : vencida ? '#e53e3e' : '#3182ce',
-        borderColor:     f.pagado_2 ? '#276749' : vencida ? '#c53030' : '#2b6cb0',
+        backgroundColor: f.pagado_2 ? '#2b6cb0' : vencida ? '#e53e3e' : '#3182ce',
+        borderColor:     f.pagado_2 ? '#1a4480' : vencida ? '#c53030' : '#2563eb',
         textColor:       '#fff',
       });
     }
