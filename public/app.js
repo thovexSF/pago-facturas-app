@@ -63,6 +63,14 @@ function initCalendar() {
       const f  = facturas.find(x => x.id === id);
       if (f) abrirModal(f);
     },
+    eventDidMount: (info) => {
+      if (info.event.extendedProps.halfPaid) {
+        // Mitad verde (pagada) + mitad azul (pendiente)
+        info.el.style.background    = 'linear-gradient(to right, #48bb78 50%, #3182ce 50%)';
+        info.el.style.borderColor   = '#276749';
+        info.el.style.borderRadius  = '4px';
+      }
+    },
   });
   calendar.render();
 }
@@ -75,26 +83,40 @@ function cargarEventosCalendar() {
 
   facturas.forEach(f => {
     if (!filtrados.has(f.rut_emisor)) return;
+
+    const tiene2      = !!f.vcto_2;
+    const amboPagado  = f.pagado_1 && (!tiene2 || f.pagado_2);
+    const halfPaid    = tiene2 && ((f.pagado_1 && !f.pagado_2) || (!f.pagado_1 && f.pagado_2));
+
+    const colorBase = (pagado, vencida) => ({
+      bg:     halfPaid ? '#48bb78' : amboPagado ? '#48bb78' : vencida ? '#e53e3e' : '#3182ce',
+      border: halfPaid ? '#276749' : amboPagado ? '#276749' : vencida ? '#c53030' : '#2b6cb0',
+    });
+
     if (f.vcto_1) {
-      const vencida = !f.pagado_1 && new Date(f.vcto_1) < new Date();
+      const vencida = !f.pagado_1 && !amboPagado && new Date(f.vcto_1) < new Date();
+      const c = colorBase(f.pagado_1, vencida);
       calendar.addEvent({
         id: `${f.id}-1`,
         title: `C1 Factura N° ${f.folio} $${formatMonto(f.monto_1)}`,
         start: f.vcto_1.split('T')[0],
-        backgroundColor: f.pagado_1 ? '#276749' : vencida ? '#e53e3e' : (f.vcto_2 ? '#38a169' : '#3182ce'),
-        borderColor:     f.pagado_1 ? '#1a4731' : vencida ? '#c53030' : (f.vcto_2 ? '#276749' : '#2b6cb0'),
+        backgroundColor: c.bg,
+        borderColor:     c.border,
         textColor:       '#fff',
+        extendedProps:   { halfPaid: halfPaid && !vencida },
       });
     }
     if (f.vcto_2) {
-      const vencida = !f.pagado_2 && new Date(f.vcto_2) < new Date();
+      const vencida = !f.pagado_2 && !amboPagado && new Date(f.vcto_2) < new Date();
+      const c = colorBase(f.pagado_2, vencida);
       calendar.addEvent({
         id: `${f.id}-2`,
         title: `C2 Factura N° ${f.folio} $${formatMonto(f.monto_2)}`,
         start: f.vcto_2.split('T')[0],
-        backgroundColor: f.pagado_2 ? '#2b6cb0' : vencida ? '#e53e3e' : '#3182ce',
-        borderColor:     f.pagado_2 ? '#1a4480' : vencida ? '#c53030' : '#2563eb',
+        backgroundColor: c.bg,
+        borderColor:     c.border,
         textColor:       '#fff',
+        extendedProps:   { halfPaid: halfPaid && !vencida },
       });
     }
   });
