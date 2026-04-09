@@ -408,41 +408,39 @@ async function descargarPdfPorCodigo(cookies, codigo) {
     return [...map.values()];
   };
 
-  const intentarDescarga = async (ck) => {
-    let cookies = [...ck];
-    const hdr = (ref) => ({ 'Cookie': siiCookieHeader(cookies), 'Referer': ref, 'User-Agent': SII_UA });
+  let ck = [...cookies];
+  const hdr = (ref) => ({ 'Cookie': siiCookieHeader(ck), 'Referer': ref, 'User-Agent': SII_UA });
 
-    // Paso 1: landing page
-    const r1 = await axios.get(launchUrl, { validateStatus: () => true, headers: hdr('https://www1.sii.cl/') }).catch(() => null);
-    if (r1) cookies = mergeCookies(cookies, r1.headers['set-cookie']);
-    await sleep(300);
+  // Paso 1: landing page
+  const r1 = await axios.get(launchUrl, { validateStatus: () => true, headers: hdr('https://www1.sii.cl/') }).catch(() => null);
+  if (r1) ck = mergeCookies(ck, r1.headers['set-cookie']);
+  await sleep(300);
 
-    // Paso 2: página de gestión del documento — capturamos las cookies que establece
-    const r2 = await axios.get(gesUrl, { validateStatus: () => true, headers: hdr(launchUrl) }).catch(() => null);
-    if (r2) cookies = mergeCookies(cookies, r2.headers['set-cookie']);
-    await sleep(300);
+  // Paso 2: página de gestión — capturamos cookies y diagnosticamos
+  const r2 = await axios.get(gesUrl, { validateStatus: () => true, headers: hdr(launchUrl) }).catch(() => null);
+  if (r2) {
+    ck = mergeCookies(ck, r2.headers['set-cookie']);
+    const body2 = Buffer.from(r2.data ?? '').toString('latin1');
+    const title2 = (body2.match(/<title>([^<]*)<\/title>/i) ?? [])[1] ?? '?';
+    console.log(`[PDF] mipeGesDocRcp status=${r2.status} title="${title2}"`);
+    if (title2.toLowerCase().includes('error')) {
+      // El CODIGO no es accesible — probablemente documento en estado Pendiente sin PDF disponible
+      throw new Error(`Documento no disponible en SII (${title2}). Puede estar en estado Pendiente.`);
+    }
+  }
+  await sleep(300);
 
-    // Paso 3: PDF con todas las cookies acumuladas
-    const resp = await axios.get(pdfUrl, {
-      maxRedirects: 3, validateStatus: () => true, responseType: 'arraybuffer',
-      headers: hdr(gesUrl),
-    });
-    return Buffer.from(resp.data);
-  };
-
-  // Intento 1 con cookies actuales
-  let buf = await intentarDescarga(cookies);
+  // Paso 3: PDF
+  const resp = await axios.get(pdfUrl, {
+    maxRedirects: 3, validateStatus: () => true, responseType: 'arraybuffer',
+    headers: hdr(gesUrl),
+  });
+  const buf = Buffer.from(resp.data);
   if (buf.slice(0, 4).toString() === '%PDF') return buf;
 
-  // Intento 2: re-autenticar completo y reintentar
-  console.warn(`[PDF] CODIGO ${codigo} devolvió HTML, re-autenticando...`);
-  const nuevasCookies = await autenticarSIIdirecto();
-  buf = await intentarDescarga(nuevasCookies);
-  if (buf.slice(0, 4).toString() === '%PDF') return buf;
-
-  const preview = buf.toString('latin1').slice(0, 400).replace(/\s+/g, ' ');
-  console.error(`[PDF] CODIGO ${codigo} HTML final:`, preview);
-  throw new Error(`mipeShowPdf no devolvió PDF (ct=text/html, size=${buf.length})`);
+  const preview = buf.toString('latin1').slice(0, 300).replace(/\s+/g, ' ');
+  console.error(`[PDF] CODIGO ${codigo} no devolvió PDF:`, preview);
+  throw new Error(`SII no devolvió PDF para este documento (size=${buf.length})`);
 }
 
 // Mutex global: SII bloquea sesiones concurrentes del mismo RUT
