@@ -392,38 +392,57 @@ async function buscarCodigoPdf(cookies, folio, rutEmisor) {
 
 // ── Descargar PDF de un documento dado su CODIGO interno ─────────────────────
 async function descargarPdfPorCodigo(cookies, codigo) {
-  const gesUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi?CODIGO=${codigo}&ALL_PAGE_ANT=2`;
-  const pdfUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeShowPdf.cgi?CODIGO=${codigo}`;
-  const hdrs   = (referer) => ({
-    'Cookie': siiCookieHeader(cookies),
-    'Referer': referer,
-    'User-Agent': SII_UA,
-  });
+  const launchUrl = 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4';
+  const gesUrl    = `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi?CODIGO=${codigo}&ALL_PAGE_ANT=2`;
+  const pdfUrl    = `https://www1.sii.cl/cgi-bin/Portal001/mipeShowPdf.cgi?CODIGO=${codigo}`;
 
-  // 1) Visitar la página de gestión para que SII inicialice la sesión de descarga
-  await axios.get(gesUrl, {
-    maxRedirects: 3, validateStatus: () => true,
-    headers: hdrs('https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4'),
-  }).catch(() => {});  // ignorar error — solo nos interesa "calentar" la sesión
+  // Fusiona Set-Cookie headers en el array [{name,value}] que usa siiCookieHeader
+  const mergeCookies = (existing, setCookieHeader) => {
+    const map = new Map(existing.map(c => [c.name, c]));
+    const raw = Array.isArray(setCookieHeader) ? setCookieHeader : (setCookieHeader ? [setCookieHeader] : []);
+    for (const c of raw) {
+      const pair = c.split(';')[0].trim();
+      const eqIdx = pair.indexOf('=');
+      if (eqIdx > 0) map.set(pair.slice(0, eqIdx).trim(), { name: pair.slice(0, eqIdx).trim(), value: pair.slice(eqIdx + 1).trim() });
+    }
+    return [...map.values()];
+  };
 
-  // 2) Descargar el PDF (hasta 2 intentos: con las cookies actuales y re-auth)
-  for (let intento = 1; intento <= 2; intento++) {
+  const intentarDescarga = async (ck) => {
+    let cookies = [...ck];
+    const hdr = (ref) => ({ 'Cookie': siiCookieHeader(cookies), 'Referer': ref, 'User-Agent': SII_UA });
+
+    // Paso 1: landing page
+    const r1 = await axios.get(launchUrl, { validateStatus: () => true, headers: hdr('https://www1.sii.cl/') }).catch(() => null);
+    if (r1) cookies = mergeCookies(cookies, r1.headers['set-cookie']);
+    await sleep(300);
+
+    // Paso 2: página de gestión del documento — capturamos las cookies que establece
+    const r2 = await axios.get(gesUrl, { validateStatus: () => true, headers: hdr(launchUrl) }).catch(() => null);
+    if (r2) cookies = mergeCookies(cookies, r2.headers['set-cookie']);
+    await sleep(300);
+
+    // Paso 3: PDF con todas las cookies acumuladas
     const resp = await axios.get(pdfUrl, {
       maxRedirects: 3, validateStatus: () => true, responseType: 'arraybuffer',
-      headers: hdrs(gesUrl),
+      headers: hdr(gesUrl),
     });
-    const buf = Buffer.from(resp.data);
-    if (buf.slice(0, 4).toString() === '%PDF') return buf;
+    return Buffer.from(resp.data);
+  };
 
-    // Sesión expirada — re-autenticar y reintentar
-    if (intento === 1) {
-      console.warn(`[PDF] CODIGO ${codigo} devolvió HTML en intento 1, re-autenticando...`);
-      const nuevasCookies = await autenticarSIIdirecto();
-      Object.assign(cookies, nuevasCookies);  // mutar para que el bucle use las nuevas
-    } else {
-      throw new Error(`mipeShowPdf no devolvió PDF (ct=${resp.headers['content-type']}, size=${buf.length})`);
-    }
-  }
+  // Intento 1 con cookies actuales
+  let buf = await intentarDescarga(cookies);
+  if (buf.slice(0, 4).toString() === '%PDF') return buf;
+
+  // Intento 2: re-autenticar completo y reintentar
+  console.warn(`[PDF] CODIGO ${codigo} devolvió HTML, re-autenticando...`);
+  const nuevasCookies = await autenticarSIIdirecto();
+  buf = await intentarDescarga(nuevasCookies);
+  if (buf.slice(0, 4).toString() === '%PDF') return buf;
+
+  const preview = buf.toString('latin1').slice(0, 400).replace(/\s+/g, ' ');
+  console.error(`[PDF] CODIGO ${codigo} HTML final:`, preview);
+  throw new Error(`mipeShowPdf no devolvió PDF (ct=text/html, size=${buf.length})`);
 }
 
 // Mutex global: SII bloquea sesiones concurrentes del mismo RUT
@@ -795,7 +814,7 @@ async function descargarPdfsBulkSII() {
   return { descargadas, errores, total: sinPdf.length };
 }
 
-async function getFacturasMes(context, conversationId, ptributario) {
+async function getFacturasMesEstado(context, conversationId, ptributario, estadoContab) {
   const res = await context.request.post(
     'https://www4.sii.cl/consdcvinternetui/services/data/facadeService/getDetalleCompra',
     {
@@ -809,7 +828,7 @@ async function getFacturasMes(context, conversationId, ptributario) {
         },
         data: {
           rutEmisor: EMPRESA_RUT, dvEmisor: EMPRESA_DV, ptributario,
-          codTipoDoc: '33', operacion: 'COMPRA', estadoContab: 'REGISTRO',
+          codTipoDoc: '33', operacion: 'COMPRA', estadoContab,
           accionRecaptcha: 'RCV_DETC', tokenRecaptcha: 't-o-k-e-n-web',
         },
       },
@@ -817,6 +836,18 @@ async function getFacturasMes(context, conversationId, ptributario) {
   );
   const json = await res.json();
   return Array.isArray(json?.data) ? json.data : [];
+}
+
+async function getFacturasMes(context, conversationId, ptributario) {
+  // Traer tanto Registro como Pendientes y deduplicar por folio+rut
+  const [registro, pendientes] = await Promise.all([
+    getFacturasMesEstado(context, conversationId, ptributario, 'REGISTRO'),
+    getFacturasMesEstado(context, conversationId, ptributario, 'PENDIENTE'),
+  ]);
+  const vistos = new Set(registro.map(d => `${d.detRutDoc}-${d.detNroDoc}`));
+  const soloNuevos = pendientes.filter(d => !vistos.has(`${d.detRutDoc}-${d.detNroDoc}`));
+  if (soloNuevos.length) console.log(`[SII sync] ${ptributario}: +${soloNuevos.length} pendientes`);
+  return [...registro, ...soloNuevos];
 }
 
 // ─── API — Proveedores ────────────────────────────────────────────────────────
@@ -1225,6 +1256,13 @@ cron.schedule('0 8 * * 1-5', async () => {
     const j = await r.json();
     console.log('[CRON notif]', j);
   } catch (err) { console.error('[CRON notif] Error:', err.message); }
+});
+
+// Libera el mutex si quedó trabado por un error previo
+app.post('/api/sii/reset-mutex', (req, res) => {
+  siiEnCurso = false;
+  pdfEnCurso = false;
+  res.json({ ok: true });
 });
 
 let dbReady = false;

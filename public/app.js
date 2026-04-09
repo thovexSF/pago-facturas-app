@@ -459,14 +459,49 @@ async function marcarCuota(cuota) {
 
 // ─── PDF ──────────────────────────────────────────────────────────────────────
 
-async function descargarPdfFactura(id) {
+async function descargarPdfFactura(id, btnRef) {
+  // Spinner en el botón que lo disparó (modal o tabla)
+  const btn = btnRef || document.getElementById('btn-modal-pdf');
+  const textoOriginal = btn?.textContent;
+  let intervalo;
+  if (btn) {
+    btn.disabled = true;
+    let dots = 0;
+    const pasos = ['⏳ Conectando al SII', '⏳ Autenticando', '⏳ Descargando PDF'];
+    let paso = 0;
+    btn.textContent = pasos[0];
+    intervalo = setInterval(() => {
+      dots = (dots + 1) % 4;
+      if (dots === 0) paso = Math.min(paso + 1, pasos.length - 1);
+      btn.textContent = pasos[paso] + '.'.repeat(dots);
+    }, 700);
+  }
+
   try {
     const res = await fetch(`/api/facturas/${id}/pdf`, { method: 'POST' });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Error al descargar PDF');
-    mostrarToast(`PDF guardado (${Math.round(data.bytes/1024)} KB)`, 'success');
+    if (!res.ok) {
+      // Si el mutex está trabado, libéralo en servidor y reintenta una vez
+      if (data.error?.includes('operación SII en curso')) {
+        await fetch('/api/sii/reset-mutex', { method: 'POST' });
+        await new Promise(r => setTimeout(r, 1000));
+        const res2 = await fetch(`/api/facturas/${id}/pdf`, { method: 'POST' });
+        const data2 = await res2.json();
+        if (!res2.ok) throw new Error(data2.error || 'Error al descargar PDF');
+        mostrarToast(`PDF guardado (${Math.round(data2.bytes/1024)} KB)`, 'success');
+      } else {
+        throw new Error(data.error || 'Error al descargar PDF');
+      }
+    } else {
+      mostrarToast(`PDF guardado (${Math.round(data.bytes/1024)} KB)`, 'success');
+    }
     await cargarFacturas();
-  } catch (err) { mostrarToast('Error PDF: '+err.message, 'error'); }
+  } catch (err) {
+    mostrarToast('Error PDF: ' + err.message, 'error');
+  } finally {
+    clearInterval(intervalo);
+    if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }
+  }
 }
 
 async function descargarPdfsPendientes() {
