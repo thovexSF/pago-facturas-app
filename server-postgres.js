@@ -392,19 +392,38 @@ async function buscarCodigoPdf(cookies, folio, rutEmisor) {
 
 // ── Descargar PDF de un documento dado su CODIGO interno ─────────────────────
 async function descargarPdfPorCodigo(cookies, codigo) {
-  const url  = `https://www1.sii.cl/cgi-bin/Portal001/mipeShowPdf.cgi?CODIGO=${codigo}`;
-  const resp = await axios.get(url, {
-    maxRedirects: 3, validateStatus: () => true, responseType: 'arraybuffer',
-    headers: {
-      'Cookie': siiCookieHeader(cookies),
-      'Referer': `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi?CODIGO=${codigo}&ALL_PAGE_ANT=2`,
-      'User-Agent': SII_UA,
-    },
+  const gesUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi?CODIGO=${codigo}&ALL_PAGE_ANT=2`;
+  const pdfUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeShowPdf.cgi?CODIGO=${codigo}`;
+  const hdrs   = (referer) => ({
+    'Cookie': siiCookieHeader(cookies),
+    'Referer': referer,
+    'User-Agent': SII_UA,
   });
-  const buf = Buffer.from(resp.data);
-  if (!buf.slice(0, 5).toString().startsWith('%PDF'))
-    throw new Error(`mipeShowPdf no devolvió PDF (ct=${resp.headers['content-type']}, size=${buf.length})`);
-  return buf;
+
+  // 1) Visitar la página de gestión para que SII inicialice la sesión de descarga
+  await axios.get(gesUrl, {
+    maxRedirects: 3, validateStatus: () => true,
+    headers: hdrs('https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4'),
+  }).catch(() => {});  // ignorar error — solo nos interesa "calentar" la sesión
+
+  // 2) Descargar el PDF (hasta 2 intentos: con las cookies actuales y re-auth)
+  for (let intento = 1; intento <= 2; intento++) {
+    const resp = await axios.get(pdfUrl, {
+      maxRedirects: 3, validateStatus: () => true, responseType: 'arraybuffer',
+      headers: hdrs(gesUrl),
+    });
+    const buf = Buffer.from(resp.data);
+    if (buf.slice(0, 4).toString() === '%PDF') return buf;
+
+    // Sesión expirada — re-autenticar y reintentar
+    if (intento === 1) {
+      console.warn(`[PDF] CODIGO ${codigo} devolvió HTML en intento 1, re-autenticando...`);
+      const nuevasCookies = await autenticarSIIdirecto();
+      Object.assign(cookies, nuevasCookies);  // mutar para que el bucle use las nuevas
+    } else {
+      throw new Error(`mipeShowPdf no devolvió PDF (ct=${resp.headers['content-type']}, size=${buf.length})`);
+    }
+  }
 }
 
 // Mutex global: SII bloquea sesiones concurrentes del mismo RUT
