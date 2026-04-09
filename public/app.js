@@ -260,7 +260,7 @@ function renderTabla() {
         <td onclick="event.stopPropagation()">
           ${f.has_pdf
             ? `<a class="btn btn-sm btn-success" href="/api/facturas/${f.id}/pdf" target="_blank" rel="noopener">📄 Ver</a>`
-            : `<button class="btn btn-sm btn-secondary" onclick="descargarPdfFactura(${f.id})">⬇ PDF</button>`}
+            : `<button class="btn btn-sm btn-secondary" onclick="descargarPdfFactura(${f.id}, this)">⬇ PDF</button>`}
         </td>
         <td>${!ambaPagada?`<button class="btn btn-sm btn-pay" onclick="event.stopPropagation();abrirModal(facturas.find(x=>x.id===${f.id}))">Pagar</button>`:''}</td>
       </tr>`;

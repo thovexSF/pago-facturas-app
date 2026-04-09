@@ -727,18 +727,86 @@ async function abrirSesionSII() {
 }
 
 
-// Descarga el PDF de UNA factura (HTTP directo, sin Playwright)
+// Descarga el PDF de UNA factura — intenta HTTP, cae a Playwright si falla
 async function descargarPdfSII(folio, rutEmisor, codigoBd = null) {
   if (pdfEnCurso || siiEnCurso) throw new Error('Ya hay una operación SII en curso, intenta en unos minutos');
   pdfEnCurso = true;
   try {
-    const cookies = await autenticarSIIdirecto();
-    const codigo  = codigoBd || await buscarCodigoPdf(cookies, folio, rutEmisor);
-    if (!codigo) throw new Error(`Folio ${folio} no encontrado en SII`);
-    console.log(`[SII pdf] Folio ${folio} → CODIGO ${codigo}`);
-    return await descargarPdfPorCodigo(cookies, codigo);
+    // Intento 1: HTTP directo (rápido)
+    let cookies = null;
+    try {
+      cookies = await autenticarHTTP();
+      if (cookies) cookies = await seleccionarEmpresaHTTP(cookies);
+    } catch (_) { cookies = null; }
+
+    if (cookies) {
+      const codigo = codigoBd || await buscarCodigoPdf(cookies, folio, rutEmisor);
+      if (codigo) {
+        console.log(`[SII pdf] Folio ${folio} → CODIGO ${codigo} (HTTP)`);
+        try {
+          return await descargarPdfPorCodigo(cookies, codigo);
+        } catch (httpErr) {
+          console.warn(`[SII pdf] HTTP falló (${httpErr.message}), intentando vía browser...`);
+        }
+      }
+    }
+
+    // Intento 2: Playwright navega directamente al PDF en el browser autenticado
+    console.log(`[SII pdf] Folio ${folio} → descargando vía browser Playwright`);
+    return await descargarPdfViaBrowser(folio, rutEmisor, codigoBd);
   } finally {
     pdfEnCurso = false;
+  }
+}
+
+// Descarga PDF usando Playwright directamente (sin extraer cookies)
+async function descargarPdfViaBrowser(folio, rutEmisor, codigoBd = null) {
+  const { chromium } = require('playwright');
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const ctx  = browser.newContext({ userAgent: SII_UA });
+    const page = (await ctx).newPage();
+    await loginSII(await page);
+
+    // Seleccionar empresa
+    await (await page).goto('https://www1.sii.cl/cgi-bin/Portal001/mipeSelEmpresa.cgi', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    try {
+      await (await page).selectOption('select[name="RUT_EMP"]', SII_EMPRESA_RUT.replace('-', ''), { timeout: 5000 });
+      await (await page).click('input[type="submit"]', { timeout: 5000 });
+    } catch (_) {}
+    await sleep(1000);
+
+    // Obtener CODIGO si no lo tenemos
+    let codigo = codigoBd;
+    if (!codigo) {
+      const [rutNum] = rutEmisor.replace(/\./g, '').split('-');
+      const searchUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeAdminDocsRcp.cgi?RUT_EMI=${rutNum}&FOLIO=${folio}&RZN_SOC=&FEC_DESDE=&FEC_HASTA=&TPO_DOC=&ESTADO=&ORDEN=&NUM_PAG=1`;
+      await (await page).goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      const content = await (await page).content();
+      const m = content.match(/CODIGO=(\d+)/);
+      if (!m) throw new Error(`Folio ${folio} no encontrado en SII (browser)`);
+      codigo = m[1];
+    }
+
+    console.log(`[SII pdf] Folio ${folio} → CODIGO ${codigo} (browser)`);
+
+    // Navegar al gestor del documento y capturar el PDF
+    const gesUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi?CODIGO=${codigo}&ALL_PAGE_ANT=2`;
+    await (await page).goto(gesUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await sleep(500);
+
+    const pdfUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeShowPdf.cgi?CODIGO=${codigo}`;
+    const response = await (await page).request.get(pdfUrl);
+    const buf = Buffer.from(await response.body());
+
+    if (buf.slice(0, 4).toString() !== '%PDF') {
+      const preview = buf.toString('latin1').slice(0, 300).replace(/\s+/g, ' ');
+      console.error(`[SII pdf browser] No es PDF:`, preview);
+      throw new Error(`SII no devolvió PDF para folio ${folio} (browser)`);
+    }
+    return buf;
+  } finally {
+    await browser.close().catch(() => {});
   }
 }
 
