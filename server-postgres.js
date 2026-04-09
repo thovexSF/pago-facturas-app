@@ -856,7 +856,7 @@ app.post('/api/facturas/:id/pdf', async (req, res) => {
 
   let pdfBuffer;
   try {
-    pdfBuffer = await descargarPdfSII(f.folio, f.rut_emisor);
+    pdfBuffer = await descargarPdfSII(f.folio, f.rut_emisor, f.codigo);
   } catch (err) {
     console.error('[PDF]', err.message);
     return res.status(502).json({ error: err.message });
