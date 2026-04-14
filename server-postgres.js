@@ -71,6 +71,8 @@ async function setupDb() {
     ['vcto_1','DATE'],['monto_1','BIGINT'],['pagado_1','BOOLEAN DEFAULT FALSE'],['pagado_1_at','TIMESTAMP'],
     ['vcto_2','DATE'],['monto_2','BIGINT'],['pagado_2','BOOLEAN DEFAULT FALSE'],['pagado_2_at','TIMESTAMP'],
     ['pdf_data','BYTEA'],['pdf_nombre','VARCHAR(100)'],['pdf_at','TIMESTAMP'],
+    ['tipo_doc','VARCHAR(10) DEFAULT \'33\''],['ref_tipo_doc','VARCHAR(10)'],['ref_folio','INTEGER'],
+    ['anulada','BOOLEAN DEFAULT FALSE'],['anulada_por_folio','INTEGER'],
   ]) {
     await pool.query(`ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
   }
@@ -141,6 +143,67 @@ function mesActual() {
   return `${n.getFullYear()}${String(n.getMonth() + 1).padStart(2, '0')}`;
 }
 
+function extraerReferenciasDesdeDocSii(d) {
+  const ownFo = parseInt(String(d.detNroDoc ?? '').replace(/\D/g, ''), 10);
+  const found = [];
+  const visit = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    const folio = node.folio ?? node.detFolio ?? node.nroFolio ?? node.numFolio ?? node.detNroDocRef;
+    const tipo = node.tipoDoc ?? node.codTipoDoc ?? node.dcvTipoDoc ?? node.tipoDte ?? node.detTipoDoc;
+    if (folio != null && tipo != null) {
+      const ti = parseInt(String(tipo).replace(/\D/g, ''), 10);
+      const fo = parseInt(String(folio).replace(/\D/g, ''), 10);
+      if (ti && fo && !(ti === 61 && fo === ownFo))
+        found.push({ tipo: ti, folio: fo });
+    }
+    for (const v of Object.values(node)) visit(v);
+  };
+  visit(d);
+  const seen = new Set();
+  const uniq = found.filter(r => {
+    const k = `${r.tipo}-${r.folio}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  const pref = uniq.filter(r => r.tipo === 33 || r.tipo === 34 || r.tipo === 46);
+  return pref.length ? pref : uniq;
+}
+
+function parseReferenciasGesHtml(html) {
+  if (!html || typeof html !== 'string') return [];
+  const refs = [];
+  const seen = new Set();
+  const add = (tipo, folio) => {
+    const t = parseInt(String(tipo).replace(/\D/g, ''), 10);
+    const f = parseInt(String(folio).replace(/\D/g, ''), 10);
+    if (!t || !f) return;
+    const k = `${t}-${f}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    refs.push({ tipo: t, folio: f });
+  };
+  for (const re of [
+    /[?&]FOLIO=(\d+)[^"'&\s]*[?&]T(?:IPO_)?DOC(?:UMENTO)?=(\d+)/gi,
+    /[?&]T(?:IPO_)?DOC(?:UMENTO)?=(\d+)[^"'&\s]*[?&]FOLIO=(\d+)/gi,
+    /Folio[^0-9]{0,8}(\d{1,9})[^0-9]{0,40}Tipo[^0-9]{0,12}(\d{2})/gi,
+  ]) {
+    let m;
+    re.lastIndex = 0;
+    while ((m = re.exec(html)) !== null) {
+      if (re.source.startsWith('[?&]FOLIO')) add(m[2], m[1]);
+      else if (re.source.includes('Tipo')) add(m[2], m[1]);
+      else add(m[1], m[2]);
+    }
+  }
+  const pref = refs.filter(r => r.tipo === 33 || r.tipo === 34 || r.tipo === 46);
+  return pref.length ? pref : refs;
+}
+
 // Obtiene o crea proveedor. Si es nuevo, lo registra como 'contado'.
 async function getProveedor(rut, razonSocial) {
   const { rows } = await pool.query('SELECT * FROM proveedores WHERE rut_emisor=$1', [rut]);
@@ -162,32 +225,63 @@ async function upsertFacturas(docs, forzar = false) {
   for (const d of docs) {
     const rut = `${d.detRutDoc}-${d.detDvDoc}`;
     const prov = await getProveedor(rut, d.detRznSoc);
-    const montoTotal   = Math.round(d.detMntNeto * 1.19);
-    const esContado    = prov.condicion === 'contado';
-    const esCredito    = !esContado;
+    const tipoDoc = String(d._codTipoDoc || d.detCodTipoDoc || '33');
+    const esNC = tipoDoc === '61';
+    const montoNetoVal = Math.abs(Number(d.detMntNeto) || 0);
+    const montoTotal = Math.round(montoNetoVal * 1.19);
+    const esContado = prov.condicion === 'contado';
+    const esCredito = !esContado;
     const fechaEmision = parseDate(d.detFchDoc);
-    const vctoSII      = d.detFchVcto ? parseDate(d.detFchVcto) : null;
+    const vctoSII = d.detFchVcto ? parseDate(d.detFchVcto) : null;
 
-    // vcto_1: SII > cálculo crédito > fecha emisión (contado) > null
-    // vcto_2: solo si es crédito Y no hay vctoSII
+    if (esNC) {
+      const refs = extraerReferenciasDesdeDocSii(d);
+      const prim = refs.find(x => x.tipo === 33 || x.tipo === 34) ?? refs[0];
+      const refTipo = prim ? String(prim.tipo) : null;
+      const refFolio = prim ? prim.folio : null;
+      const r = await pool.query(
+        `INSERT INTO facturas_recibidas
+           (codigo, rut_emisor, razon_social, folio, fecha_emision,
+            monto_neto, monto_total, estado_sii, tipo_doc, ref_tipo_doc, ref_folio,
+            vcto_1, monto_1, pagado_1, pagado_1_at, vcto_2, monto_2, pagado_2, pagado_2_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'61',$9,$10,
+            $5, $7, TRUE, NOW(), NULL, NULL, FALSE, NULL)
+         ON CONFLICT (codigo) DO UPDATE SET
+           razon_social = EXCLUDED.razon_social,
+           monto_neto = EXCLUDED.monto_neto,
+           monto_total = EXCLUDED.monto_total,
+           estado_sii = EXCLUDED.estado_sii,
+           tipo_doc = EXCLUDED.tipo_doc,
+           ref_tipo_doc = COALESCE(EXCLUDED.ref_tipo_doc, facturas_recibidas.ref_tipo_doc),
+           ref_folio = COALESCE(EXCLUDED.ref_folio, facturas_recibidas.ref_folio),
+           updated_at = NOW()
+         RETURNING (xmax = 0) AS inserted`,
+        [
+          String(d.detCodigo), rut, d.detRznSoc, d.detNroDoc,
+          fechaEmision, montoNetoVal, montoTotal, d.dcvEstadoContab ?? 'REGISTRO',
+          refTipo, refFolio,
+        ]
+      );
+      r.rows[0].inserted ? insertadas++ : actualizadas++;
+      continue;
+    }
+
     const monto1 = esContado ? montoTotal : Math.round(montoTotal * prov.pct_1 / 100);
-    const monto2 = esContado || vctoSII   ? null : esCredito ? montoTotal - monto1 : null;
+    const monto2 = esContado || vctoSII ? null : esCredito ? montoTotal - monto1 : null;
 
     if (vctoSII) console.log(`[SII sync] Folio ${d.detNroDoc} → vcto SII: ${vctoSII}`);
 
     const r = await pool.query(
       `INSERT INTO facturas_recibidas
          (codigo, rut_emisor, razon_social, folio, fecha_emision,
-          monto_neto, monto_total, estado_sii,
+          monto_neto, monto_total, estado_sii, tipo_doc,
           vcto_1, monto_1, pagado_1, pagado_1_at,
           vcto_2, monto_2, pagado_2, pagado_2_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
-          -- vcto_1 INSERT: SII > crédito calculado > contado (fecha emisión)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'33',
           CASE WHEN $9::date IS NOT NULL THEN $9::date
                WHEN $10::boolean         THEN $5::date
                ELSE $5::date + $11::integer END,
           $12, $10, CASE WHEN $10 THEN NOW() ELSE NULL END,
-          -- vcto_2 INSERT: solo crédito sin vctoSII
           CASE WHEN $9::date IS NOT NULL OR NOT $13::boolean THEN NULL
                ELSE $5::date + $14::integer END,
           $15, FALSE, NULL)
@@ -196,13 +290,13 @@ async function upsertFacturas(docs, forzar = false) {
          monto_neto   = EXCLUDED.monto_neto,
          monto_total  = EXCLUDED.monto_total,
          estado_sii   = EXCLUDED.estado_sii,
+         tipo_doc     = EXCLUDED.tipo_doc,
          pagado_1     = EXCLUDED.pagado_1,
          pagado_1_at  = EXCLUDED.pagado_1_at,
          pagado_2     = EXCLUDED.pagado_2,
          pagado_2_at  = EXCLUDED.pagado_2_at,
          monto_1      = EXCLUDED.monto_1,
          monto_2      = EXCLUDED.monto_2,
-         -- vcto: actualizar si SII trae fecha O si es sync forzado
          vcto_1 = CASE WHEN $9::date IS NOT NULL OR $16::boolean
                         THEN EXCLUDED.vcto_1
                         ELSE facturas_recibidas.vcto_1 END,
@@ -213,19 +307,20 @@ async function upsertFacturas(docs, forzar = false) {
        RETURNING (xmax = 0) AS inserted`,
       [
         String(d.detCodigo), rut, d.detRznSoc, d.detNroDoc,
-        fechaEmision, d.detMntNeto, montoTotal, d.dcvEstadoContab ?? 'REGISTRO',
-        vctoSII,       // $9  — fecha SII o null
-        esContado,     // $10
-        prov.dias_1,   // $11 — fallback cuota 1 (crédito)
-        monto1,        // $12
-        esCredito,     // $13 — es crédito → puede tener vcto_2
-        prov.dias_2,   // $14 — fallback cuota 2
-        monto2,        // $15
-        forzar,        // $16 — forzar re-escritura de vcto en ON CONFLICT
+        fechaEmision, montoNetoVal, montoTotal, d.dcvEstadoContab ?? 'REGISTRO',
+        vctoSII,
+        esContado,
+        prov.dias_1,
+        monto1,
+        esCredito,
+        prov.dias_2,
+        monto2,
+        forzar,
       ]
     );
     r.rows[0].inserted ? insertadas++ : actualizadas++;
   }
+  await aplicarAnulacionesPorReferencias();
   return { insertadas, actualizadas };
 }
 
@@ -260,6 +355,59 @@ function siiCookieHeader(cookies) {
 const SII_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function obtenerReferenciasGesDoc(cookies, codigo) {
+  const launchUrl = 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4';
+  const gesUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi?CODIGO=${codigo}&ALL_PAGE_ANT=2`;
+  const hdr = (ref) => ({ 'Cookie': siiCookieHeader(cookies), 'Referer': ref, 'User-Agent': SII_UA });
+  await axios.get(launchUrl, { validateStatus: () => true, headers: hdr('https://www1.sii.cl/') }).catch(() => null);
+  await sleep(200);
+  const r2 = await axios.get(gesUrl, { validateStatus: () => true, headers: hdr(launchUrl) }).catch(() => null);
+  const html = Buffer.from(r2?.data ?? '').toString('latin1');
+  return parseReferenciasGesHtml(html);
+}
+
+async function aplicarAnulacionesPorReferencias() {
+  await pool.query(`
+    UPDATE facturas_recibidas f
+    SET anulada = TRUE,
+        anulada_por_folio = nc.folio,
+        updated_at = NOW()
+    FROM facturas_recibidas nc
+    WHERE nc.tipo_doc = '61'
+      AND nc.ref_folio IS NOT NULL
+      AND nc.ref_tipo_doc IS NOT NULL
+      AND f.rut_emisor = nc.rut_emisor
+      AND f.folio = nc.ref_folio
+      AND f.tipo_doc <> '61'
+      AND COALESCE(f.anulada, FALSE) = FALSE
+  `);
+}
+
+async function resolverReferenciasNotasCredito(cookies) {
+  const { rows } = await pool.query(`
+    SELECT id, codigo, folio FROM facturas_recibidas
+    WHERE tipo_doc = '61'
+      AND codigo IS NOT NULL
+      AND (ref_folio IS NULL OR ref_tipo_doc IS NULL)
+  `);
+  for (const r of rows) {
+    let refs = [];
+    try {
+      refs = await obtenerReferenciasGesDoc(cookies, r.codigo);
+    } catch (e) {
+      console.warn(`[NC ref] id ${r.id} codigo ${r.codigo}: ${e.message}`);
+    }
+    if (!refs.length) continue;
+    const p = refs.find(x => x.tipo === 33 || x.tipo === 34) ?? refs[0];
+    await pool.query(
+      `UPDATE facturas_recibidas SET ref_tipo_doc = $1, ref_folio = $2, updated_at = NOW() WHERE id = $3`,
+      [String(p.tipo), p.folio, r.id]
+    );
+    console.log(`[NC ref] NC folio ${r.folio} → ref ${p.tipo}/${p.folio}`);
+  }
+  await aplicarAnulacionesPorReferencias();
+}
 
 // ── Autenticación directa vía CAutInicio.cgi (HTTP, sin browser) ──────────────
 // Rápida pero puede fallar desde IPs de nube (Railway). Devuelve cookies o null.
@@ -880,7 +1028,7 @@ async function descargarPdfsBulkSII() {
   return { descargadas, errores, total: sinPdf.length };
 }
 
-async function getFacturasMesEstado(context, conversationId, ptributario, estadoContab) {
+async function getFacturasMesEstado(context, conversationId, ptributario, estadoContab, codTipoDoc = '33') {
   const res = await context.request.post(
     'https://www4.sii.cl/consdcvinternetui/services/data/facadeService/getDetalleCompra',
     {
@@ -894,7 +1042,7 @@ async function getFacturasMesEstado(context, conversationId, ptributario, estado
         },
         data: {
           rutEmisor: EMPRESA_RUT, dvEmisor: EMPRESA_DV, ptributario,
-          codTipoDoc: '33', operacion: 'COMPRA', estadoContab,
+          codTipoDoc, operacion: 'COMPRA', estadoContab,
           accionRecaptcha: 'RCV_DETC', tokenRecaptcha: 't-o-k-e-n-web',
         },
       },
@@ -904,16 +1052,28 @@ async function getFacturasMesEstado(context, conversationId, ptributario, estado
   return Array.isArray(json?.data) ? json.data : [];
 }
 
-async function getFacturasMes(context, conversationId, ptributario) {
-  // Traer tanto Registro como Pendientes y deduplicar por folio+rut
-  const [registro, pendientes] = await Promise.all([
-    getFacturasMesEstado(context, conversationId, ptributario, 'REGISTRO'),
-    getFacturasMesEstado(context, conversationId, ptributario, 'PENDIENTE'),
-  ]);
+function mergeRegistroPendiente(registro, pendientes) {
   const vistos = new Set(registro.map(d => `${d.detRutDoc}-${d.detNroDoc}`));
   const soloNuevos = pendientes.filter(d => !vistos.has(`${d.detRutDoc}-${d.detNroDoc}`));
-  if (soloNuevos.length) console.log(`[SII sync] ${ptributario}: +${soloNuevos.length} pendientes`);
   return [...registro, ...soloNuevos];
+}
+
+async function getFacturasMes(context, conversationId, ptributario) {
+  const [r33, p33, r61, p61] = await Promise.all([
+    getFacturasMesEstado(context, conversationId, ptributario, 'REGISTRO', '33'),
+    getFacturasMesEstado(context, conversationId, ptributario, 'PENDIENTE', '33'),
+    getFacturasMesEstado(context, conversationId, ptributario, 'REGISTRO', '61'),
+    getFacturasMesEstado(context, conversationId, ptributario, 'PENDIENTE', '61'),
+  ]);
+  const m33 = mergeRegistroPendiente(r33, p33);
+  const m61 = mergeRegistroPendiente(r61, p61);
+  const v33 = new Set(r33.map(x => `${x.detRutDoc}-${x.detNroDoc}`));
+  const pendExtra = p33.filter(d => !v33.has(`${d.detRutDoc}-${d.detNroDoc}`));
+  if (pendExtra.length) console.log(`[SII sync] ${ptributario}: +${pendExtra.length} pendientes (FE)`);
+  const v61 = new Set(r61.map(x => `${x.detRutDoc}-${x.detNroDoc}`));
+  const pendExtra61 = p61.filter(d => !v61.has(`${d.detRutDoc}-${d.detNroDoc}`));
+  if (pendExtra61.length) console.log(`[SII sync] ${ptributario}: +${pendExtra61.length} pendientes (NC)`);
+  return [...m33.map(d => ({ ...d, _codTipoDoc: '33' })), ...m61.map(d => ({ ...d, _codTipoDoc: '61' }))];
 }
 
 // ─── API — Proveedores ────────────────────────────────────────────────────────
@@ -951,15 +1111,20 @@ app.put('/api/proveedores/:rut', async (req, res) => {
 
 app.get('/api/facturas', async (req, res) => {
   try {
-    const { rows } = await pool.query(`
-      SELECT id, codigo, rut_emisor, razon_social, folio, fecha_emision,
-             monto_neto, monto_total, estado_sii,
-             vcto_1, monto_1, pagado_1, pagado_1_at,
-             vcto_2, monto_2, pagado_2, pagado_2_at,
-             pdf_nombre, pdf_at, (pdf_data IS NOT NULL) AS has_pdf,
-             created_at, updated_at
-      FROM facturas_recibidas ORDER BY fecha_emision DESC
-    `);
+    const incluirAnuladas = req.query.incluir_anuladas === '1' || req.query.incluir_anuladas === 'true';
+    const { rows } = await pool.query(
+      `SELECT id, codigo, rut_emisor, razon_social, folio, fecha_emision,
+              monto_neto, monto_total, estado_sii,
+              vcto_1, monto_1, pagado_1, pagado_1_at,
+              vcto_2, monto_2, pagado_2, pagado_2_at,
+              pdf_nombre, pdf_at, (pdf_data IS NOT NULL) AS has_pdf,
+              tipo_doc, ref_tipo_doc, ref_folio, anulada, anulada_por_folio,
+              created_at, updated_at
+       FROM facturas_recibidas
+       WHERE ($1::boolean OR COALESCE(anulada, FALSE) = FALSE)
+       ORDER BY fecha_emision DESC`,
+      [incluirAnuladas]
+    );
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1154,6 +1319,18 @@ app.put('/api/facturas/:id/pagar/:cuota', async (req, res) => {
 
 // ─── API — Sync ───────────────────────────────────────────────────────────────
 
+app.post('/api/sync', async (req, res) => {
+  try {
+    const docs = req.body.facturas || [];
+    const r = await upsertFacturas(docs);
+    try {
+      const ck = await autenticarSIIdirecto();
+      await resolverReferenciasNotasCredito(ck);
+    } catch (e) { console.warn('[NC ref] /api/sync:', e.message); }
+    res.json(r);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.post('/api/sync/auto', async (req, res) => {
   const actual = mesActual();
   const { rows } = await pool.query('SELECT mes FROM meses_sincronizados');
@@ -1180,6 +1357,11 @@ app.post('/api/sync/auto', async (req, res) => {
       resultado.push({ mes, total: docs.length, insertadas, actualizadas });
     }
   } finally { siiEnCurso = false; await sesion.browser.close(); }
+
+  try {
+    const ck = await autenticarSIIdirecto();
+    await resolverReferenciasNotasCredito(ck);
+  } catch (e) { console.warn('[NC ref] post-sync:', e.message); }
 
   res.json({ ok: true, meses: resultado });
 });
@@ -1215,6 +1397,10 @@ app.post('/api/sync/historico', async (req, res) => {
       );
       console.log(`[historico] ${mes}: ${docs.length} facturas${forzar?' (forzado)':''}`);
     }
+    try {
+      const ck = await autenticarSIIdirecto();
+      await resolverReferenciasNotasCredito(ck);
+    } catch (e) { console.warn('[NC ref] post-sync:', e.message); }
     console.log('[historico] Completado');
   } catch (err) { console.error('[historico] Error:', err.message); }
   finally { siiEnCurso = false; sesion?.browser?.close(); }
@@ -1233,12 +1419,14 @@ const NOTIF_DIAS       = parseInt(process.env.NOTIF_DIAS_AVISO ?? '5');
 async function getCuotasProximas(dias = NOTIF_DIAS) {
   const { rows } = await pool.query(`
     SELECT f.id, f.folio, f.rut_emisor, f.monto_total,
-           p.nombre_emisor,
+           p.razon_social AS nombre_emisor,
            f.vcto_1, f.monto_1, f.pagado_1,
            f.vcto_2, f.monto_2, f.pagado_2
     FROM facturas_recibidas f
     JOIN proveedores p ON f.rut_emisor = p.rut_emisor
-    WHERE (
+    WHERE COALESCE(f.anulada, FALSE) = FALSE
+      AND COALESCE(f.tipo_doc, '33') <> '61'
+      AND (
       (f.vcto_1 IS NOT NULL AND f.pagado_1 = FALSE
          AND f.vcto_1 BETWEEN CURRENT_DATE AND CURRENT_DATE + $1)
       OR

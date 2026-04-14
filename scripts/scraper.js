@@ -13,7 +13,7 @@ async function ngSelect(page, selector, value) {
   }, { sel: selector, val: value });
 }
 
-async function getFacturas(context, conversationId, ptributario) {
+async function getDetalle(context, conversationId, ptributario, codTipoDoc, estadoContab) {
   const res = await context.request.post(
     'https://www4.sii.cl/consdcvinternetui/services/data/facadeService/getDetalleCompra',
     {
@@ -29,9 +29,9 @@ async function getFacturas(context, conversationId, ptributario) {
           rutEmisor:       EMPRESA_RUT,
           dvEmisor:        EMPRESA_DV,
           ptributario,
-          codTipoDoc:      '33',
+          codTipoDoc,
           operacion:       'COMPRA',
-          estadoContab:    'REGISTRO',
+          estadoContab,
           accionRecaptcha: 'RCV_DETC',
           tokenRecaptcha:  't-o-k-e-n-web',
         },
@@ -39,6 +39,25 @@ async function getFacturas(context, conversationId, ptributario) {
     }
   );
   return res.json();
+}
+
+function mergeRp(reg, pend) {
+  const v = new Set(reg.map(d => `${d.detRutDoc}-${d.detNroDoc}`));
+  return [...reg, ...pend.filter(d => !v.has(`${d.detRutDoc}-${d.detNroDoc}`))];
+}
+
+async function getFacturas(context, conversationId, ptributario) {
+  const [j33r, j33p, j61r, j61p] = await Promise.all([
+    getDetalle(context, conversationId, ptributario, '33', 'REGISTRO'),
+    getDetalle(context, conversationId, ptributario, '33', 'PENDIENTE'),
+    getDetalle(context, conversationId, ptributario, '61', 'REGISTRO'),
+    getDetalle(context, conversationId, ptributario, '61', 'PENDIENTE'),
+  ]);
+  const d33 = mergeRp(Array.isArray(j33r?.data) ? j33r.data : [], Array.isArray(j33p?.data) ? j33p.data : [])
+    .map(d => ({ ...d, _codTipoDoc: '33' }));
+  const d61 = mergeRp(Array.isArray(j61r?.data) ? j61r.data : [], Array.isArray(j61p?.data) ? j61p.data : [])
+    .map(d => ({ ...d, _codTipoDoc: '61' }));
+  return { data: [...d33, ...d61] };
 }
 
 async function scrape() {

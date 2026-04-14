@@ -74,6 +74,7 @@ function cargarEventosCalendar() {
   const filtrados  = chipsFiltro.size > 0 ? chipsFiltro : agendaRuts;
 
   facturas.forEach(f => {
+    if (f.tipo_doc === '61') return;
     if (!filtrados.has(f.rut_emisor)) return;
 
     const colorBase = (pagado, vencida) => ({
@@ -200,7 +201,7 @@ function renderStats() {
   document.getElementById('stat-total').textContent    = pendC1.length + pendC2.length;
   document.getElementById('stat-vencidas').textContent  = vencidas;
   document.getElementById('stat-monto').textContent    = '$' + formatMonto(montoPendiente);
-  document.getElementById('stat-pagadas').textContent  = facturas.filter(f => f.pagado_1 && (!f.vcto_2 || f.pagado_2)).length;
+  document.getElementById('stat-pagadas').textContent  = facturas.filter(f => f.tipo_doc !== '61' && f.pagado_1 && (!f.vcto_2 || f.pagado_2)).length;
 }
 
 // ─── Tabla ────────────────────────────────────────────────────────────────────
@@ -224,9 +225,12 @@ function renderTabla() {
     const ambaPagada = f.pagado_1 && (!f.vcto_2 || f.pagado_2);
     const vencida = (!f.pagado_1 && f.vcto_1 && new Date(f.vcto_1) < hoy)
                  || (!f.pagado_2 && f.vcto_2 && new Date(f.vcto_2) < hoy);
-    const estadoClass = ambaPagada ? 'badge-success' : vencida ? 'badge-danger' : 'badge-warning';
-    const estadoLabel = ambaPagada ? 'Pagada' : vencida ? 'Vencida' : 'Pendiente';
+    const estadoClass = f.tipo_doc === '61' ? 'badge-muted' : ambaPagada ? 'badge-success' : vencida ? 'badge-danger' : 'badge-warning';
+    const estadoLabel = f.tipo_doc === '61' ? 'Nota créd.' : ambaPagada ? 'Pagada' : vencida ? 'Vencida' : 'Pendiente';
     const proxVcto    = !f.pagado_1 && f.vcto_1 ? f.vcto_1 : f.vcto_2;
+    const tipo = f.tipo_doc === '61' ? 'NC' : 'FE';
+    const refNc = f.tipo_doc === '61' && f.ref_folio
+      ? `<span class="text-muted" title="Anula folio">→ ${esc(String(f.ref_folio))}</span>` : '';
     return `
       <tr class="${vencida?'row-vencida':''}" onclick="abrirModal(facturas.find(x=>x.id===${f.id}),listaActual)" style="cursor:pointer">
         <td>
@@ -234,6 +238,7 @@ function renderTabla() {
           <div class="emisor-rut">${esc(f.rut_emisor||'—')}</div>
         </td>
         <td>${f.folio||'—'}</td>
+        <td><span class="badge badge-muted">${tipo}</span> ${refNc}</td>
         <td>${formatFecha(f.fecha_emision)}</td>
         <td class="${vencida?'text-danger':''}">${formatFecha(proxVcto)}</td>
         <td class="monto">$${formatMonto(f.monto_total)}</td>
@@ -612,6 +617,7 @@ function renderGrafico() {
   // Agrupar por mes y proveedor → suma monto_total
   const porMesProv = {};
   facturas.forEach(f => {
+    if (f.tipo_doc === '61') return;
     if (!f.fecha_emision) return;
     const mes  = f.fecha_emision.slice(0, 7); // "2026-03"
     const prov = f.razon_social || f.rut_emisor;

@@ -271,6 +271,7 @@ body {
 .badge-success { background: #c6f6d5; color: #276749; }
 .badge-warning { background: #fefcbf; color: #744210; }
 .badge-danger  { background: #fed7d7; color: #9b2c2c; }
+.badge-muted   { background: #e2e8f0; color: #4a5568; font-size: 11px; }
 
 /* ── Empty state ── */
 .empty-state {
