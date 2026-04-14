@@ -227,7 +227,7 @@ function renderTabla() {
                  || (!f.pagado_2 && f.vcto_2 && new Date(f.vcto_2) < hoy);
     const estadoClass = f.tipo_doc === '61' ? 'badge-muted' : ambaPagada ? 'badge-success' : vencida ? 'badge-danger' : 'badge-warning';
     const estadoLabel = f.tipo_doc === '61' ? 'Nota créd.' : ambaPagada ? 'Pagada' : vencida ? 'Vencida' : 'Pendiente';
-    const proxVcto    = !f.pagado_1 && f.vcto_1 ? f.vcto_1 : f.vcto_2;
+    const proxVcto    = f.tipo_doc === '61' ? null : (!f.pagado_1 && f.vcto_1 ? f.vcto_1 : f.vcto_2);
     const tipo = f.tipo_doc === '61' ? 'NC' : 'FE';
     const refNc = f.tipo_doc === '61' && f.ref_folio
       ? `<span class="text-muted" title="Anula folio">→ ${esc(String(f.ref_folio))}</span>` : '';
@@ -240,12 +240,13 @@ function renderTabla() {
         <td>${f.folio||'—'}</td>
         <td><span class="badge badge-muted">${tipo}</span> ${refNc}</td>
         <td>${formatFecha(f.fecha_emision)}</td>
-        <td class="${vencida?'text-danger':''}">${formatFecha(proxVcto)}</td>
+        <td class="${f.tipo_doc === '61' ? '' : (vencida?'text-danger':'')}">${f.tipo_doc === '61' ? '<span class="text-muted">—</span>' : formatFecha(proxVcto)}</td>
         <td class="monto">$${formatMonto(f.monto_total)}</td>
         <td class="fechas-pago">
-          ${f.pagado_1 && f.pagado_1_at ? `<div class="pago-fecha">C1 · ${formatFecha(f.pagado_1_at)}</div>` : ''}
-          ${f.pagado_2 && f.pagado_2_at ? `<div class="pago-fecha">C2 · ${formatFecha(f.pagado_2_at)}</div>` : ''}
-          ${!f.pagado_1 && !f.pagado_2 ? '<span class="text-muted">—</span>' : ''}
+          ${f.tipo_doc === '61' ? '<span class="text-muted">—</span>' : ''}
+          ${f.tipo_doc !== '61' && f.pagado_1 && f.pagado_1_at ? `<div class="pago-fecha">C1 · ${formatFecha(f.pagado_1_at)}</div>` : ''}
+          ${f.tipo_doc !== '61' && f.pagado_2 && f.pagado_2_at ? `<div class="pago-fecha">C2 · ${formatFecha(f.pagado_2_at)}</div>` : ''}
+          ${f.tipo_doc !== '61' && !f.pagado_1 && !f.pagado_2 ? '<span class="text-muted">—</span>' : ''}
         </td>
         <td><span class="badge ${estadoClass}">${estadoLabel}</span></td>
         <td onclick="event.stopPropagation()">
@@ -253,7 +254,7 @@ function renderTabla() {
             ? `<a class="btn btn-sm btn-success" href="/api/facturas/${f.id}/pdf" target="_blank" rel="noopener">📄 Ver</a>`
             : `<button class="btn btn-sm btn-secondary" onclick="descargarPdfFactura(${f.id}, this)">⬇ PDF</button>`}
         </td>
-        <td>${!ambaPagada?`<button class="btn btn-sm btn-pay" onclick="event.stopPropagation();abrirModal(facturas.find(x=>x.id===${f.id}))">Pagar</button>`:''}</td>
+        <td>${f.tipo_doc !== '61' && !ambaPagada?`<button class="btn btn-sm btn-pay" onclick="event.stopPropagation();abrirModal(facturas.find(x=>x.id===${f.id}))">Pagar</button>`:''}</td>
       </tr>`;
   }).join('');
 }
@@ -354,7 +355,44 @@ function abrirModal(f, lista) {
   if (next) next.disabled = modalIndex >= modalLista.length - 1;
   const prov = proveedores.find(p => p.rut_emisor === f.rut_emisor);
 
-  document.getElementById('modal-titulo').textContent        = `Factura ${f.folio?'#'+f.folio:''}`;
+  const esNC = f.tipo_doc === '61';
+  document.getElementById('modal-titulo').textContent = esNC
+    ? `Nota de crédito ${f.folio ? '#' + f.folio : ''}`
+    : `Factura ${f.folio ? '#' + f.folio : ''}`;
+  document.querySelectorAll('.modal-fe-only').forEach(el => { el.style.display = esNC ? 'none' : ''; });
+  const refRow = document.getElementById('modal-nc-ref-row');
+  const refBtnRow = document.getElementById('modal-nc-ref-btn-row');
+  if (esNC) {
+    refRow.style.display = '';
+    refBtnRow.style.display = '';
+    document.getElementById('modal-nc-ref').textContent = f.ref_folio
+      ? `Tipo ${f.ref_tipo_doc || '33'} · Folio ${f.ref_folio}`
+      : 'Sin dato — puedes buscar en SII con el botón de abajo';
+  } else {
+    refRow.style.display = 'none';
+    refBtnRow.style.display = 'none';
+  }
+  const btnNcRes = document.getElementById('btn-nc-resolver-ref');
+  if (btnNcRes) {
+    btnNcRes.onclick = async () => {
+      if (!esNC) return;
+      btnNcRes.disabled = true;
+      try {
+        const res = await fetch(`/api/facturas/${f.id}/resolver-ref-nc`, { method: 'POST' });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.error || 'Error al consultar SII');
+        if (j.ok && j.ref_folio) {
+          mostrarToast(`Referencia: tipo ${j.ref_tipo_doc} folio ${j.ref_folio}`, 'success');
+        } else {
+          mostrarToast(j.mensaje || 'No se encontró referencia en el portal', 'error');
+        }
+        await cargarFacturas();
+        const upd = facturas.find(x => x.id === f.id);
+        if (upd) abrirModal(upd, modalLista);
+      } catch (e) { mostrarToast(e.message, 'error'); }
+      finally { btnNcRes.disabled = false; }
+    };
+  }
   document.getElementById('modal-emisor').textContent        = f.razon_social||'—';
   document.getElementById('modal-rut').textContent           = f.rut_emisor||'—';
   document.getElementById('modal-folio').textContent         = f.folio||'—';

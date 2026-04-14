@@ -187,25 +187,32 @@
               <span class="detail-label">Estado SII</span>
               <span class="detail-value" id="modal-estado-sii">—</span>
             </div>
-            <div class="detail-row cuota-row" style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0">
+            <div class="detail-row" id="modal-nc-ref-row" style="display:none">
+              <span class="detail-label">Anula documento</span>
+              <span class="detail-value" id="modal-nc-ref">—</span>
+            </div>
+            <div class="detail-row" id="modal-nc-ref-btn-row" style="display:none">
+              <button type="button" class="btn btn-sm btn-secondary" id="btn-nc-resolver-ref">Buscar referencia en SII</button>
+            </div>
+            <div class="detail-row cuota-row modal-fe-only" style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0">
               <span class="detail-label">Vcto 1 · <span id="modal-label-1">día 30</span></span>
               <span class="detail-value vcto-edit-row">
                 <input type="date" id="modal-vcto-1" class="vcto-input"> <strong id="modal-monto-1">—</strong>
               </span>
             </div>
-            <div class="detail-row cuota-row">
+            <div class="detail-row cuota-row modal-fe-only">
               <span class="detail-label">Vcto 2 · <span id="modal-label-2">día 40</span></span>
               <span class="detail-value vcto-edit-row">
                 <input type="date" id="modal-vcto-2" class="vcto-input"> <strong id="modal-monto-2">—</strong>
               </span>
             </div>
-            <div class="cuota-row vcto-actions">
+            <div class="cuota-row vcto-actions modal-fe-only">
               <button class="btn btn-sm btn-secondary" id="btn-extraer-pdf" onclick="extraerFechasPdf()">🔍 Extraer del PDF</button>
               <button class="btn btn-sm btn-primary"   id="btn-guardar-vcto" onclick="guardarVencimientos()">Guardar fechas</button>
             </div>
           </div>
 
-          <div class="pago-info">
+          <div class="pago-info modal-fe-only">
             <h3>Datos para transferencia</h3>
             <div class="copy-row">
               <span id="pago-rut-copy">—</span>
@@ -218,8 +225,8 @@
           </div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-pay btn-sm" id="btn-pagar-1">Pagar C1</button>
-          <button class="btn btn-pay btn-sm" id="btn-pagar-2">Pagar C2</button>
+          <button class="btn btn-pay btn-sm modal-fe-only" id="btn-pagar-1">Pagar C1</button>
+          <button class="btn btn-pay btn-sm modal-fe-only" id="btn-pagar-2">Pagar C2</button>
           <button class="btn btn-secondary" id="modal-cancel">Cerrar</button>
         </div>
       </div>

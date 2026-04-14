@@ -146,6 +146,30 @@ function mesActual() {
 function extraerReferenciasDesdeDocSii(d) {
   const ownFo = parseInt(String(d.detNroDoc ?? '').replace(/\D/g, ''), 10);
   const found = [];
+  const pares = [
+    ['detTpoDocRef', 'detNroDocRef'],
+    ['dcvTpoDocRef', 'dcvNroDocRef'],
+    ['detCodTipoDocRef', 'detNroDocRef'],
+    ['codTipoDocReferencia', 'folioReferencia'],
+    ['codDocReferencia', 'folioDocReferencia'],
+  ];
+  for (const [kt, kf] of pares) {
+    if (d[kt] == null || d[kf] == null) continue;
+    const ti = parseInt(String(d[kt]).replace(/\D/g, ''), 10);
+    const fo = parseInt(String(d[kf]).replace(/\D/g, ''), 10);
+    if (ti && fo && !(ti === 61 && fo === ownFo)) found.push({ tipo: ti, folio: fo });
+  }
+  if (Array.isArray(d.detallesRefDoc)) {
+    for (const x of d.detallesRefDoc) {
+      const fo = x?.folio ?? x?.nroFolio ?? x?.detNroDoc;
+      const ti = x?.tpoDoc ?? x?.codTipoDoc ?? x?.tipoDte;
+      if (fo != null && ti != null) {
+        const t = parseInt(String(ti).replace(/\D/g, ''), 10);
+        const f = parseInt(String(fo).replace(/\D/g, ''), 10);
+        if (t && f && !(t === 61 && f === ownFo)) found.push({ tipo: t, folio: f });
+      }
+    }
+  }
   const visit = (node) => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) {
@@ -187,19 +211,17 @@ function parseReferenciasGesHtml(html) {
     seen.add(k);
     refs.push({ tipo: t, folio: f });
   };
-  for (const re of [
-    /[?&]FOLIO=(\d+)[^"'&\s]*[?&]T(?:IPO_)?DOC(?:UMENTO)?=(\d+)/gi,
-    /[?&]T(?:IPO_)?DOC(?:UMENTO)?=(\d+)[^"'&\s]*[?&]FOLIO=(\d+)/gi,
-    /Folio[^0-9]{0,8}(\d{1,9})[^0-9]{0,40}Tipo[^0-9]{0,12}(\d{2})/gi,
-  ]) {
-    let m;
-    re.lastIndex = 0;
-    while ((m = re.exec(html)) !== null) {
-      if (re.source.startsWith('[?&]FOLIO')) add(m[2], m[1]);
-      else if (re.source.includes('Tipo')) add(m[2], m[1]);
-      else add(m[1], m[2]);
-    }
-  }
+  let m;
+  const r1 = /[?&]FOLIO=(\d+)[^"'&\s]*[?&]T(?:IPO_)?DOC(?:UMENTO)?=(\d+)/gi;
+  while ((m = r1.exec(html)) !== null) add(m[2], m[1]);
+  const r2 = /[?&]T(?:IPO_)?DOC(?:UMENTO)?=(\d+)[^"'&\s]*[?&]FOLIO=(\d+)/gi;
+  while ((m = r2.exec(html)) !== null) add(m[1], m[2]);
+  const r3 = /Folio[^0-9]{0,8}(\d{1,9})[^0-9]{0,40}Tipo[^0-9]{0,12}(\d{2})/gi;
+  while ((m = r3.exec(html)) !== null) add(m[2], m[1]);
+  const r4 = /Tipo\s+DTE[^0-9]{0,24}(\d{2,3})[^0-9]{0,120}?Folio[^0-9]{0,12}(\d{4,9})/gi;
+  while ((m = r4.exec(html)) !== null) add(m[1], m[2]);
+  const r5 = /Folio[:\s]+(\d{1,9})[\s\S]{0,160}?Tipo\s+(?:de\s+)?(?:DTE|documento)[^0-9]{0,20}(\d{2,3})/gi;
+  while ((m = r5.exec(html)) !== null) add(m[2], m[1]);
   const pref = refs.filter(r => r.tipo === 33 || r.tipo === 34 || r.tipo === 46);
   return pref.length ? pref : refs;
 }
@@ -362,9 +384,19 @@ async function obtenerReferenciasGesDoc(cookies, codigo) {
   const hdr = (ref) => ({ 'Cookie': siiCookieHeader(cookies), 'Referer': ref, 'User-Agent': SII_UA });
   await axios.get(launchUrl, { validateStatus: () => true, headers: hdr('https://www1.sii.cl/') }).catch(() => null);
   await sleep(200);
+  const chunks = [];
   const r2 = await axios.get(gesUrl, { validateStatus: () => true, headers: hdr(launchUrl) }).catch(() => null);
-  const html = Buffer.from(r2?.data ?? '').toString('latin1');
-  return parseReferenciasGesHtml(html);
+  chunks.push(Buffer.from(r2?.data ?? '').toString('latin1'));
+  const extras = [
+    `https://www1.sii.cl/cgi-bin/Portal001/mipeLstDocReferenciaRcp.cgi?CODIGO=${encodeURIComponent(codigo)}`,
+    `https://www1.sii.cl/cgi-bin/Portal001/mipeLstReferenciaRcp.cgi?CODIGO=${encodeURIComponent(codigo)}`,
+  ];
+  for (const u of extras) {
+    await sleep(150);
+    const rx = await axios.get(u, { validateStatus: () => true, headers: hdr(gesUrl) }).catch(() => null);
+    if (rx && rx.status === 200 && rx.data) chunks.push(Buffer.from(rx.data).toString('latin1'));
+  }
+  return parseReferenciasGesHtml(chunks.join('\n'));
 }
 
 async function aplicarAnulacionesPorReferencias() {
@@ -498,43 +530,47 @@ async function autenticarSIIdirecto() {
 }
 
 // ── Buscar CODIGO de un documento en mipeAdminDocsRcp ────────────────────────
-// Devuelve el CODIGO interno del SII para ese folio+emisor (null si no existe).
-async function buscarCodigoPdf(cookies, folio, rutEmisor) {
+// tipoDte: '33' FE, '61' NC, etc. Si se omite, lista sin filtrar (puede equivocarse entre tipos).
+async function buscarCodigoPdf(cookies, folio, rutEmisor, tipoDte = null) {
   const [rutNum] = rutEmisor.replace(/\./g, '').split('-');
   const folioStr = String(folio);
-  const url = `https://www1.sii.cl/cgi-bin/Portal001/mipeAdminDocsRcp.cgi?RUT_EMI=${rutNum}&FOLIO=${folioStr}&RZN_SOC=&FEC_DESDE=&FEC_HASTA=&TPO_DOC=&ESTADO=&ORDEN=&NUM_PAG=1`;
+  const intentosTpo = tipoDte ? [String(tipoDte), null] : [null];
 
-  // Hasta 4 intentos con backoff: 2s, 4s, 8s entre reintentos por 503
-  for (let intento = 1; intento <= 4; intento++) {
-    const resp = await axios.get(url, {
-      maxRedirects: 3, validateStatus: () => true,
-      headers: {
-        'Cookie': siiCookieHeader(cookies),
-        'Referer': 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4',
-        'User-Agent': SII_UA,
-      },
-    });
+  for (const td of intentosTpo) {
+    const tpo = td ? `&TPO_DOC=${encodeURIComponent(td)}` : '&TPO_DOC=';
+    const url = `https://www1.sii.cl/cgi-bin/Portal001/mipeAdminDocsRcp.cgi?RUT_EMI=${rutNum}&FOLIO=${folioStr}&RZN_SOC=&FEC_DESDE=&FEC_HASTA=${tpo}&ESTADO=&ORDEN=&NUM_PAG=1`;
 
-    const body = typeof resp.data === 'string' ? resp.data : '';
+    for (let intento = 1; intento <= 4; intento++) {
+      const resp = await axios.get(url, {
+        maxRedirects: 3, validateStatus: () => true,
+        headers: {
+          'Cookie': siiCookieHeader(cookies),
+          'Referer': 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4',
+          'User-Agent': SII_UA,
+        },
+      });
 
-    // SII sobrecargado — reintentar con backoff
-    if (resp.status === 503 || body.includes('503 Service Temporarily')) {
-      const espera = intento * 2000;
-      console.warn(`[SII pdf] Folio ${folio} → 503, reintento ${intento}/4 en ${espera/1000}s...`);
-      await sleep(espera);
-      continue;
+      const body = typeof resp.data === 'string' ? resp.data : '';
+
+      if (resp.status === 503 || body.includes('503 Service Temporarily')) {
+        const espera = intento * 2000;
+        console.warn(`[SII pdf] Folio ${folio} TPO=${td ?? '∅'} → 503, reintento ${intento}/4 en ${espera / 1000}s...`);
+        await sleep(espera);
+        continue;
+      }
+
+      const m = body.match(/\/cgi-bin\/Portal001\/mipeGesDocRcp\.cgi\?CODIGO=(\d+)/);
+      if (!m) {
+        const titulo = (body.match(/<title>([^<]*)<\/title>/i) ?? [])[1] ?? '?';
+        console.warn(`[SII pdf] Folio ${folio} TPO=${td ?? '∅'} no encontrado. Título: "${titulo}"`);
+        break;
+      }
+      console.log(`[SII pdf] Folio ${folio} → CODIGO ${m[1]} (TPO_DOC=${td ?? '∅'})`);
+      return m[1];
     }
-
-    const m = body.match(/\/cgi-bin\/Portal001\/mipeGesDocRcp\.cgi\?CODIGO=(\d+)/);
-    if (!m) {
-      const titulo = (body.match(/<title>([^<]*)<\/title>/i) ?? [])[1] ?? '?';
-      console.warn(`[SII pdf] Folio ${folio} no encontrado. Título: "${titulo}" | body: ${body.slice(0, 200)}`);
-      return null;
-    }
-    return m[1];
   }
 
-  console.warn(`[SII pdf] Folio ${folio} → 503 persistente tras 4 intentos`);
+  console.warn(`[SII pdf] Folio ${folio} → sin CODIGO tras intentos`);
   return null;
 }
 
@@ -876,7 +912,8 @@ async function abrirSesionSII() {
 
 
 // Descarga el PDF de UNA factura — intenta HTTP, cae a Playwright si falla
-async function descargarPdfSII(folio, rutEmisor, codigoBd = null) {
+// tipoDte: '33' | '61' | null — necesario para buscar CODIGO en mipeAdmin cuando no hay código en BD.
+async function descargarPdfSII(folio, rutEmisor, codigoBd = null, tipoDte = null) {
   if (pdfEnCurso || siiEnCurso) throw new Error('Ya hay una operación SII en curso, intenta en unos minutos');
   pdfEnCurso = true;
   try {
@@ -888,7 +925,7 @@ async function descargarPdfSII(folio, rutEmisor, codigoBd = null) {
     } catch (_) { cookies = null; }
 
     if (cookies) {
-      const codigo = codigoBd || await buscarCodigoPdf(cookies, folio, rutEmisor);
+      const codigo = codigoBd || await buscarCodigoPdf(cookies, folio, rutEmisor, tipoDte);
       if (codigo) {
         console.log(`[SII pdf] Folio ${folio} → CODIGO ${codigo} (HTTP)`);
         try {
@@ -901,14 +938,14 @@ async function descargarPdfSII(folio, rutEmisor, codigoBd = null) {
 
     // Intento 2: Playwright navega directamente al PDF en el browser autenticado
     console.log(`[SII pdf] Folio ${folio} → descargando vía browser Playwright`);
-    return await descargarPdfViaBrowser(folio, rutEmisor, codigoBd);
+    return await descargarPdfViaBrowser(folio, rutEmisor, codigoBd, tipoDte);
   } finally {
     pdfEnCurso = false;
   }
 }
 
 // Descarga PDF usando Playwright directamente (sin extraer cookies)
-async function descargarPdfViaBrowser(folio, rutEmisor, codigoBd = null) {
+async function descargarPdfViaBrowser(folio, rutEmisor, codigoBd = null, tipoDte = null) {
   const { chromium } = require('playwright');
   const browser = await chromium.launch({ headless: true });
   try {
@@ -928,12 +965,19 @@ async function descargarPdfViaBrowser(folio, rutEmisor, codigoBd = null) {
     let codigo = codigoBd;
     if (!codigo) {
       const [rutNum] = rutEmisor.replace(/\./g, '').split('-');
-      const searchUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeAdminDocsRcp.cgi?RUT_EMI=${rutNum}&FOLIO=${folio}&RZN_SOC=&FEC_DESDE=&FEC_HASTA=&TPO_DOC=&ESTADO=&ORDEN=&NUM_PAG=1`;
-      await (await page).goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      const content = await (await page).content();
-      const m = content.match(/CODIGO=(\d+)/);
-      if (!m) throw new Error(`Folio ${folio} no encontrado en SII (browser)`);
-      codigo = m[1];
+      const intentos = tipoDte ? [String(tipoDte), ''] : [''];
+      for (const td of intentos) {
+        const tpo = td === '' ? '&TPO_DOC=' : `&TPO_DOC=${encodeURIComponent(td)}`;
+        const searchUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeAdminDocsRcp.cgi?RUT_EMI=${rutNum}&FOLIO=${folio}&RZN_SOC=&FEC_DESDE=&FEC_HASTA=${tpo}&ESTADO=&ORDEN=&NUM_PAG=1`;
+        await (await page).goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        const content = await (await page).content();
+        const m = content.match(/CODIGO=(\d+)/);
+        if (m) {
+          codigo = m[1];
+          break;
+        }
+      }
+      if (!codigo) throw new Error(`Folio ${folio} no encontrado en SII (browser)`);
     }
 
     console.log(`[SII pdf] Folio ${folio} → CODIGO ${codigo} (browser)`);
@@ -967,7 +1011,7 @@ async function descargarPdfsBulkSII() {
   pdfEnCurso = true;
 
   const { rows: sinPdf } = await pool.query(
-    `SELECT id, folio, rut_emisor, codigo FROM facturas_recibidas WHERE pdf_data IS NULL ORDER BY fecha_emision DESC`
+    `SELECT id, folio, rut_emisor, codigo, tipo_doc FROM facturas_recibidas WHERE pdf_data IS NULL ORDER BY fecha_emision DESC`
   );
   if (!sinPdf.length) { pdfEnCurso = false; return { descargadas: 0, errores: 0, total: 0 }; }
 
@@ -985,7 +1029,7 @@ async function descargarPdfsBulkSII() {
         // Fallback: buscar en mipeAdminDocsRcp si no está en BD (documentos antiguos)
         let codigo = f.codigo;
         if (!codigo) {
-          codigo = await buscarCodigoPdf(cookies, f.folio, f.rut_emisor);
+          codigo = await buscarCodigoPdf(cookies, f.folio, f.rut_emisor, f.tipo_doc || null);
         }
         if (!codigo) {
           errores++;
@@ -994,7 +1038,9 @@ async function descargarPdfsBulkSII() {
         }
 
         const buf    = await descargarPdfPorCodigo(cookies, codigo);
-        const nombre = `factura_${f.folio}_${f.rut_emisor}.pdf`;
+        const nombre = f.tipo_doc === '61'
+          ? `nc_${f.folio}_${f.rut_emisor}.pdf`
+          : `factura_${f.folio}_${f.rut_emisor}.pdf`;
         await pool.query(
           `UPDATE facturas_recibidas SET pdf_data=$1, pdf_nombre=$2, pdf_at=NOW(), updated_at=NOW() WHERE id=$3`,
           [buf, nombre, f.id]
@@ -1137,18 +1183,44 @@ app.post('/api/facturas/:id/pdf', async (req, res) => {
 
   let pdfBuffer;
   try {
-    pdfBuffer = await descargarPdfSII(f.folio, f.rut_emisor, f.codigo);
+    pdfBuffer = await descargarPdfSII(f.folio, f.rut_emisor, f.codigo, f.tipo_doc || null);
   } catch (err) {
     console.error('[PDF]', err.message);
     return res.status(502).json({ error: err.message });
   }
 
-  const nombre = `factura_${f.folio}_${f.rut_emisor}.pdf`;
+  const nombre = f.tipo_doc === '61'
+    ? `nc_${f.folio}_${f.rut_emisor}.pdf`
+    : `factura_${f.folio}_${f.rut_emisor}.pdf`;
   await pool.query(
     `UPDATE facturas_recibidas SET pdf_data=$1, pdf_nombre=$2, pdf_at=NOW(), updated_at=NOW() WHERE id=$3`,
     [pdfBuffer, nombre, req.params.id]
   );
   res.json({ ok: true, nombre, bytes: pdfBuffer.length });
+});
+
+// POST /api/facturas/:id/resolver-ref-nc — obtiene folio/tipo DTE referenciado (NC → FE) desde portal SII
+app.post('/api/facturas/:id/resolver-ref-nc', async (req, res) => {
+  if (pdfEnCurso || siiEnCurso) return res.status(409).json({ error: 'Operación SII en curso, espera' });
+  try {
+    const { rows } = await pool.query('SELECT * FROM facturas_recibidas WHERE id=$1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'No encontrado' });
+    const row = rows[0];
+    if (String(row.tipo_doc) !== '61') return res.status(400).json({ error: 'Solo aplica a notas de crédito' });
+    if (!row.codigo) return res.status(400).json({ error: 'Sin código SII en base de datos; sincroniza de nuevo' });
+    const cookies = await autenticarSIIdirecto();
+    const refs = await obtenerReferenciasGesDoc(cookies, String(row.codigo));
+    const prim = refs.find(x => x.tipo === 33 || x.tipo === 34) ?? refs[0];
+    if (!prim) return res.json({ ok: false, mensaje: 'No se encontró documento referenciado en el HTML del SII' });
+    await pool.query(
+      `UPDATE facturas_recibidas SET ref_tipo_doc=$1, ref_folio=$2, updated_at=NOW() WHERE id=$3`,
+      [String(prim.tipo), prim.folio, row.id]
+    );
+    await aplicarAnulacionesPorReferencias();
+    res.json({ ok: true, ref_tipo_doc: String(prim.tipo), ref_folio: prim.folio });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 });
 
 // GET /api/facturas/:id/pdf — sirve el PDF guardado
@@ -1186,13 +1258,13 @@ app.post('/api/pdf/sync', async (req, res) => {
 app.get('/api/pdf/test/:folio', async (req, res) => {
   if (pdfEnCurso || siiEnCurso) return res.status(409).json({ error: 'Operación SII en curso, espera' });
   const { rows } = await pool.query(
-    `SELECT id, folio, rut_emisor, codigo FROM facturas_recibidas WHERE folio=$1 LIMIT 1`,
+    `SELECT id, folio, rut_emisor, codigo, tipo_doc FROM facturas_recibidas WHERE folio=$1 LIMIT 1`,
     [req.params.folio]
   );
   if (!rows.length) return res.status(404).json({ error: 'Folio no encontrado en DB' });
   const f = rows[0];
   try {
-    const buf = await descargarPdfSII(f.folio, f.rut_emisor, f.codigo);
+    const buf = await descargarPdfSII(f.folio, f.rut_emisor, f.codigo, f.tipo_doc || null);
     const nombre = `factura_${f.folio}_${f.rut_emisor}.pdf`;
     await pool.query(
       `UPDATE facturas_recibidas SET pdf_data=$1, pdf_nombre=$2, pdf_at=NOW(), updated_at=NOW() WHERE id=$3`,
