@@ -506,8 +506,8 @@ async function autenticarViaBrowser() {
       path: c.path ?? '/',
     })).filter(c => c.value && c.value !== 'DEL');
 
-    if (!cookies.some(c => c.name === 'TOKEN'))
-      throw new Error('Browser login no devolvió TOKEN');
+    if (!cookies.length)
+      throw new Error('Browser login no devolvió cookies de sesión');
     console.log(`[SII auth] Cookies extraídas del browser: ${cookies.map(c=>c.name).join(',')}`);
 
     // Seleccionar empresa vía HTTP con estas cookies (más fiable que navegar en Playwright)
