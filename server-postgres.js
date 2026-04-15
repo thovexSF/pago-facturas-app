@@ -147,6 +147,7 @@ function extraerReferenciasDesdeDocSii(d) {
   const ownFo = parseInt(String(d.detNroDoc ?? '').replace(/\D/g, ''), 10);
   const found = [];
   const pares = [
+    ['detTipoDocRef', 'detFolioDocRef'],
     ['detTpoDocRef', 'detNroDocRef'],
     ['dcvTpoDocRef', 'dcvNroDocRef'],
     ['detCodTipoDocRef', 'detNroDocRef'],
@@ -247,7 +248,7 @@ async function upsertFacturas(docs, forzar = false) {
   for (const d of docs) {
     const rut = `${d.detRutDoc}-${d.detDvDoc}`;
     const prov = await getProveedor(rut, d.detRznSoc);
-    const tipoDoc = String(d._codTipoDoc || d.detCodTipoDoc || '33');
+    const tipoDoc = String(d._codTipoDoc || d.detTipoDoc || d.detCodTipoDoc || '33');
     const esNC = tipoDoc === '61';
     const montoNetoVal = Math.abs(Number(d.detMntNeto) || 0);
     const montoTotal = Math.round(montoNetoVal * 1.19);
