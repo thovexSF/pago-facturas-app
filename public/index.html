@@ -69,6 +69,15 @@
           <option value="pendiente">Pendientes</option>
           <option value="pagada">Pagadas</option>
         </select>
+        <select id="filter-tipo-doc" title="Tipo DTE">
+          <option value="">Todos los tipos</option>
+          <option value="33">Factura electrónica (33)</option>
+          <option value="61">Nota de crédito (61)</option>
+        </select>
+        <input type="text" id="filter-folio" placeholder="Folio…" inputmode="numeric" autocomplete="off" />
+        <label class="filter-date-wrap">Desde <input type="date" id="filter-fecha-desde" /></label>
+        <label class="filter-date-wrap">Hasta <input type="date" id="filter-fecha-hasta" /></label>
+        <button type="button" class="btn btn-sm btn-secondary" id="btn-filtros-limpiar">Limpiar filtros</button>
       </div>
       <div class="table-wrapper">
       <table class="facturas-table">
@@ -109,7 +118,7 @@
       </table>
       </div><!-- /table-wrapper -->
       <div id="empty-state" class="empty-state" style="display:none">
-        <p>No hay facturas. Haz clic en <strong>Sincronizar SII</strong> para cargar.</p>
+        <p id="empty-state-msg">No hay facturas. Haz clic en <strong>Sincronizar SII</strong> para cargar.</p>
       </div>
     </div>
 

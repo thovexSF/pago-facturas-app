@@ -22,6 +22,25 @@ function esDocNc(f) {
   return t === 61 || t === '61';
 }
 
+function ymdEmision(f) {
+  if (!f?.fecha_emision) return null;
+  return String(f.fecha_emision).slice(0, 10);
+}
+
+function limpiarFiltrosLista() {
+  const est = document.getElementById('filter-estado');
+  const tipo = document.getElementById('filter-tipo-doc');
+  const folio = document.getElementById('filter-folio');
+  const d1 = document.getElementById('filter-fecha-desde');
+  const d2 = document.getElementById('filter-fecha-hasta');
+  if (est) est.value = '';
+  if (tipo) tipo.value = '';
+  if (folio) folio.value = '';
+  if (d1) d1.value = '';
+  if (d2) d2.value = '';
+  renderTabla();
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -35,6 +54,11 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-sync').addEventListener('click', sincronizarHistorico);
   document.getElementById('btn-pdf-sync').addEventListener('click', descargarPdfsPendientes);
   document.getElementById('filter-estado').addEventListener('change', renderTabla);
+  document.getElementById('filter-tipo-doc')?.addEventListener('change', renderTabla);
+  document.getElementById('filter-folio')?.addEventListener('input', renderTabla);
+  document.getElementById('filter-fecha-desde')?.addEventListener('change', renderTabla);
+  document.getElementById('filter-fecha-hasta')?.addEventListener('change', renderTabla);
+  document.getElementById('btn-filtros-limpiar')?.addEventListener('click', limpiarFiltrosLista);
   document.getElementById('grafico-tipo').addEventListener('change', renderGrafico);
 
   // Cerrar dropdowns al hacer click fuera
@@ -217,12 +241,41 @@ function renderTabla() {
   if (filtro === 'pendiente') lista = lista.filter(f => !f.pagado_1 || (f.vcto_2 && !f.pagado_2));
   if (filtro === 'pagada')    lista = lista.filter(f => f.pagado_1 && (!f.vcto_2 || f.pagado_2));
   if (filtroEmisores !== null) lista = lista.filter(f => filtroEmisores.has(f.rut_emisor));
+
+  const tipoSel = document.getElementById('filter-tipo-doc')?.value ?? '';
+  if (tipoSel === '61') lista = lista.filter(esDocNc);
+  if (tipoSel === '33') lista = lista.filter(f => !esDocNc(f));
+
+  const folioTxt = (document.getElementById('filter-folio')?.value ?? '').trim();
+  if (folioTxt) {
+    const q = folioTxt.replace(/\D/g, '') || folioTxt;
+    lista = lista.filter(f => String(f.folio ?? '').includes(q));
+  }
+
+  const desde = document.getElementById('filter-fecha-desde')?.value ?? '';
+  const hasta = document.getElementById('filter-fecha-hasta')?.value ?? '';
+  if (desde) lista = lista.filter(f => { const y = ymdEmision(f); return y && y >= desde; });
+  if (hasta) lista = lista.filter(f => { const y = ymdEmision(f); return y && y <= hasta; });
+
   actualizarBtnFiltroEmisor();
 
   const tbody = document.getElementById('facturas-tbody');
   const empty = document.getElementById('empty-state');
-  if (!lista.length) { tbody.innerHTML = ''; empty.style.display = 'block'; return; }
+  const emptyMsg = document.getElementById('empty-state-msg');
+  if (!lista.length) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    if (emptyMsg) {
+      emptyMsg.innerHTML = facturas.length
+        ? 'Ningún resultado con los filtros actuales. <button type="button" class="btn btn-sm btn-secondary" style="margin-top:8px" onclick="limpiarFiltrosLista()">Limpiar filtros</button>'
+        : 'No hay facturas. Haz clic en <strong>Sincronizar SII</strong> para cargar.';
+    }
+    return;
+  }
   empty.style.display = 'none';
+  if (emptyMsg) {
+    emptyMsg.innerHTML = 'No hay facturas. Haz clic en <strong>Sincronizar SII</strong> para cargar.';
+  }
   listaActual = lista;  // exponer para onclick inline
 
   const hoy = new Date();
