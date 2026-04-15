@@ -631,18 +631,29 @@ async function descargarPdfPorCodigo(cookies, codigo) {
   }
   await sleep(300);
 
-  // Paso 3: PDF
-  const pdfUrl = extraerPdfUrlDesdeGes(body2) || defaultPdfUrl;
-  const resp = await axios.get(pdfUrl, {
-    maxRedirects: 3, validateStatus: () => true, responseType: 'arraybuffer',
-    headers: hdr(gesUrl),
-  });
-  const buf = Buffer.from(resp.data);
-  if (buf.slice(0, 4).toString() === '%PDF') return buf;
+  // Paso 3: PDF (primero endpoint clásico; fallback URL encontrada en HTML)
+  const tryGetPdf = async (pdfUrl) => {
+    const resp = await axios.get(pdfUrl, {
+      maxRedirects: 3, validateStatus: () => true, responseType: 'arraybuffer',
+      headers: { ...hdr(gesUrl), Accept: 'application/pdf,*/*;q=0.8' },
+    });
+    const buf = Buffer.from(resp.data);
+    if (buf.slice(0, 4).toString() === '%PDF') return buf;
+    return null;
+  };
 
-  const preview = buf.toString('latin1').slice(0, 300).replace(/\s+/g, ' ');
-  console.error(`[PDF] CODIGO ${codigo} no devolvió PDF:`, preview);
-  throw new Error(`SII no devolvió PDF para este documento (size=${buf.length})`);
+  let buf = await tryGetPdf(defaultPdfUrl);
+  if (buf) return buf;
+
+  const altPdfUrl = extraerPdfUrlDesdeGes(body2);
+  if (altPdfUrl && altPdfUrl !== defaultPdfUrl) {
+    buf = await tryGetPdf(altPdfUrl);
+    if (buf) return buf;
+  }
+
+  const failPreview = Buffer.from(buf ?? '').toString('latin1').slice(0, 300).replace(/\s+/g, ' ');
+  console.error(`[PDF] CODIGO ${codigo} no devolvió PDF:`, failPreview);
+  throw new Error(`SII no devolvió PDF para este documento`);
 }
 
 // Mutex global: SII bloquea sesiones concurrentes del mismo RUT
