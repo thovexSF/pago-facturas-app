@@ -22,6 +22,14 @@ function esDocNc(f) {
   return t === 61 || t === '61';
 }
 
+function esOculta(f) {
+  return f?.anulada === true;
+}
+
+function facturasVisibles() {
+  return facturas.filter(f => !esOculta(f));
+}
+
 function ymdEmision(f) {
   if (!f?.fecha_emision) return null;
   return String(f.fecha_emision).slice(0, 10);
@@ -33,11 +41,13 @@ function limpiarFiltrosLista() {
   const folio = document.getElementById('filter-folio');
   const d1 = document.getElementById('filter-fecha-desde');
   const d2 = document.getElementById('filter-fecha-hasta');
+  const oc = document.getElementById('filter-incluir-ocultas');
   if (est) est.value = '';
   if (tipo) tipo.value = '';
   if (folio) folio.value = '';
   if (d1) d1.value = '';
   if (d2) d2.value = '';
+  if (oc) oc.checked = false;
   renderTabla();
 }
 
@@ -58,6 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('filter-folio')?.addEventListener('input', renderTabla);
   document.getElementById('filter-fecha-desde')?.addEventListener('change', renderTabla);
   document.getElementById('filter-fecha-hasta')?.addEventListener('change', renderTabla);
+  document.getElementById('filter-incluir-ocultas')?.addEventListener('change', renderTabla);
   document.getElementById('btn-filtros-limpiar')?.addEventListener('click', limpiarFiltrosLista);
   document.getElementById('grafico-tipo').addEventListener('change', renderGrafico);
 
@@ -102,7 +113,7 @@ function cargarEventosCalendar() {
   const agendaRuts = new Set(proveedores.filter(p => p.en_agenda).map(p => p.rut_emisor));
   const filtrados  = chipsFiltro.size > 0 ? chipsFiltro : agendaRuts;
 
-  facturas.forEach(f => {
+  facturasVisibles().forEach(f => {
     if (esDocNc(f)) return;
     if (!filtrados.has(f.rut_emisor)) return;
 
@@ -184,7 +195,7 @@ function initTabs() {
 // ─── Cargar datos ─────────────────────────────────────────────────────────────
 
 async function cargarFacturas() {
-  const res = await fetch('/api/facturas');
+  const res = await fetch('/api/facturas?incluir_anuladas=1');
   facturas  = await res.json();
 
   // Filtro por defecto: solo Arabica Spa (solo en la primera carga)
@@ -216,8 +227,9 @@ async function cargarProveedores() {
 
 function renderStats() {
   const hoy = new Date();
-  const pendC1 = facturas.filter(f => !f.pagado_1 && f.vcto_1);
-  const pendC2 = facturas.filter(f => !f.pagado_2 && f.vcto_2);
+  const visibles = facturasVisibles();
+  const pendC1 = visibles.filter(f => !esDocNc(f) && !f.pagado_1 && f.vcto_1);
+  const pendC2 = visibles.filter(f => !esDocNc(f) && !f.pagado_2 && f.vcto_2);
   const vencidas = [
     ...pendC1.filter(f => new Date(f.vcto_1) < hoy),
     ...pendC2.filter(f => new Date(f.vcto_2) < hoy),
@@ -230,14 +242,15 @@ function renderStats() {
   document.getElementById('stat-total').textContent    = pendC1.length + pendC2.length;
   document.getElementById('stat-vencidas').textContent  = vencidas;
   document.getElementById('stat-monto').textContent    = '$' + formatMonto(montoPendiente);
-  document.getElementById('stat-pagadas').textContent  = facturas.filter(f => !esDocNc(f) && f.pagado_1 && (!f.vcto_2 || f.pagado_2)).length;
+  document.getElementById('stat-pagadas').textContent  = visibles.filter(f => !esDocNc(f) && f.pagado_1 && (!f.vcto_2 || f.pagado_2)).length;
 }
 
 // ─── Tabla ────────────────────────────────────────────────────────────────────
 
 function renderTabla() {
   const filtro = document.getElementById('filter-estado').value;
-  let lista = facturas;
+  const incluirOcultas = !!document.getElementById('filter-incluir-ocultas')?.checked;
+  let lista = incluirOcultas ? facturas : facturasVisibles();
   if (filtro === 'pendiente') lista = lista.filter(f => !f.pagado_1 || (f.vcto_2 && !f.pagado_2));
   if (filtro === 'pagada')    lista = lista.filter(f => f.pagado_1 && (!f.vcto_2 || f.pagado_2));
   if (filtroEmisores !== null) lista = lista.filter(f => filtroEmisores.has(f.rut_emisor));
@@ -756,7 +769,7 @@ function renderGrafico() {
 
   // Agrupar por mes y proveedor → suma monto_total
   const porMesProv = {};
-  facturas.forEach(f => {
+  facturasVisibles().forEach(f => {
     if (esDocNc(f)) return;
     if (!f.fecha_emision) return;
     const mes  = f.fecha_emision.slice(0, 7); // "2026-03"
