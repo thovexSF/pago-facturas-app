@@ -386,8 +386,8 @@ function abrirModal(f, lista) {
         const res = await fetch(`/api/facturas/${f.id}/resolver-ref-nc`, { method: 'POST' });
         const j = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(j.error || 'Error al consultar SII');
-        if (j.ok && j.ref_folio) {
-          mostrarToast(`Referencia: tipo ${j.ref_tipo_doc} folio ${j.ref_folio}`, 'success');
+        if (j.ok) {
+          mostrarToast(j.mensaje || `Referencia: tipo ${j.ref_tipo_doc} folio ${j.ref_folio}`, 'success');
         } else {
           mostrarToast(j.mensaje || 'No se encontró referencia en el portal', 'error');
         }
@@ -397,6 +397,50 @@ function abrirModal(f, lista) {
       } catch (e) { mostrarToast(e.message, 'error'); }
       finally { btnNcRes.disabled = false; }
     };
+  }
+  const anularRow = document.getElementById('modal-nc-anular-row');
+  const anularHint = document.getElementById('modal-nc-anular-hint');
+  const btnOcultarFe = document.getElementById('btn-nc-ocultar-fe');
+  const btnEliminarFe = document.getElementById('btn-nc-eliminar-fe');
+  if (anularRow && anularHint && btnOcultarFe && btnEliminarFe) {
+    if (esNC && f.ref_folio) {
+      anularRow.style.display = '';
+      const feRef = facturas.find(x => !esDocNc(x) && x.rut_emisor === f.rut_emisor && Number(x.folio) === Number(f.ref_folio));
+      anularHint.innerHTML = feRef
+        ? `La factura <strong>folio ${esc(String(f.ref_folio))}</strong> sigue en tu lista. Puedes <strong>ocultarla</strong> (no se borra; deja de mostrarse) o <strong>eliminar el registro</strong> de la base de datos.`
+        : `La factura folio <strong>${esc(String(f.ref_folio))}</strong> no aparece en la lista (puede estar ya oculta o no sincronizada). Puedes intentar ocultar o borrar igualmente por folio.`;
+      btnOcultarFe.onclick = async () => {
+        btnOcultarFe.disabled = true;
+        try {
+          const res = await fetch(`/api/facturas/${f.id}/ocultar-factura-referenciada`, { method: 'POST' });
+          const j = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(j.error || 'Error');
+          mostrarToast(j.ya_estaba ? (j.mensaje || 'Sin cambios') : 'Factura oculta de la lista', 'success');
+          cerrarModal();
+          await cargarFacturas();
+        } catch (e) { mostrarToast(e.message, 'error'); }
+        finally { btnOcultarFe.disabled = false; }
+      };
+      btnEliminarFe.onclick = async () => {
+        if (!confirm(`¿Eliminar para siempre el registro de la factura folio ${f.ref_folio}? No se puede deshacer.`)) return;
+        btnEliminarFe.disabled = true;
+        try {
+          const res = await fetch(`/api/facturas/${f.id}/eliminar-referenciada-permanente`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirmar: 'ELIMINAR' }),
+          });
+          const j = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(j.error || 'Error');
+          mostrarToast(j.eliminadas ? 'Registro eliminado de la base de datos' : 'No había fila que borrar', j.eliminadas ? 'success' : 'info');
+          cerrarModal();
+          await cargarFacturas();
+        } catch (e) { mostrarToast(e.message, 'error'); }
+        finally { btnEliminarFe.disabled = false; }
+      };
+    } else {
+      anularRow.style.display = 'none';
+    }
   }
   document.getElementById('modal-emisor').textContent        = f.razon_social||'—';
   document.getElementById('modal-rut').textContent           = f.rut_emisor||'—';

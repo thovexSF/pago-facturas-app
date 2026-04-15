@@ -401,7 +401,7 @@ async function obtenerReferenciasGesDoc(cookies, codigo) {
 }
 
 async function aplicarAnulacionesPorReferencias() {
-  await pool.query(`
+  const r = await pool.query(`
     UPDATE facturas_recibidas f
     SET anulada = TRUE,
         anulada_por_folio = nc.folio,
@@ -412,9 +412,10 @@ async function aplicarAnulacionesPorReferencias() {
       AND nc.ref_tipo_doc IS NOT NULL
       AND f.rut_emisor = nc.rut_emisor
       AND f.folio = nc.ref_folio
-      AND f.tipo_doc <> '61'
+      AND f.tipo_doc IS DISTINCT FROM '61'
       AND COALESCE(f.anulada, FALSE) = FALSE
   `);
+  if (r.rowCount) console.log(`[NC anulación] ${r.rowCount} factura(s) marcadas anulada por NC`);
 }
 
 async function resolverReferenciasNotasCredito(cookies) {
@@ -1200,7 +1201,7 @@ app.post('/api/facturas/:id/pdf', async (req, res) => {
   res.json({ ok: true, nombre, bytes: pdfBuffer.length });
 });
 
-// POST /api/facturas/:id/resolver-ref-nc — obtiene folio/tipo DTE referenciado (NC → FE) desde portal SII
+// POST /api/facturas/:id/resolver-ref-nc — ref desde HTML SII solo si aún falta en BD (el RCV ya trae detTipoDocRef)
 app.post('/api/facturas/:id/resolver-ref-nc', async (req, res) => {
   if (pdfEnCurso || siiEnCurso) return res.status(409).json({ error: 'Operación SII en curso, espera' });
   try {
@@ -1208,6 +1209,16 @@ app.post('/api/facturas/:id/resolver-ref-nc', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'No encontrado' });
     const row = rows[0];
     if (String(row.tipo_doc) !== '61') return res.status(400).json({ error: 'Solo aplica a notas de crédito' });
+    if (row.ref_folio != null && row.ref_tipo_doc != null) {
+      await aplicarAnulacionesPorReferencias();
+      return res.json({
+        ok: true,
+        desde: 'bd',
+        ref_tipo_doc: String(row.ref_tipo_doc),
+        ref_folio: row.ref_folio,
+        mensaje: 'Referencia ya estaba en base de datos; anulaciones aplicadas',
+      });
+    }
     if (!row.codigo) return res.status(400).json({ error: 'Sin código SII en base de datos; sincroniza de nuevo' });
     const cookies = await autenticarSIIdirecto();
     const refs = await obtenerReferenciasGesDoc(cookies, String(row.codigo));
@@ -1218,9 +1229,64 @@ app.post('/api/facturas/:id/resolver-ref-nc', async (req, res) => {
       [String(prim.tipo), prim.folio, row.id]
     );
     await aplicarAnulacionesPorReferencias();
-    res.json({ ok: true, ref_tipo_doc: String(prim.tipo), ref_folio: prim.folio });
+    res.json({ ok: true, desde: 'sii', ref_tipo_doc: String(prim.tipo), ref_folio: prim.folio });
   } catch (err) {
     res.status(502).json({ error: err.message });
+  }
+});
+
+// POST /api/facturas/:id/ocultar-factura-referenciada — NC: marca anulada la FE (mismo emisor, folio ref.)
+app.post('/api/facturas/:id/ocultar-factura-referenciada', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM facturas_recibidas WHERE id=$1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'No encontrado' });
+    const nc = rows[0];
+    if (String(nc.tipo_doc) !== '61') return res.status(400).json({ error: 'Solo desde una nota de crédito' });
+    if (nc.ref_folio == null || nc.ref_tipo_doc == null) {
+      return res.status(400).json({ error: 'La NC no tiene folio de referencia; sincroniza con el SII' });
+    }
+    const r = await pool.query(
+      `UPDATE facturas_recibidas f
+       SET anulada = TRUE, anulada_por_folio = $3, updated_at = NOW()
+       WHERE f.rut_emisor = $1 AND f.folio = $2
+         AND f.tipo_doc IS DISTINCT FROM '61'
+         AND COALESCE(f.anulada, FALSE) = FALSE
+       RETURNING f.id, f.folio`,
+      [nc.rut_emisor, nc.ref_folio, nc.folio]
+    );
+    if (!r.rowCount) {
+      return res.json({
+        ok: true,
+        ya_estaba: true,
+        mensaje: 'No había factura activa con ese folio o ya estaba oculta',
+      });
+    }
+    res.json({ ok: true, ocultadas: r.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/facturas/:id/eliminar-referenciada-permanente — NC: borra la fila de la FE referenciada (irreversible)
+app.post('/api/facturas/:id/eliminar-referenciada-permanente', async (req, res) => {
+  try {
+    if (req.body?.confirmar !== 'ELIMINAR') {
+      return res.status(400).json({ error: 'Enviar JSON { "confirmar": "ELIMINAR" }' });
+    }
+    const { rows } = await pool.query('SELECT * FROM facturas_recibidas WHERE id=$1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'No encontrado' });
+    const nc = rows[0];
+    if (String(nc.tipo_doc) !== '61') return res.status(400).json({ error: 'Solo desde una nota de crédito' });
+    if (nc.ref_folio == null) return res.status(400).json({ error: 'NC sin folio de referencia' });
+    const r = await pool.query(
+      `DELETE FROM facturas_recibidas f
+       WHERE f.rut_emisor = $1 AND f.folio = $2 AND f.tipo_doc IS DISTINCT FROM '61'
+       RETURNING f.id, f.folio`,
+      [nc.rut_emisor, nc.ref_folio]
+    );
+    res.json({ ok: true, eliminadas: r.rowCount, filas: r.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
