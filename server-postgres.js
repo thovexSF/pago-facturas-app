@@ -580,7 +580,7 @@ async function buscarCodigoPdf(cookies, folio, rutEmisor, tipoDte = null) {
 async function descargarPdfPorCodigo(cookies, codigo) {
   const launchUrl = 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4';
   const gesUrl    = `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi?CODIGO=${codigo}&ALL_PAGE_ANT=2`;
-  const pdfUrl    = `https://www1.sii.cl/cgi-bin/Portal001/mipeShowPdf.cgi?CODIGO=${codigo}`;
+  const defaultPdfUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeShowPdf.cgi?CODIGO=${codigo}`;
 
   // Fusiona Set-Cookie headers en el array [{name,value}] que usa siiCookieHeader
   const mergeCookies = (existing, setCookieHeader) => {
@@ -596,6 +596,20 @@ async function descargarPdfPorCodigo(cookies, codigo) {
 
   let ck = [...cookies];
   const hdr = (ref) => ({ 'Cookie': siiCookieHeader(ck), 'Referer': ref, 'User-Agent': SII_UA });
+  const absUrl = (u) => (u.startsWith('http') ? u : `https://www1.sii.cl${u.startsWith('/') ? '' : '/'}${u}`);
+  const extraerPdfUrlDesdeGes = (html) => {
+    if (!html) return null;
+    const m1 = html.match(/\/cgi-bin\/Portal001\/mipeShowPdf[^"'\s>]*\?CODIGO=\d+/i);
+    if (m1) return absUrl(m1[0]);
+    const m2 = html.match(/href="([^"]*mipeShowPdf[^"]*\?CODIGO=\d+[^"]*)"/i);
+    if (m2) return absUrl(m2[1]);
+    const m3 = html.match(/action="([^"]*mipeShowPdf[^"]*)"/i);
+    if (m3) {
+      const u = m3[1].includes('CODIGO=') ? m3[1] : `${m3[1]}${m3[1].includes('?') ? '&' : '?'}CODIGO=${encodeURIComponent(String(codigo))}`;
+      return absUrl(u);
+    }
+    return null;
+  };
 
   // Paso 1: landing page
   const r1 = await axios.get(launchUrl, { validateStatus: () => true, headers: hdr('https://www1.sii.cl/') }).catch(() => null);
@@ -604,9 +618,10 @@ async function descargarPdfPorCodigo(cookies, codigo) {
 
   // Paso 2: página de gestión — capturamos cookies y diagnosticamos
   const r2 = await axios.get(gesUrl, { validateStatus: () => true, headers: hdr(launchUrl) }).catch(() => null);
+  let body2 = '';
   if (r2) {
     ck = mergeCookies(ck, r2.headers['set-cookie']);
-    const body2 = Buffer.from(r2.data ?? '').toString('latin1');
+    body2 = Buffer.from(r2.data ?? '').toString('latin1');
     const title2 = (body2.match(/<title>([^<]*)<\/title>/i) ?? [])[1] ?? '?';
     console.log(`[PDF] mipeGesDocRcp status=${r2.status} title="${title2}"`);
     if (title2.toLowerCase().includes('error')) {
@@ -617,6 +632,7 @@ async function descargarPdfPorCodigo(cookies, codigo) {
   await sleep(300);
 
   // Paso 3: PDF
+  const pdfUrl = extraerPdfUrlDesdeGes(body2) || defaultPdfUrl;
   const resp = await axios.get(pdfUrl, {
     maxRedirects: 3, validateStatus: () => true, responseType: 'arraybuffer',
     headers: hdr(gesUrl),
