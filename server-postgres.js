@@ -1023,21 +1023,9 @@ async function descargarPdfViaBrowser(folio, rutEmisor, codigoBd = null, tipoDte
 
     console.log(`[SII pdf] Folio ${folio} → CODIGO ${codigo} (browser)`);
 
-    // Navegar al gestor del documento y capturar el PDF
-    const gesUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi?CODIGO=${codigo}&ALL_PAGE_ANT=2`;
-    await (await page).goto(gesUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await sleep(500);
-
-    const pdfUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeShowPdf.cgi?CODIGO=${codigo}`;
-    const response = await (await page).request.get(pdfUrl);
-    const buf = Buffer.from(await response.body());
-
-    if (buf.slice(0, 4).toString() !== '%PDF') {
-      const preview = buf.toString('latin1').slice(0, 300).replace(/\s+/g, ' ');
-      console.error(`[SII pdf browser] No es PDF:`, preview);
-      throw new Error(`SII no devolvió PDF para folio ${folio} (browser)`);
-    }
-    return buf;
+    // Con CODIGO detectado en browser, descargar vía helper HTTP (más robusto)
+    const ck = await autenticarSIIdirecto();
+    return await descargarPdfPorCodigo(ck, codigo);
   } finally {
     await browser.close().catch(() => {});
   }
