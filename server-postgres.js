@@ -378,6 +378,10 @@ function siiCookieHeader(cookies) {
 const SII_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const SII_AUTH_CACHE_TTL_MS = 6 * 60 * 1000;
+let siiAuthCache = null;
+let siiAuthCacheAt = 0;
+let siiAuthInFlight = null;
 
 async function obtenerReferenciasGesDoc(cookies, codigo) {
   const launchUrl = 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4';
@@ -520,17 +524,36 @@ async function autenticarViaBrowser() {
 }
 
 // ── Punto de entrada: intenta HTTP, cae a browser si falla ────────────────────
-async function autenticarSIIdirecto() {
-  // Intento 1: HTTP directo (rápido, funciona desde IPs no bloqueadas)
-  try {
-    const cookies = await autenticarHTTP();
-    if (cookies) return await seleccionarEmpresaHTTP(cookies);
-    console.warn('[SII auth] CAutInicio HTTP sin TOKEN, usando browser...');
-  } catch (err) {
-    console.warn(`[SII auth] CAutInicio HTTP error (${err.message}), usando browser...`);
+async function autenticarSIIdirecto(force = false) {
+  const now = Date.now();
+  if (!force && siiAuthCache && (now - siiAuthCacheAt) < SII_AUTH_CACHE_TTL_MS) {
+    return siiAuthCache;
   }
-  // Intento 2: formulario browser → extraer cookies → HTTP Portal001
-  return autenticarViaBrowser();
+  if (!force && siiAuthInFlight) return siiAuthInFlight;
+
+  const doAuth = async () => {
+    // Intento 1: HTTP directo (rápido, funciona desde IPs no bloqueadas)
+    try {
+      const cookies = await autenticarHTTP();
+      if (cookies) {
+        const out = await seleccionarEmpresaHTTP(cookies);
+        siiAuthCache = out;
+        siiAuthCacheAt = Date.now();
+        return out;
+      }
+      console.warn('[SII auth] CAutInicio HTTP sin TOKEN, usando browser...');
+    } catch (err) {
+      console.warn(`[SII auth] CAutInicio HTTP error (${err.message}), usando browser...`);
+    }
+    // Intento 2: formulario browser → extraer cookies → HTTP Portal001
+    const out = await autenticarViaBrowser();
+    siiAuthCache = out;
+    siiAuthCacheAt = Date.now();
+    return out;
+  };
+
+  siiAuthInFlight = doAuth().finally(() => { siiAuthInFlight = null; });
+  return siiAuthInFlight;
 }
 
 // ── Buscar CODIGO de un documento en mipeAdminDocsRcp ────────────────────────
@@ -951,11 +974,10 @@ async function descargarPdfSII(folio, rutEmisor, codigoBd = null, tipoDte = null
   if (pdfEnCurso || siiEnCurso) throw new Error('Ya hay una operación SII en curso, intenta en unos minutos');
   pdfEnCurso = true;
   try {
-    // Intento 1: HTTP directo (rápido)
+    // Intento 1: sesión compartida SII (cacheada)
     let cookies = null;
     try {
-      cookies = await autenticarHTTP();
-      if (cookies) cookies = await seleccionarEmpresaHTTP(cookies);
+      cookies = await autenticarSIIdirecto();
     } catch (_) { cookies = null; }
 
     if (cookies) {
@@ -970,19 +992,7 @@ async function descargarPdfSII(folio, rutEmisor, codigoBd = null, tipoDte = null
       }
     }
 
-    // Intento 2: Auth via browser → descarga HTTP Portal001 (más estable que pedir PDF dentro del browser)
-    try {
-      const ck = await autenticarSIIdirecto();
-      const codigo = codigoBd || await buscarCodigoPdf(ck, folio, rutEmisor, tipoDte);
-      if (codigo) {
-        console.log(`[SII pdf] Folio ${folio} → CODIGO ${codigo} (directo)`);
-        return await descargarPdfPorCodigo(ck, codigo);
-      }
-    } catch (e) {
-      console.warn(`[SII pdf] directo falló (${e.message}), intentando vía browser Playwright...`);
-    }
-
-    // Intento 3: Playwright navega directamente al PDF en el browser autenticado
+    // Intento 2: Playwright navega directamente al PDF en el browser autenticado
     console.log(`[SII pdf] Folio ${folio} → descargando vía browser Playwright`);
     return await descargarPdfViaBrowser(folio, rutEmisor, codigoBd, tipoDte);
   } finally {
