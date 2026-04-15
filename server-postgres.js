@@ -954,7 +954,19 @@ async function descargarPdfSII(folio, rutEmisor, codigoBd = null, tipoDte = null
       }
     }
 
-    // Intento 2: Playwright navega directamente al PDF en el browser autenticado
+    // Intento 2: Auth via browser → descarga HTTP Portal001 (más estable que pedir PDF dentro del browser)
+    try {
+      const ck = await autenticarSIIdirecto();
+      const codigo = codigoBd || await buscarCodigoPdf(ck, folio, rutEmisor, tipoDte);
+      if (codigo) {
+        console.log(`[SII pdf] Folio ${folio} → CODIGO ${codigo} (directo)`);
+        return await descargarPdfPorCodigo(ck, codigo);
+      }
+    } catch (e) {
+      console.warn(`[SII pdf] directo falló (${e.message}), intentando vía browser Playwright...`);
+    }
+
+    // Intento 3: Playwright navega directamente al PDF en el browser autenticado
     console.log(`[SII pdf] Folio ${folio} → descargando vía browser Playwright`);
     return await descargarPdfViaBrowser(folio, rutEmisor, codigoBd, tipoDte);
   } finally {
