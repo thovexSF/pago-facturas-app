@@ -579,6 +579,7 @@ async function buscarCodigoPdf(cookies, folio, rutEmisor, tipoDte = null) {
 // ── Descargar PDF de un documento dado su CODIGO interno ─────────────────────
 async function descargarPdfPorCodigo(cookies, codigo) {
   const launchUrl = 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4';
+  const launchUrlAlt = 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=33&TIPO=4';
   const gesUrl    = `https://www1.sii.cl/cgi-bin/Portal001/mipeGesDocRcp.cgi?CODIGO=${codigo}&ALL_PAGE_ANT=2`;
   const defaultPdfUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeShowPdf.cgi?CODIGO=${codigo}`;
 
@@ -614,6 +615,8 @@ async function descargarPdfPorCodigo(cookies, codigo) {
   // Paso 1: landing page
   const r1 = await axios.get(launchUrl, { validateStatus: () => true, headers: hdr('https://www1.sii.cl/') }).catch(() => null);
   if (r1) ck = mergeCookies(ck, r1.headers['set-cookie']);
+  const r1b = await axios.get(launchUrlAlt, { validateStatus: () => true, headers: hdr('https://www1.sii.cl/') }).catch(() => null);
+  if (r1b) ck = mergeCookies(ck, r1b.headers['set-cookie']);
   await sleep(300);
 
   // Paso 2: página de gestión — capturamos cookies y diagnosticamos
@@ -624,10 +627,6 @@ async function descargarPdfPorCodigo(cookies, codigo) {
     body2 = Buffer.from(r2.data ?? '').toString('latin1');
     const title2 = (body2.match(/<title>([^<]*)<\/title>/i) ?? [])[1] ?? '?';
     console.log(`[PDF] mipeGesDocRcp status=${r2.status} title="${title2}"`);
-    if (title2.toLowerCase().includes('error')) {
-      // El CODIGO no es accesible — probablemente documento en estado Pendiente sin PDF disponible
-      throw new Error(`Documento no disponible en SII (${title2}). Puede estar en estado Pendiente.`);
-    }
   }
   await sleep(300);
 
@@ -943,6 +942,10 @@ async function abrirSesionSII() {
 // Descarga el PDF de UNA factura — intenta HTTP, cae a Playwright si falla
 // tipoDte: '33' | '61' | null — necesario para buscar CODIGO en mipeAdmin cuando no hay código en BD.
 async function descargarPdfSII(folio, rutEmisor, codigoBd = null, tipoDte = null) {
+  const startWait = Date.now();
+  while ((pdfEnCurso || siiEnCurso) && Date.now() - startWait < 90000) {
+    await sleep(1500);
+  }
   if (pdfEnCurso || siiEnCurso) throw new Error('Ya hay una operación SII en curso, intenta en unos minutos');
   pdfEnCurso = true;
   try {
