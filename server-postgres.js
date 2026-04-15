@@ -497,6 +497,7 @@ async function autenticarViaBrowser() {
   const page    = await ctx.newPage();
   try {
     await loginSII(page);   // form browser → zeusr session
+    await seleccionarEmpresa(page).catch(() => {}); // intentar dejar rcmp listo en browser
 
     // Extraer todas las cookies del contexto del browser
     const rawCookies = await ctx.cookies();
@@ -510,7 +511,8 @@ async function autenticarViaBrowser() {
       throw new Error('Browser login no devolvió cookies de sesión');
     console.log(`[SII auth] Cookies extraídas del browser: ${cookies.map(c=>c.name).join(',')}`);
 
-    // Seleccionar empresa vía HTTP con estas cookies (más fiable que navegar en Playwright)
+    // Si ya trae rcmp, usar tal cual; si no, intentar selección HTTP como fallback.
+    if (cookies.some(c => c.name === 'NETSCAPE_LIVEWIRE.rcmp')) return cookies;
     return await seleccionarEmpresaHTTP(cookies);
   } finally {
     await browser.close().catch(() => {});
@@ -1026,8 +1028,14 @@ async function descargarPdfViaBrowser(folio, rutEmisor, codigoBd = null, tipoDte
 
     console.log(`[SII pdf] Folio ${folio} → CODIGO ${codigo} (browser)`);
 
-    // Con CODIGO detectado en browser, descargar vía helper HTTP (más robusto)
-    const ck = await autenticarSIIdirecto();
+    // Con CODIGO detectado en browser, descargar vía helper HTTP usando cookies reales del browser
+    const rawCookies = await (await ctx).cookies();
+    const ck = rawCookies.map(c => ({
+      name: c.name,
+      value: c.value,
+      domain: c.domain?.startsWith('.') ? c.domain : `.${c.domain}`,
+      path: c.path ?? '/',
+    })).filter(c => c.name && c.value && c.value !== 'DEL');
     return await descargarPdfPorCodigo(ck, codigo);
   } finally {
     await browser.close().catch(() => {});
