@@ -17,6 +17,11 @@ let graficoFiltroIniciado = false;
 // Filtro tipo Excel de la columna Emisor: null = todos, Set = seleccionados
 let filtroEmisores = null;
 
+function esDocNc(f) {
+  const t = f?.tipo_doc;
+  return t === 61 || t === '61';
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -74,7 +79,7 @@ function cargarEventosCalendar() {
   const filtrados  = chipsFiltro.size > 0 ? chipsFiltro : agendaRuts;
 
   facturas.forEach(f => {
-    if (f.tipo_doc === '61') return;
+    if (esDocNc(f)) return;
     if (!filtrados.has(f.rut_emisor)) return;
 
     const colorBase = (pagado, vencida) => ({
@@ -201,7 +206,7 @@ function renderStats() {
   document.getElementById('stat-total').textContent    = pendC1.length + pendC2.length;
   document.getElementById('stat-vencidas').textContent  = vencidas;
   document.getElementById('stat-monto').textContent    = '$' + formatMonto(montoPendiente);
-  document.getElementById('stat-pagadas').textContent  = facturas.filter(f => f.tipo_doc !== '61' && f.pagado_1 && (!f.vcto_2 || f.pagado_2)).length;
+  document.getElementById('stat-pagadas').textContent  = facturas.filter(f => !esDocNc(f) && f.pagado_1 && (!f.vcto_2 || f.pagado_2)).length;
 }
 
 // ─── Tabla ────────────────────────────────────────────────────────────────────
@@ -225,11 +230,11 @@ function renderTabla() {
     const ambaPagada = f.pagado_1 && (!f.vcto_2 || f.pagado_2);
     const vencida = (!f.pagado_1 && f.vcto_1 && new Date(f.vcto_1) < hoy)
                  || (!f.pagado_2 && f.vcto_2 && new Date(f.vcto_2) < hoy);
-    const estadoClass = f.tipo_doc === '61' ? 'badge-muted' : ambaPagada ? 'badge-success' : vencida ? 'badge-danger' : 'badge-warning';
-    const estadoLabel = f.tipo_doc === '61' ? 'Nota créd.' : ambaPagada ? 'Pagada' : vencida ? 'Vencida' : 'Pendiente';
-    const proxVcto    = f.tipo_doc === '61' ? null : (!f.pagado_1 && f.vcto_1 ? f.vcto_1 : f.vcto_2);
-    const tipo = f.tipo_doc === '61' ? 'NC' : 'FE';
-    const refNc = f.tipo_doc === '61' && f.ref_folio
+    const estadoClass = esDocNc(f) ? 'badge-muted' : ambaPagada ? 'badge-success' : vencida ? 'badge-danger' : 'badge-warning';
+    const estadoLabel = esDocNc(f) ? 'Nota créd.' : ambaPagada ? 'Pagada' : vencida ? 'Vencida' : 'Pendiente';
+    const proxVcto    = esDocNc(f) ? null : (!f.pagado_1 && f.vcto_1 ? f.vcto_1 : f.vcto_2);
+    const tipo = esDocNc(f) ? 'NC' : 'FE';
+    const refNc = esDocNc(f) && f.ref_folio
       ? `<span class="text-muted" title="Anula folio">→ ${esc(String(f.ref_folio))}</span>` : '';
     return `
       <tr class="${vencida?'row-vencida':''}" onclick="abrirModal(facturas.find(x=>x.id===${f.id}),listaActual)" style="cursor:pointer">
@@ -240,13 +245,13 @@ function renderTabla() {
         <td>${f.folio||'—'}</td>
         <td><span class="badge badge-muted">${tipo}</span> ${refNc}</td>
         <td>${formatFecha(f.fecha_emision)}</td>
-        <td class="${f.tipo_doc === '61' ? '' : (vencida?'text-danger':'')}">${f.tipo_doc === '61' ? '<span class="text-muted">—</span>' : formatFecha(proxVcto)}</td>
+        <td class="${esDocNc(f) ? '' : (vencida?'text-danger':'')}">${esDocNc(f) ? '<span class="text-muted">—</span>' : formatFecha(proxVcto)}</td>
         <td class="monto">$${formatMonto(f.monto_total)}</td>
         <td class="fechas-pago">
-          ${f.tipo_doc === '61' ? '<span class="text-muted">—</span>' : ''}
-          ${f.tipo_doc !== '61' && f.pagado_1 && f.pagado_1_at ? `<div class="pago-fecha">C1 · ${formatFecha(f.pagado_1_at)}</div>` : ''}
-          ${f.tipo_doc !== '61' && f.pagado_2 && f.pagado_2_at ? `<div class="pago-fecha">C2 · ${formatFecha(f.pagado_2_at)}</div>` : ''}
-          ${f.tipo_doc !== '61' && !f.pagado_1 && !f.pagado_2 ? '<span class="text-muted">—</span>' : ''}
+          ${esDocNc(f) ? '<span class="text-muted">—</span>' : ''}
+          ${!esDocNc(f) && f.pagado_1 && f.pagado_1_at ? `<div class="pago-fecha">C1 · ${formatFecha(f.pagado_1_at)}</div>` : ''}
+          ${!esDocNc(f) && f.pagado_2 && f.pagado_2_at ? `<div class="pago-fecha">C2 · ${formatFecha(f.pagado_2_at)}</div>` : ''}
+          ${!esDocNc(f) && !f.pagado_1 && !f.pagado_2 ? '<span class="text-muted">—</span>' : ''}
         </td>
         <td><span class="badge ${estadoClass}">${estadoLabel}</span></td>
         <td onclick="event.stopPropagation()">
@@ -254,7 +259,7 @@ function renderTabla() {
             ? `<a class="btn btn-sm btn-success" href="/api/facturas/${f.id}/pdf" target="_blank" rel="noopener">📄 Ver</a>`
             : `<button class="btn btn-sm btn-secondary" onclick="descargarPdfFactura(${f.id}, this)">⬇ PDF</button>`}
         </td>
-        <td>${f.tipo_doc !== '61' && !ambaPagada?`<button class="btn btn-sm btn-pay" onclick="event.stopPropagation();abrirModal(facturas.find(x=>x.id===${f.id}))">Pagar</button>`:''}</td>
+        <td>${!esDocNc(f) && !ambaPagada?`<button class="btn btn-sm btn-pay" onclick="event.stopPropagation();abrirModal(facturas.find(x=>x.id===${f.id}))">Pagar</button>`:''}</td>
       </tr>`;
   }).join('');
 }
@@ -355,7 +360,7 @@ function abrirModal(f, lista) {
   if (next) next.disabled = modalIndex >= modalLista.length - 1;
   const prov = proveedores.find(p => p.rut_emisor === f.rut_emisor);
 
-  const esNC = f.tipo_doc === '61';
+  const esNC = esDocNc(f);
   document.getElementById('modal-titulo').textContent = esNC
     ? `Nota de crédito ${f.folio ? '#' + f.folio : ''}`
     : `Factura ${f.folio ? '#' + f.folio : ''}`;
@@ -428,8 +433,8 @@ function abrirModal(f, lista) {
   btn2.className   = `btn btn-sm ${f.pagado_2?'btn-secondary':'btn-pay'}`;
   btn2.onclick     = () => marcarCuota(2);
 
-  // Ocultar cuotas si es contado (ya está pagado)
   document.querySelectorAll('.cuota-row').forEach(r => {
+    if (esNC) { r.style.display = 'none'; return; }
     r.style.display = esContado ? 'none' : '';
   });
 
@@ -655,7 +660,7 @@ function renderGrafico() {
   // Agrupar por mes y proveedor → suma monto_total
   const porMesProv = {};
   facturas.forEach(f => {
-    if (f.tipo_doc === '61') return;
+    if (esDocNc(f)) return;
     if (!f.fecha_emision) return;
     const mes  = f.fecha_emision.slice(0, 7); // "2026-03"
     const prov = f.razon_social || f.rut_emisor;
