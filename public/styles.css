@@ -609,6 +609,75 @@ body {
   .facturas-table td:nth-child(3) { display: none; }
 }
 
+/* ── Mobile modal & layout ── */
+@media (max-width: 768px) {
+  .app { padding: 12px; }
+
+  /* Header: stack buttons below title */
+  .header { flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
+  .header-right { width: 100%; display: flex; gap: 8px; }
+  .header-right .btn { flex: 1; justify-content: center; font-size: 12px; padding: 7px 8px; }
+
+  /* Stats: 2 columns */
+  .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 16px; }
+  .stat { padding: 12px 14px; }
+  .stat-value { font-size: 20px; }
+
+  /* Modal: full screen, single column */
+  .modal-overlay { align-items: flex-end; }
+  .modal.modal-split {
+    flex-direction: column;
+    width: 100vw;
+    max-width: 100vw;
+    height: 92dvh;
+    max-height: 92dvh;
+    border-radius: 16px 16px 0 0;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  /* Left panel: full width, scrollable */
+  .modal-panel-left {
+    width: 100%;
+    min-width: unset;
+    border-right: none;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* Hide PDF panel entirely on mobile */
+  .modal-panel-pdf { display: none; }
+
+  /* Modal body padding tighter */
+  .modal-panel-left .modal-body { padding: 12px 16px; }
+
+  /* Detail rows: prevent value overflow */
+  .detail-row { gap: 8px; }
+  .detail-value { text-align: right; max-width: 62%; word-break: break-word; }
+  .detail-row.highlight .detail-value { font-size: 16px; }
+
+  /* Vcto edit row: stack vertically on very small screens */
+  .vcto-edit-row { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .vcto-actions { justify-content: stretch; }
+  .vcto-actions .btn { flex: 1; justify-content: center; }
+
+  /* Footer buttons: fill row */
+  .modal-footer { flex-wrap: wrap; gap: 6px; padding: 10px 12px; }
+  .modal-footer .btn { flex: 1; min-width: 80px; justify-content: center; font-size: 12px; padding: 8px 6px; }
+
+  /* Filter bar */
+  .filter-bar { gap: 6px; }
+  .filter-bar select,
+  .filter-bar input[type="text"],
+  .filter-bar input[type="date"] { font-size: 12px; padding: 5px 8px; }
+
+  /* Table wrapper height + horizontal scroll */
+  .table-wrapper { max-height: calc(100vh - 280px); overflow-x: auto; }
+
+  /* Tabs: scrollable on mobile */
+  .tabs { overflow-x: auto; white-space: nowrap; padding-bottom: 2px; }
+}
+
 /* ── Banner vencimientos ── */
 .banner-vencimientos {
   display: flex;
