@@ -625,69 +625,73 @@ body {
   .stat { padding: 12px 14px; }
   .stat-value { font-size: 20px; }
 
-  /* Modal overlay: sheet sliding from bottom */
+  /* ── Modal: sheet that fills screen from 8% down ──
+     Using position:absolute inside the fixed overlay ensures
+     the modal is truly 100% wide regardless of flex centering. */
   .modal-overlay { align-items: flex-end; }
 
-  /* Modal: full width, 92% height, rounded top corners */
   .modal.modal-split {
-    flex-direction: column;
-    width: 100vw;
-    max-width: 100vw;
-    height: 92vh;       /* fallback for browsers without dvh */
-    height: 92dvh;
-    max-height: 92dvh;
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: 8vh;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    max-height: none;
     border-radius: 16px 16px 0 0;
-    overflow: hidden;   /* clip any internal overflow */
+    flex-direction: column;
+    overflow: hidden;
   }
 
-  /* Left panel: full width, allow body to scroll */
+  /* Left panel: 100% wide, min-width:0 so flex doesn't add intrinsic size */
   .modal-panel-left {
     width: 100%;
     max-width: 100%;
-    min-width: unset;
+    min-width: 0;           /* critical: removes flex intrinsic min-width */
     border-right: none;
     display: flex;
     flex-direction: column;
     flex: 1;
-    overflow-x: hidden;   /* clip horizontal only */
-    overflow-y: visible;  /* let .modal-body handle vertical scroll */
+    overflow: hidden;
   }
 
-  /* Modal body: touch-scrollable */
+  /* Modal body: touchable vertical scroll, clip horizontal overflow */
   .modal-panel-left .modal-body {
     padding: 12px 16px;
     overflow-y: auto;
     overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
     flex: 1;
+    min-height: 0;          /* allow flex child to shrink below content size */
   }
 
-  /* Hide PDF panel on mobile */
+  /* Hide PDF panel completely */
   .modal-panel-pdf { display: none !important; }
 
-  /* Detail rows: label + value, value wraps if needed */
-  .detail-row { gap: 8px; align-items: flex-start; }
-  .detail-label { flex-shrink: 0; padding-top: 2px; }
+  /* Detail rows: label fixed-width, value takes remaining space */
+  .detail-row { align-items: flex-start; gap: 8px; }
+  .detail-label { flex: 0 0 auto; padding-top: 2px; }
   .detail-value {
+    flex: 1;
     text-align: right;
-    max-width: 58%;
     word-break: break-word;
     overflow-wrap: break-word;
+    min-width: 0;
   }
   .detail-row.highlight .detail-value { font-size: 16px; }
 
-  /* Vcto edit rows: stack date input above amount */
+  /* Vcto rows: stack date input above amount, inside the flex value cell */
   .vcto-edit-row {
     display: flex !important;
     flex-direction: column;
     align-items: flex-end;
     gap: 4px;
-    max-width: 58%;
   }
-  /* Date input: constrained to its container */
-  .vcto-input { max-width: 100%; width: 100%; box-sizing: border-box; }
+  .vcto-input { width: 100%; max-width: 100%; box-sizing: border-box; }
 
-  /* Vcto action buttons: wrap and fill full width */
+  /* Vcto action buttons: wrap so "Extraer del PDF" + "Guardar fechas" don't overflow */
   .vcto-actions {
     display: flex;
     flex-wrap: wrap;
@@ -696,7 +700,7 @@ body {
   }
   .vcto-actions .btn { flex: 1; min-width: 0; justify-content: center; }
 
-  /* Footer: buttons wrap and fill row */
+  /* Footer: buttons fill row */
   .modal-footer { flex-wrap: wrap; gap: 6px; padding: 10px 12px; }
   .modal-footer .btn { flex: 1; min-width: 80px; justify-content: center; font-size: 12px; padding: 8px 6px; }
 
