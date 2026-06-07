@@ -602,11 +602,185 @@ body {
 /* ── Btn success ── */
 .btn-success { background: #276749; color: #fff; }
 
+/* ── Table toolbar (dates + ocultas + limpiar) ── */
+.table-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #718096;
+}
+.table-toolbar label { display: inline-flex; align-items: center; gap: 5px; }
+.table-toolbar input[type="date"] {
+  padding: 4px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #4a5568;
+  background: #fff;
+}
+
+/* ── Sortable column headers ── */
+.th-sortable { cursor: pointer; user-select: none; }
+.th-sortable:hover { background: #edf2f7; }
+
+.th-sort-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.th-sort-label:hover { color: #2b6cb0; }
+
+.sort-arrow { font-size: 9px; color: #cbd5e0; line-height: 1; }
+.sort-arrow.sort-active { color: #2b6cb0; }
+
+/* ── Inline column header filter controls ── */
+.th-filter-input,
+.th-filter-select {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  color: #4a5568;
+  background: #fff;
+  box-sizing: border-box;
+}
+.th-filter-input:focus,
+.th-filter-select:focus { outline: none; border-color: #667eea; }
+
+.th-col-name {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: #718096;
+  white-space: nowrap;
+}
+
 /* ── Responsive ── */
 @media (max-width: 640px) {
   .stats { grid-template-columns: repeat(2, 1fr); }
   .facturas-table th:nth-child(3),
   .facturas-table td:nth-child(3) { display: none; }
+}
+
+/* ── Mobile modal & layout ── */
+@media (max-width: 768px) {
+  /* Prevent page-level horizontal scroll */
+  body { overflow-x: hidden; }
+  .app { padding: 12px; }
+
+  /* Header: stack buttons below title */
+  .header { flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
+  .header-right { width: 100%; display: flex; gap: 8px; }
+  .header-right .btn { flex: 1; justify-content: center; font-size: 12px; padding: 7px 8px; }
+
+  /* Stats: 2 columns */
+  .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 16px; }
+  .stat { padding: 12px 14px; }
+  .stat-value { font-size: 20px; }
+
+  /* ── Modal: sheet that fills screen from 8% down ──
+     Using position:absolute inside the fixed overlay ensures
+     the modal is truly 100% wide regardless of flex centering. */
+  .modal-overlay { align-items: flex-end; }
+
+  .modal.modal-split {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: 8vh;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    max-height: none;
+    border-radius: 16px 16px 0 0;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Left panel: 100% wide, min-width:0 so flex doesn't add intrinsic size */
+  .modal-panel-left {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;           /* critical: removes flex intrinsic min-width */
+    border-right: none;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* Modal body: touchable vertical scroll, clip horizontal overflow */
+  .modal-panel-left .modal-body {
+    padding: 12px 16px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    flex: 1;
+    min-height: 0;          /* allow flex child to shrink below content size */
+  }
+
+  /* Hide PDF panel completely */
+  .modal-panel-pdf { display: none !important; }
+
+  /* Detail rows: label fixed-width, value takes remaining space */
+  .detail-row { align-items: flex-start; gap: 8px; }
+  .detail-label { flex: 0 0 auto; padding-top: 2px; }
+  .detail-value {
+    flex: 1;
+    text-align: right;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    min-width: 0;
+  }
+  .detail-row.highlight .detail-value { font-size: 16px; }
+
+  /* Vcto rows: stack date input above amount, inside the flex value cell */
+  .vcto-edit-row {
+    display: flex !important;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+  }
+  .vcto-input { width: 100%; max-width: 100%; box-sizing: border-box; }
+
+  /* Vcto action buttons: wrap so "Extraer del PDF" + "Guardar fechas" don't overflow */
+  .vcto-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .vcto-actions .btn { flex: 1; min-width: 0; justify-content: center; }
+
+  /* Footer: buttons fill row */
+  .modal-footer { flex-wrap: wrap; gap: 6px; padding: 10px 12px; }
+  .modal-footer .btn { flex: 1; min-width: 80px; justify-content: center; font-size: 12px; padding: 8px 6px; }
+
+  /* Filter bar */
+  .filter-bar { gap: 6px; }
+  .filter-bar select,
+  .filter-bar input[type="text"],
+  .filter-bar input[type="date"] { font-size: 12px; padding: 5px 8px; }
+
+  /* Table: height + horizontal scroll */
+  .table-wrapper { max-height: calc(100vh - 280px); overflow-x: auto; }
+
+  /* Tabs: horizontal scroll */
+  .tabs { overflow-x: auto; white-space: nowrap; padding-bottom: 2px; }
 }
 
 /* ── Banner vencimientos ── */
@@ -639,3 +813,4 @@ body {
   opacity: .6; flex-shrink: 0;
 }
 .banner-vcto-close:hover { opacity: 1; }
+

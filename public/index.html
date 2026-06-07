@@ -6,7 +6,7 @@
   <title>Facturas por Pagar — Bioma</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>🧾</text></svg>">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=5" />
 </head>
 <body>
   <div class="app">
@@ -63,21 +63,10 @@
 
     <!-- Lista -->
     <div class="tab-content" id="tab-lista">
-      <div class="filter-bar">
-        <select id="filter-estado">
-          <option value="">Todos los estados</option>
-          <option value="pendiente">Pendientes</option>
-          <option value="pagada">Pagadas</option>
-        </select>
-        <select id="filter-tipo-doc" title="Tipo DTE">
-          <option value="">Todos los tipos</option>
-          <option value="33">Factura electrónica (33)</option>
-          <option value="61">Nota de crédito (61)</option>
-        </select>
-        <input type="text" id="filter-folio" placeholder="Folio…" inputmode="numeric" autocomplete="off" />
-        <label class="filter-date-wrap">Desde <input type="date" id="filter-fecha-desde" /></label>
-        <label class="filter-date-wrap">Hasta <input type="date" id="filter-fecha-hasta" /></label>
-        <label class="filter-date-wrap"><input type="checkbox" id="filter-incluir-ocultas" /> Mostrar ocultas</label>
+      <div class="table-toolbar">
+        <label>Desde <input type="date" id="filter-fecha-desde" /></label>
+        <label>Hasta <input type="date" id="filter-fecha-hasta" /></label>
+        <label><input type="checkbox" id="filter-incluir-ocultas" /> Mostrar ocultas</label>
         <button type="button" class="btn btn-sm btn-secondary" id="btn-filtros-limpiar">Limpiar filtros</button>
       </div>
       <div class="table-wrapper">
@@ -86,12 +75,12 @@
           <tr>
             <th id="th-emisor">
               <div class="th-emisor-label">
-                Emisor
+                <span class="th-sort-label" onclick="setSort('razon_social')">Emisor <span class="sort-arrow" data-col="razon_social">↕</span></span>
                 <button class="th-filter-btn" id="btn-filter-emisor" onclick="toggleFiltroEmisor(event)" title="Filtrar por emisor">
                   <svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M1.5 2.5A.5.5 0 0 1 2 2h12a.5.5 0 0 1 .354.854L9.5 6.707V13.5a.5.5 0 0 1-.276.447l-3 1.5A.5.5 0 0 1 5.5 15V6.707L1.646 2.854A.5.5 0 0 1 1.5 2.5z"/></svg>
                 </button>
               </div>
-              <div class="th-filter-panel" id="filter-emisor-panel">
+              <div class="th-filter-panel" id="filter-emisor-panel" onclick="event.stopPropagation()">
                 <div class="th-filter-actions">
                   <label class="th-filter-item th-filter-todos" onclick="event.stopPropagation()">
                     <input type="checkbox" id="chk-emisor-todos" checked onchange="toggleFiltroEmisorTodos(this.checked)">
@@ -104,13 +93,38 @@
                 <div class="th-filter-items" id="filter-emisor-items"></div>
               </div>
             </th>
-            <th>Folio</th>
-            <th>Tipo</th>
-            <th>Emisión</th>
-            <th>Próx. vencimiento</th>
-            <th>Monto total</th>
-            <th>Fechas de pago</th>
-            <th>Estado</th>
+            <th>
+              <span class="th-sort-label" onclick="setSort('folio')">Folio <span class="sort-arrow" data-col="folio">↕</span></span>
+              <input type="text" id="filter-folio" class="th-filter-input" placeholder="Folio…" inputmode="numeric" autocomplete="off" />
+            </th>
+            <th>
+              <span class="th-col-name">Tipo</span>
+              <select id="filter-tipo-doc" class="th-filter-select">
+                <option value="">Todos</option>
+                <option value="33">Factura (33)</option>
+                <option value="61">Nota créd. (61)</option>
+              </select>
+            </th>
+            <th class="th-sortable" onclick="setSort('fecha_emision')">
+              <span class="th-sort-label">Emisión <span class="sort-arrow" data-col="fecha_emision">↕</span></span>
+            </th>
+            <th class="th-sortable" onclick="setSort('vcto_proximo')">
+              <span class="th-sort-label">Próx. vcto <span class="sort-arrow" data-col="vcto_proximo">↕</span></span>
+            </th>
+            <th class="th-sortable" onclick="setSort('monto_total')">
+              <span class="th-sort-label">Monto <span class="sort-arrow" data-col="monto_total">↕</span></span>
+            </th>
+            <th>Fechas pago</th>
+            <th>
+              <span class="th-sort-label" onclick="setSort('estado')">Estado <span class="sort-arrow" data-col="estado">↕</span></span>
+              <select id="filter-estado" class="th-filter-select">
+                <option value="">Todos</option>
+                <option value="pendiente">Pendiente</option>
+                <option value="vencida">Vencida</option>
+                <option value="pagada">Pagada</option>
+                <option value="nc">Nota créd.</option>
+              </select>
+            </th>
             <th>PDF</th>
             <th></th>
           </tr>
