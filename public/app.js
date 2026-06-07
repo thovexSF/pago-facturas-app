@@ -5,10 +5,15 @@ let facturaActiva = null;
 let modalLista    = [];   // lista filtrada visible al abrir el modal
 let modalIndex    = -1;   // índice de facturaActiva en modalLista
 let listaActual         = [];   // última lista renderizada en la tabla (para navegación)
-let filtroInicializado  = false;
 
-// Chips: set de rut_emisor visibles en calendario (persistido en localStorage)
-let chipsFiltro = new Set(JSON.parse(localStorage.getItem('chipsFiltro') ?? 'null') ?? []);
+// Chips: null = Todos, Set<rut_emisor> = filtro activo
+function initChipsFiltro() {
+  const raw = localStorage.getItem('chipsFiltro');
+  if (!raw || raw === 'null') return null;
+  try { const a = JSON.parse(raw); return Array.isArray(a) ? new Set(a) : null; }
+  catch { return null; }
+}
+let chipsFiltro = initChipsFiltro();
 
 // Filtro del gráfico: Set de razon_social seleccionados (vacío antes de inicializar)
 let graficoProvsFiltro = new Set();
@@ -16,6 +21,9 @@ let graficoFiltroIniciado = false;
 
 // Filtro tipo Excel de la columna Emisor: null = todos, Set = seleccionados
 let filtroEmisores = null;
+
+let sortCol = null;
+let sortDir = 'asc';
 
 function esDocNc(f) {
   const t = f?.tipo_doc;
@@ -36,18 +44,19 @@ function ymdEmision(f) {
 }
 
 function limpiarFiltrosLista() {
-  const est = document.getElementById('filter-estado');
-  const tipo = document.getElementById('filter-tipo-doc');
-  const folio = document.getElementById('filter-folio');
-  const d1 = document.getElementById('filter-fecha-desde');
-  const d2 = document.getElementById('filter-fecha-hasta');
+  filtroEmisores = null;
+  sortCol = null;
+  sortDir = 'asc';
+  const els = ['filter-folio','filter-fecha-desde','filter-fecha-hasta'];
+  els.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   const oc = document.getElementById('filter-incluir-ocultas');
-  if (est) est.value = '';
-  if (tipo) tipo.value = '';
-  if (folio) folio.value = '';
-  if (d1) d1.value = '';
-  if (d2) d2.value = '';
   if (oc) oc.checked = false;
+  const tipo = document.getElementById('filter-tipo-doc');
+  if (tipo) tipo.value = '';
+  const est = document.getElementById('filter-estado');
+  if (est) est.value = '';
+  actualizarBtnFiltroEmisor();
+  actualizarSortIndicators();
   renderTabla();
 }
 
@@ -109,13 +118,9 @@ function initCalendar() {
 
 function cargarEventosCalendar() {
   calendar.removeAllEvents();
-  // Si no hay chips seleccionados, mostrar todos los que tengan en_agenda=true
-  const agendaRuts = new Set(proveedores.filter(p => p.en_agenda).map(p => p.rut_emisor));
-  const filtrados  = chipsFiltro.size > 0 ? chipsFiltro : agendaRuts;
-
   facturasVisibles().forEach(f => {
     if (esDocNc(f)) return;
-    if (!filtrados.has(f.rut_emisor)) return;
+    if (chipsFiltro !== null && !chipsFiltro.has(f.rut_emisor)) return;
 
     const colorBase = (pagado, vencida) => ({
       bg:     pagado ? '#48bb78' : vencida ? '#e53e3e' : '#3182ce',
@@ -153,26 +158,32 @@ function cargarEventosCalendar() {
 
 function renderChips() {
   const container = document.getElementById('chips-container');
-  // Mostrar solo proveedores a crédito (los únicos relevantes para el calendario)
   const credito = proveedores.filter(p => p.condicion === 'credito');
   if (!credito.length) { container.innerHTML = ''; return; }
-
-  container.innerHTML = credito.map(p => {
-    const activo = chipsFiltro.size === 0
-      ? p.en_agenda
-      : chipsFiltro.has(p.rut_emisor);
-    return `<button class="chip ${activo ? 'chip-active' : ''}"
-              onclick="toggleChip('${p.rut_emisor}')">${esc(p.razon_social || p.rut_emisor)}</button>`;
-  }).join('');
+  const todosActivo = chipsFiltro === null;
+  container.innerHTML = [
+    `<button class="chip ${todosActivo ? 'chip-active' : ''}" onclick="toggleChip('__todos__')">Todos</button>`,
+    ...credito.map(p => {
+      const activo = chipsFiltro !== null && chipsFiltro.has(p.rut_emisor);
+      return `<button class="chip ${activo ? 'chip-active' : ''}" onclick="toggleChip('${p.rut_emisor}')">${esc(p.razon_social || p.rut_emisor)}</button>`;
+    })
+  ].join('');
 }
 
 function toggleChip(rut) {
-  if (chipsFiltro.has(rut)) {
-    chipsFiltro.delete(rut);
+  if (rut === '__todos__') {
+    chipsFiltro = null;
   } else {
-    chipsFiltro.add(rut);
+    if (chipsFiltro === null) {
+      chipsFiltro = new Set([rut]);
+    } else if (chipsFiltro.has(rut)) {
+      chipsFiltro.delete(rut);
+      if (chipsFiltro.size === 0) chipsFiltro = null;
+    } else {
+      chipsFiltro.add(rut);
+    }
   }
-  localStorage.setItem('chipsFiltro', JSON.stringify([...chipsFiltro]));
+  localStorage.setItem('chipsFiltro', chipsFiltro ? JSON.stringify([...chipsFiltro]) : 'null');
   renderChips();
   cargarEventosCalendar();
 }
@@ -197,17 +208,6 @@ function initTabs() {
 async function cargarFacturas() {
   const res = await fetch('/api/facturas?incluir_anuladas=1');
   facturas  = await res.json();
-
-  // Filtro por defecto: solo Arabica Spa (solo en la primera carga)
-  if (!filtroInicializado && facturas.length) {
-    filtroInicializado = true;
-    const arabica = facturas.find(f => /arabica/i.test(f.razon_social));
-    if (arabica) {
-      filtroEmisores = new Set([arabica.rut_emisor]);
-      const chk = document.getElementById('chk-emisor-todos');
-      if (chk) chk.checked = false;
-    }
-  }
 
   renderStats();
   renderTabla();
@@ -248,11 +248,19 @@ function renderStats() {
 // ─── Tabla ────────────────────────────────────────────────────────────────────
 
 function renderTabla() {
-  const filtro = document.getElementById('filter-estado').value;
+  const filtroEstado = document.getElementById('filter-estado')?.value ?? '';
   const incluirOcultas = !!document.getElementById('filter-incluir-ocultas')?.checked;
   let lista = incluirOcultas ? facturas : facturasVisibles();
-  if (filtro === 'pendiente') lista = lista.filter(f => !f.pagado_1 || (f.vcto_2 && !f.pagado_2));
-  if (filtro === 'pagada')    lista = lista.filter(f => f.pagado_1 && (!f.vcto_2 || f.pagado_2));
+  if (filtroEstado === 'pendiente') lista = lista.filter(f => !esDocNc(f) && (!f.pagado_1 || (f.vcto_2 && !f.pagado_2)));
+  if (filtroEstado === 'pagada')   lista = lista.filter(f => !esDocNc(f) && f.pagado_1 && (!f.vcto_2 || f.pagado_2));
+  if (filtroEstado === 'nc')       lista = lista.filter(esDocNc);
+  if (filtroEstado === 'vencida') {
+    const hoyV = new Date();
+    lista = lista.filter(f => !esDocNc(f) && (
+      (!f.pagado_1 && f.vcto_1 && new Date(f.vcto_1) < hoyV) ||
+      (!f.pagado_2 && f.vcto_2 && new Date(f.vcto_2) < hoyV)
+    ));
+  }
   if (filtroEmisores !== null) lista = lista.filter(f => filtroEmisores.has(f.rut_emisor));
 
   const tipoSel = document.getElementById('filter-tipo-doc')?.value ?? '';
@@ -270,7 +278,36 @@ function renderTabla() {
   if (desde) lista = lista.filter(f => { const y = ymdEmision(f); return y && y >= desde; });
   if (hasta) lista = lista.filter(f => { const y = ymdEmision(f); return y && y <= hasta; });
 
+  if (sortCol) {
+    const hoyS = new Date();
+    const estadoOrd = f => {
+      if (esDocNc(f)) return 3;
+      if (f.pagado_1 && (!f.vcto_2 || f.pagado_2)) return 2;
+      if ((!f.pagado_1 && f.vcto_1 && new Date(f.vcto_1) < hoyS) ||
+          (!f.pagado_2 && f.vcto_2 && new Date(f.vcto_2) < hoyS)) return 0;
+      return 1;
+    };
+    lista = [...lista].sort((a, b) => {
+      let va, vb;
+      switch (sortCol) {
+        case 'folio':         va = parseInt(a.folio)||0;        vb = parseInt(b.folio)||0;        break;
+        case 'fecha_emision': va = a.fecha_emision||'';         vb = b.fecha_emision||'';         break;
+        case 'monto_total':   va = parseInt(a.monto_total)||0;  vb = parseInt(b.monto_total)||0;  break;
+        case 'vcto_proximo':
+          va = (!a.pagado_1 && a.vcto_1 ? a.vcto_1 : (a.vcto_2||'')) || '';
+          vb = (!b.pagado_1 && b.vcto_1 ? b.vcto_1 : (b.vcto_2||'')) || '';
+          break;
+        case 'estado':        va = estadoOrd(a); vb = estadoOrd(b); break;
+        case 'razon_social':  va = a.razon_social||''; vb = b.razon_social||''; break;
+        default: va = 0; vb = 0;
+      }
+      const cmp = typeof va === 'string' ? va.localeCompare(vb) : (va - vb);
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+  }
+
   actualizarBtnFiltroEmisor();
+  actualizarSortIndicators();
 
   const tbody = document.getElementById('facturas-tbody');
   const empty = document.getElementById('empty-state');
@@ -1003,6 +1040,24 @@ function actualizarBtnFiltroEmisor() {
   const btn = document.getElementById('btn-filter-emisor');
   if (!btn) return;
   btn.classList.toggle('active', filtroEmisores !== null);
+}
+
+function setSort(col) {
+  if (sortCol === col) {
+    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    sortCol = col;
+    sortDir = 'asc';
+  }
+  renderTabla();
+}
+
+function actualizarSortIndicators() {
+  document.querySelectorAll('.sort-arrow').forEach(el => {
+    const col = el.dataset.col;
+    el.textContent = col === sortCol ? (sortDir === 'asc' ? '▲' : '▼') : '↕';
+    el.classList.toggle('sort-active', col === sortCol);
+  });
 }
 
 function mostrarToast(msg, tipo='info') {
