@@ -253,6 +253,25 @@
               <button class="btn-copy" onclick="copiarTexto('pago-monto-copy')">Copiar monto</button>
             </div>
           </div>
+
+          <div class="mp-section modal-fe-only" id="mp-section" style="display:none">
+            <h3 style="display:flex;align-items:center;gap:8px">
+              <img src="https://http2.mlstatic.com/frontend-assets/mp-web-navigation/ui-navigation/6.6.92/mercadopago/logo__large@2x.png" alt="MercadoPago" style="height:22px">
+              Pagar con MercadoPago
+            </h3>
+            <div class="mp-cuotas">
+              <div class="mp-cuota-row cuota-row" id="mp-cuota-1-row">
+                <span class="mp-cuota-label">Cuota 1: <strong id="mp-monto-1">—</strong></span>
+                <span class="mp-cuota-status" id="mp-status-1"></span>
+                <button class="btn btn-mp btn-sm" id="btn-mp-1" onclick="pagarConMP(1)">Pagar con MP</button>
+              </div>
+              <div class="mp-cuota-row cuota-row" id="mp-cuota-2-row">
+                <span class="mp-cuota-label">Cuota 2: <strong id="mp-monto-2">—</strong></span>
+                <span class="mp-cuota-status" id="mp-status-2"></span>
+                <button class="btn btn-mp btn-sm" id="btn-mp-2" onclick="pagarConMP(2)">Pagar con MP</button>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-pay btn-sm modal-fe-only" id="btn-pagar-1">Pagar C1</button>
