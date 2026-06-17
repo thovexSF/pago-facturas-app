@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useState, Fragment } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Box, Typography, Paper, Button, Alert, CircularProgress, Table, TableBody,
   TableCell, TableContainer, TableHead, TableRow, Chip, Snackbar,
   Stack, LinearProgress, Accordion, AccordionSummary, AccordionDetails,
-  TextField, Collapse,
+  TextField, Grid, Divider,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/esm/ExpandMore.js';
 import RefreshIcon from '@mui/icons-material/esm/Refresh.js';
 import { API_CONFIG } from '../config/api';
 import { formatRut, validateRut } from '../utils/rutUtils';
+import StatCard from '../components/StatCard';
 
 const BIOMA_API = `${API_CONFIG.BASE_URL}/api/bioma`;
 const SII_API = `${API_CONFIG.BASE_URL}/api/sii-facturacion`;
@@ -320,22 +321,53 @@ export default function BiomaFacturacion() {
     }
   }, [sessionReady, sessionId, payload, loadPending, loadPayload, selectedId, siiBlocked, loadBlockStatus]);
 
-  const pendingCount = rows.filter((r) => r.emision?.status !== 'emitted').length;
+  const pendingRows = rows.filter((r) => r.emision?.status !== 'emitted');
+  const pendingCount = pendingRows.length;
+  const errorCount = rows.filter((r) => r.emision?.status === 'error').length;
+  const emittedCount = rows.filter((r) => r.emision?.status === 'emitted').length;
+  const pendingMonto = pendingRows.reduce((sum, r) => sum + (r.shopify.total || 0), 0);
+  const selectedRow = rows.find((r) => r.shopify.id === selectedId) ?? null;
+  const isBusy = busyOrderId === selectedId;
 
   return (
-    <Box sx={{ p: 3, maxWidth: 1100, mx: 'auto' }}>
-      <Typography variant="h5" gutterBottom>Facturación SII</Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Emisión de DTE. Pedidos con tag <code>factura</code> (etiquetados por la app <strong>Facturación</strong> de pago).
-      </Typography>
+    <Box>
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: 'repeat(2, 1fr)', md: 'repeat(4, 1fr)' },
+          gap: 2,
+          mb: 2.5,
+        }}
+      >
+        <StatCard value={pendingCount} label="Pedidos pendientes" variant={pendingCount ? 'warning' : 'default'} />
+        <StatCard value={errorCount} label="Con error" variant={errorCount ? 'warning' : 'default'} />
+        <StatCard value={fmt(pendingMonto)} label="Monto por facturar" variant="amount" />
+        <StatCard value={emittedCount} label="Emitidas en lista" variant="success" />
+      </Box>
 
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
-        <Chip label={`${pendingCount} pendientes`} color={pendingCount ? 'warning' : 'default'} size="small" />
-        <Box sx={{ flex: 1 }} />
-        <Button size="small" startIcon={<RefreshIcon />} onClick={loadPending} disabled={loading}>
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 2,
+          mb: 2,
+          flexWrap: 'wrap',
+        }}
+      >
+        <Typography variant="body2" color="text.secondary">
+          Pedidos Shopify con tag <strong>factura</strong> — preview y emisión DTE en el SII.
+        </Typography>
+        <Button
+          variant="contained"
+          startIcon={<RefreshIcon />}
+          onClick={loadPending}
+          disabled={loading}
+          sx={{ flexShrink: 0 }}
+        >
           Refrescar pedidos
         </Button>
-      </Stack>
+      </Box>
 
       {siiBlocked.blocked && (
         <Alert severity="error" sx={{ mb: 2 }}>
@@ -364,7 +396,18 @@ export default function BiomaFacturacion() {
         </Alert>
       )}
 
-      <Accordion expanded={configOpen} onChange={(_, exp) => setConfigOpen(exp)} sx={{ mb: 2 }}>
+      <Accordion
+        expanded={configOpen}
+        onChange={(_, exp) => setConfigOpen(exp)}
+        sx={{
+          mb: 2,
+          bgcolor: '#fff',
+          border: '1px solid #e2e8f0',
+          borderRadius: '10px !important',
+          '&:before': { display: 'none' },
+          boxShadow: 'none',
+        }}
+      >
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Typography fontWeight={500}>
             Configuración SII {sessionReady ? '· sesión activa' : '· requerida para pasos ①②③'}
@@ -409,133 +452,179 @@ export default function BiomaFacturacion() {
       )}
 
       {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>{error}</Alert>}
-      {loading && <LinearProgress sx={{ mb: 2 }} />}
+      {loading && <LinearProgress sx={{ mb: 2, borderRadius: 1 }} />}
 
-      <TableContainer component={Paper} variant="outlined">
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Pedido</TableCell>
-              <TableCell>Fecha</TableCell>
-              <TableCell>Cliente</TableCell>
-              <TableCell align="right">Total</TableCell>
-              <TableCell>Estado</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {rows.length === 0 && !loading && (
-              <TableRow>
-                <TableCell colSpan={5} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                  No hay pedidos con tag factura pendientes de emitir.
-                </TableCell>
-              </TableRow>
-            )}
-            {rows.map((row) => {
-              const isSelected = selectedId === row.shopify.id;
-              const isBusy = busyOrderId === row.shopify.id;
-              const attrs = Object.fromEntries(
-                row.shopify.customAttributes.map((a) => [a.key, a.value]),
-              );
-              const rut = attrs._rut_empresa || '';
-              const razon = attrs._razon_social || '';
-              return (
-                <Fragment key={row.shopify.id}>
-                  <TableRow
-                    hover
-                    selected={isSelected}
-                    onClick={() => selectOrder(row)}
-                    sx={{ cursor: 'pointer' }}
-                  >
-                    <TableCell><strong>{row.shopify.name}</strong></TableCell>
-                    <TableCell>{new Date(row.shopify.processedAt).toLocaleDateString('es-CL')}</TableCell>
-                    <TableCell>
-                      <div>{razon || row.shopify.shippingAddress?.name || '—'}</div>
-                      {rut && <Typography variant="caption" color="text.secondary">{formatRut(rut)}</Typography>}
-                    </TableCell>
-                    <TableCell align="right">{fmt(row.shopify.total)}</TableCell>
-                    <TableCell>{statusChip(row.emision?.status)}</TableCell>
-                  </TableRow>
+      <Grid container spacing={2}>
+        <Grid item xs={12} md={selectedRow ? 5 : 12}>
+          <TableContainer
+            component={Paper}
+            variant="outlined"
+            sx={{ bgcolor: '#fff', maxHeight: selectedRow ? 640 : undefined, overflow: 'auto' }}
+          >
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow>
+                  <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Pedido</TableCell>
+                  <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Fecha</TableCell>
+                  <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Cliente</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Total</TableCell>
+                  <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Estado</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {rows.length === 0 && !loading && (
                   <TableRow>
-                    <TableCell colSpan={5} sx={{ py: 0, border: 0 }}>
-                      <Collapse in={isSelected}>
-                        <Box sx={{ py: 2, px: 1 }}>
-                          {payloadLoading && <CircularProgress size={20} sx={{ mb: 1 }} />}
-
-                          {payload && (
-                            <Paper variant="outlined" sx={{ p: 2, mb: 2, bgcolor: 'grey.50' }}>
-                              <Typography variant="subtitle2" gutterBottom>
-                                Datos que enviaremos al SII (desde Shopify)
-                              </Typography>
-                              {payload.rutReceptor && !validateRut(payload.rutReceptor) && (
-                                <Alert severity="warning" sx={{ mb: 1 }}>
-                                  RUT receptor inválido ({formatRut(payload.rutReceptor)}). Corrígelo en Shopify antes de emitir.
-                                </Alert>
-                              )}
-                              <Stack spacing={0.5} sx={{ fontFamily: 'monospace', fontSize: 13 }}>
-                                <div><strong>RUT:</strong> {payload.rutReceptor ? formatRut(payload.rutReceptor) : '—'}</div>
-                                <div><strong>Razón social:</strong> {payload.razonSocial || '—'}</div>
-                                <div><strong>Giro:</strong> {payload.giroReceptor || '—'}</div>
-                                <div><strong>Modo SII:</strong> {templateLabel(payload.template)}</div>
-                                {payload.items.map((it) => (
-                                  <div key={it.numero}>
-                                    · {it.cantidad}× {it.descripcion} — {fmt(it.precioUnitario)} neto
-                                  </div>
-                                ))}
-                              </Stack>
-                              <Button size="small" sx={{ mt: 1 }} onClick={() => loadPayload(row.shopify.id)}>
-                                Actualizar datos
-                              </Button>
-                            </Paper>
-                          )}
-
-                          <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
-                            <Typography variant="subtitle2" gutterBottom>Checklist antes del SII</Typography>
-                            <Stack spacing={0.5} sx={{ fontSize: 13 }}>
-                              <div>{sessionReady ? '✅' : '⬜'} Sesión SII abierta</div>
-                              <div>{templateReady(payload?.template) ? '✅' : '⬜'} Modo SII (copiar cliente o factura nueva)</div>
-                              <div>{payload?.rutReceptor && payload?.razonSocial ? '✅' : '⬜'} RUT y razón social del cliente</div>
-                              <div>{!siiBlocked.blocked ? '✅' : '⬜'} SII no bloqueado por el workbench</div>
-                            </Stack>
-                          </Paper>
-
-                          <Typography variant="subtitle2" gutterBottom>Scraper — un pedido, paso a paso</Typography>
-                          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                            Recomendado: <strong>② Rellenar</strong> (abre Chrome con el formulario lleno) → revisar → <strong>③ Emitir</strong>.
-                          </Typography>
-                          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-                            {(Object.keys(STEP_LABELS) as ScraperStep[]).map((step) => (
-                              <Button
-                                key={step}
-                                variant={step === 'emitir' ? 'contained' : step === 'rellenar' ? 'contained' : 'outlined'}
-                                color={step === 'emitir' ? 'success' : step === 'rellenar' ? 'primary' : 'inherit'}
-                                size="small"
-                                disabled={isBusy || !sessionReady || siiBlocked.blocked || (step !== 'abrir' && !templateReady(payload?.template))}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  runScraperStep(row.shopify.id, step);
-                                }}
-                              >
-                                {isBusy ? '…' : STEP_LABELS[step]}
-                              </Button>
-                            ))}
-                          </Stack>
-                          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-                            ① Solo diagnóstico · ② Copia plantilla + datos Shopify (Chrome queda abierto) · ③ Valida, firma y emite
-                          </Typography>
-
-                          {row.emision?.lastError && (
-                            <Alert severity="warning" sx={{ mt: 2 }}>{row.emision.lastError}</Alert>
-                          )}
-                        </Box>
-                      </Collapse>
+                    <TableCell colSpan={5} align="center" sx={{ py: 6, color: 'text.secondary' }}>
+                      No hay pedidos con tag factura pendientes de emitir.
                     </TableCell>
                   </TableRow>
-                </Fragment>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </TableContainer>
+                )}
+                {rows.map((row) => {
+                  const isSelected = selectedId === row.shopify.id;
+                  const attrs = Object.fromEntries(
+                    row.shopify.customAttributes.map((a) => [a.key, a.value]),
+                  );
+                  const rut = attrs._rut_empresa || '';
+                  const razon = attrs._razon_social || '';
+                  return (
+                    <TableRow
+                      key={row.shopify.id}
+                      hover
+                      selected={isSelected}
+                      onClick={() => selectOrder(row)}
+                      sx={{
+                        cursor: 'pointer',
+                        '&.Mui-selected': { bgcolor: 'rgba(43, 108, 176, 0.08) !important' },
+                        '&.Mui-selected:hover': { bgcolor: 'rgba(43, 108, 176, 0.12) !important' },
+                      }}
+                    >
+                      <TableCell>
+                        <Typography fontWeight={600} fontSize={13}>{row.shopify.name}</Typography>
+                      </TableCell>
+                      <TableCell>{new Date(row.shopify.processedAt).toLocaleDateString('es-CL')}</TableCell>
+                      <TableCell>
+                        <Typography fontSize={13}>{razon || row.shopify.shippingAddress?.name || '—'}</Typography>
+                        {rut && <Typography variant="caption">{formatRut(rut)}</Typography>}
+                      </TableCell>
+                      <TableCell align="right">
+                        <Typography fontWeight={600} fontSize={13}>{fmt(row.shopify.total)}</Typography>
+                      </TableCell>
+                      <TableCell>{statusChip(row.emision?.status)}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Grid>
+
+        {selectedRow && (
+          <Grid item xs={12} md={7}>
+            <Paper variant="outlined" sx={{ p: 2.5, bgcolor: '#fff', position: { md: 'sticky' }, top: 16 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                <Box>
+                  <Typography variant="h6">{selectedRow.shopify.name}</Typography>
+                  <Typography variant="caption">
+                    {new Date(selectedRow.shopify.processedAt).toLocaleString('es-CL')}
+                  </Typography>
+                </Box>
+                <Chip
+                  label={sessionReady ? 'Sesión SII activa' : 'Sin sesión SII'}
+                  color={sessionReady ? 'success' : 'default'}
+                  size="small"
+                  variant={sessionReady ? 'filled' : 'outlined'}
+                />
+              </Box>
+
+              {payloadLoading && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                  <CircularProgress size={18} />
+                  <Typography variant="body2" color="text.secondary">Cargando preview…</Typography>
+                </Box>
+              )}
+
+              {payload && (
+                <Paper variant="outlined" sx={{ p: 2, mb: 2, bgcolor: '#f7fafc' }}>
+                  <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
+                    Preview — datos para el SII
+                  </Typography>
+                  {payload.rutReceptor && !validateRut(payload.rutReceptor) && (
+                    <Alert severity="warning" sx={{ mb: 1.5 }}>
+                      RUT receptor inválido ({formatRut(payload.rutReceptor)}). Corrígelo en Shopify.
+                    </Alert>
+                  )}
+                  <Box
+                    sx={{
+                      display: 'grid',
+                      gridTemplateColumns: '120px 1fr',
+                      gap: 0.75,
+                      fontSize: 13,
+                      mb: 1.5,
+                    }}
+                  >
+                    <Typography color="text.secondary">RUT</Typography>
+                    <Typography>{payload.rutReceptor ? formatRut(payload.rutReceptor) : '—'}</Typography>
+                    <Typography color="text.secondary">Razón social</Typography>
+                    <Typography>{payload.razonSocial || '—'}</Typography>
+                    <Typography color="text.secondary">Giro</Typography>
+                    <Typography>{payload.giroReceptor || '—'}</Typography>
+                    <Typography color="text.secondary">Modo SII</Typography>
+                    <Typography>{templateLabel(payload.template)}</Typography>
+                  </Box>
+                  <Divider sx={{ my: 1.5 }} />
+                  <Stack spacing={0.75}>
+                    {payload.items.map((it) => (
+                      <Typography key={it.numero} fontSize={13}>
+                        {it.cantidad}× {it.descripcion} — <strong>{fmt(it.precioUnitario)}</strong> neto
+                      </Typography>
+                    ))}
+                  </Stack>
+                  <Button size="small" sx={{ mt: 1.5 }} onClick={() => loadPayload(selectedRow.shopify.id)}>
+                    Actualizar preview
+                  </Button>
+                </Paper>
+              )}
+
+              <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>Checklist</Typography>
+                <Stack spacing={0.75} fontSize={13}>
+                  <Box>{sessionReady ? '✅' : '⬜'} Sesión SII abierta</Box>
+                  <Box>{templateReady(payload?.template) ? '✅' : '⬜'} Plantilla o factura nueva resuelta</Box>
+                  <Box>{payload?.rutReceptor && payload?.razonSocial ? '✅' : '⬜'} RUT y razón social del cliente</Box>
+                  <Box>{!siiBlocked.blocked ? '✅' : '⬜'} SII no bloqueado</Box>
+                </Stack>
+              </Paper>
+
+              <Typography variant="subtitle2" sx={{ mb: 0.5, fontWeight: 600 }}>Emitir en el SII</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                Recomendado: ② Rellenar → revisar Chrome → ③ Emitir.
+              </Typography>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap>
+                {(Object.keys(STEP_LABELS) as ScraperStep[]).map((step) => (
+                  <Button
+                    key={step}
+                    variant={step === 'emitir' || step === 'rellenar' ? 'contained' : 'outlined'}
+                    color={step === 'emitir' ? 'success' : step === 'rellenar' ? 'primary' : 'inherit'}
+                    disabled={
+                      isBusy ||
+                      !sessionReady ||
+                      siiBlocked.blocked ||
+                      (step !== 'abrir' && !templateReady(payload?.template))
+                    }
+                    onClick={() => runScraperStep(selectedRow.shopify.id, step)}
+                  >
+                    {isBusy ? 'Procesando…' : STEP_LABELS[step]}
+                  </Button>
+                ))}
+              </Stack>
+
+              {selectedRow.emision?.lastError && (
+                <Alert severity="warning" sx={{ mt: 2 }}>{selectedRow.emision.lastError}</Alert>
+              )}
+            </Paper>
+          </Grid>
+        )}
+      </Grid>
 
       <Snackbar open={!!snack} autoHideDuration={5000} onClose={() => setSnack(null)} message={snack || ''} />
     </Box>

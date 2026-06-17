@@ -1,9 +1,18 @@
 import { Component, useState, type ReactNode } from 'react';
-import { ThemeProvider, createTheme, CssBaseline, Box, Typography, Button, Tabs, Tab } from '@mui/material';
+import {
+  ThemeProvider,
+  CssBaseline,
+  Box,
+  Typography,
+  Button,
+  Tabs,
+  Tab,
+} from '@mui/material';
+import { biomaTheme } from './theme';
 import Billing from './pages/Billing';
 import BiomaFacturacion from './pages/BiomaFacturacion';
 
-const theme = createTheme();
+const EMPRESA_LABEL = 'Bioma Coffee · 78015129-3';
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null };
@@ -25,11 +34,6 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
             sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 12 }}
           >
             {this.state.error.message}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 2 }}>
-            Consola del navegador (F12) suele tener más detalle. Si acabas de actualizar el repo:{' '}
-            <code style={{ fontSize: 'inherit' }}>rm -rf frontend/node_modules/.vite</code> y vuelve a ejecutar{' '}
-            <code style={{ fontSize: 'inherit' }}>npm run dev</code>.
           </Typography>
           <Button sx={{ mt: 2 }} onClick={() => window.location.reload()} variant="contained">
             Recargar
@@ -53,17 +57,59 @@ export default function App() {
   };
 
   return (
-    <ThemeProvider theme={theme}>
+    <ThemeProvider theme={biomaTheme}>
       <CssBaseline />
       <ErrorBoundary>
-        <Box sx={{ borderBottom: 1, borderColor: 'divider', px: 2, display: 'flex', alignItems: 'center', gap: 2 }}>
-          <Button href="/" size="small" sx={{ mr: 1 }}>🧾 Facturas por pagar</Button>
-          <Tabs value={tab} onChange={handleTab} sx={{ flex: 1 }}>
-            <Tab value="bioma" label="Facturación SII" />
-            <Tab value="billing" label="SII Billing (avanzado)" />
+        <Box sx={{ maxWidth: 1200, mx: 'auto', px: { xs: 2, sm: 2.5 }, py: 3 }}>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: 2,
+              mb: 3,
+              flexWrap: 'wrap',
+            }}
+          >
+            <Box>
+              <Typography variant="h5" sx={{ mb: 0.25 }}>
+                {tab === 'bioma' ? 'Facturación SII' : 'SII Billing'}
+              </Typography>
+              <Typography variant="caption">{EMPRESA_LABEL}</Typography>
+            </Box>
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+              <Button
+                href="/"
+                variant="outlined"
+                size="small"
+                sx={{
+                  borderColor: '#e2e8f0',
+                  color: '#4a5568',
+                  bgcolor: '#edf2f7',
+                  '&:hover': { bgcolor: '#e2e8f0', borderColor: '#cbd5e0' },
+                }}
+              >
+                🧾 Facturas por pagar
+              </Button>
+            </Box>
+          </Box>
+
+          <Tabs
+            value={tab}
+            onChange={handleTab}
+            sx={{
+              mb: 2.5,
+              borderBottom: '2px solid #e2e8f0',
+              minHeight: 44,
+              '& .MuiTabs-flexContainer': { gap: 0.5 },
+            }}
+          >
+            <Tab value="bioma" label="Pedidos Shopify" />
+            <Tab value="billing" label="SII avanzado" />
           </Tabs>
+
+          {tab === 'billing' ? <Billing /> : <BiomaFacturacion />}
         </Box>
-        {tab === 'billing' ? <Billing /> : <BiomaFacturacion />}
       </ErrorBoundary>
     </ThemeProvider>
   );
