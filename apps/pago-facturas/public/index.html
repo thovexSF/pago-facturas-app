@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Facturas por Pagar — Bioma</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>🧾</text></svg>">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css" />
+  <link rel="stylesheet" href="styles.css?v=5" />
+</head>
+<body>
+  <div class="app">
+
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <h1>Facturas por Pagar</h1>
+        <span class="empresa">Bioma Coffee · 78015129-3</span>
+      </div>
+      <div class="header-right">
+        <a href="/sii/" class="btn btn-secondary" style="text-decoration:none;display:inline-flex;align-items:center">📤 Facturación SII</a>
+        <button class="btn btn-secondary" id="btn-pdf-sync">
+          📄 Descargar PDFs
+        </button>
+        <button class="btn btn-sync" id="btn-sync">
+          <span class="sync-icon">↻</span> Sincronizar SII
+        </button>
+      </div>
+    </header>
+
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-value" id="stat-total">—</div>
+        <div class="stat-label">Cuotas pendientes</div>
+      </div>
+      <div class="stat stat-warning">
+        <div class="stat-value" id="stat-vencidas">—</div>
+        <div class="stat-label">Vencidas</div>
+      </div>
+      <div class="stat stat-amount">
+        <div class="stat-value" id="stat-monto">—</div>
+        <div class="stat-label">Monto pendiente</div>
+      </div>
+      <div class="stat stat-success">
+        <div class="stat-value" id="stat-pagadas">—</div>
+        <div class="stat-label">Facturas completas</div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" data-tab="calendario">Calendario</button>
+      <button class="tab" data-tab="lista">Lista</button>
+      <button class="tab" data-tab="grafico">Gráfico</button>
+      <button class="tab" data-tab="proveedores">Proveedores</button>
+    </div>
+
+    <!-- Calendario -->
+    <div class="tab-content active" id="tab-calendario">
+      <div id="chips-container" class="chips-container"></div>
+      <div id="calendar"></div>
+    </div>
+
+    <!-- Lista -->
+    <div class="tab-content" id="tab-lista">
+      <div class="table-toolbar">
+        <label>Desde <input type="date" id="filter-fecha-desde" /></label>
+        <label>Hasta <input type="date" id="filter-fecha-hasta" /></label>
+        <label><input type="checkbox" id="filter-incluir-ocultas" /> Mostrar ocultas</label>
+        <button type="button" class="btn btn-sm btn-secondary" id="btn-filtros-limpiar">Limpiar filtros</button>
+      </div>
+      <div class="table-wrapper">
+      <table class="facturas-table">
+        <thead>
+          <tr>
+            <th id="th-emisor">
+              <div class="th-emisor-label">
+                <span class="th-sort-label" onclick="setSort('razon_social')">Emisor <span class="sort-arrow" data-col="razon_social">↕</span></span>
+                <button class="th-filter-btn" id="btn-filter-emisor" onclick="toggleFiltroEmisor(event)" title="Filtrar por emisor">
+                  <svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M1.5 2.5A.5.5 0 0 1 2 2h12a.5.5 0 0 1 .354.854L9.5 6.707V13.5a.5.5 0 0 1-.276.447l-3 1.5A.5.5 0 0 1 5.5 15V6.707L1.646 2.854A.5.5 0 0 1 1.5 2.5z"/></svg>
+                </button>
+              </div>
+              <div class="th-filter-panel" id="filter-emisor-panel" onclick="event.stopPropagation()">
+                <div class="th-filter-actions">
+                  <label class="th-filter-item th-filter-todos" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="chk-emisor-todos" checked onchange="toggleFiltroEmisorTodos(this.checked)">
+                    <span>TODOS</span>
+                  </label>
+                </div>
+                <div class="th-filter-search">
+                  <input type="text" placeholder="Buscar…" oninput="filtrarItemsEmisor(this.value)" onclick="event.stopPropagation()">
+                </div>
+                <div class="th-filter-items" id="filter-emisor-items"></div>
+              </div>
+            </th>
+            <th>
+              <span class="th-sort-label" onclick="setSort('folio')">Folio <span class="sort-arrow" data-col="folio">↕</span></span>
+              <input type="text" id="filter-folio" class="th-filter-input" placeholder="Folio…" inputmode="numeric" autocomplete="off" />
+            </th>
+            <th>
+              <span class="th-col-name">Tipo</span>
+              <select id="filter-tipo-doc" class="th-filter-select">
+                <option value="">Todos</option>
+                <option value="33">Factura (33)</option>
+                <option value="61">Nota créd. (61)</option>
+              </select>
+            </th>
+            <th class="th-sortable" onclick="setSort('fecha_emision')">
+              <span class="th-sort-label">Emisión <span class="sort-arrow" data-col="fecha_emision">↕</span></span>
+            </th>
+            <th class="th-sortable" onclick="setSort('vcto_proximo')">
+              <span class="th-sort-label">Próx. vcto <span class="sort-arrow" data-col="vcto_proximo">↕</span></span>
+            </th>
+            <th class="th-sortable" onclick="setSort('monto_total')">
+              <span class="th-sort-label">Monto <span class="sort-arrow" data-col="monto_total">↕</span></span>
+            </th>
+            <th>Fechas pago</th>
+            <th>
+              <span class="th-sort-label" onclick="setSort('estado')">Estado <span class="sort-arrow" data-col="estado">↕</span></span>
+              <select id="filter-estado" class="th-filter-select">
+                <option value="">Todos</option>
+                <option value="pendiente">Pendiente</option>
+                <option value="vencida">Vencida</option>
+                <option value="pagada">Pagada</option>
+                <option value="nc">Nota créd.</option>
+              </select>
+            </th>
+            <th>PDF</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="facturas-tbody"></tbody>
+      </table>
+      </div><!-- /table-wrapper -->
+      <div id="empty-state" class="empty-state" style="display:none">
+        <p id="empty-state-msg">No hay facturas. Haz clic en <strong>Sincronizar SII</strong> para cargar.</p>
+      </div>
+    </div>
+
+    <!-- Gráfico -->
+    <div class="tab-content" id="tab-grafico">
+      <div class="grafico-card">
+        <div class="grafico-header">
+          <h3>Facturación mensual por proveedor</h3>
+          <select id="grafico-tipo">
+            <option value="bar">Barras apiladas</option>
+            <option value="line">Líneas</option>
+          </select>
+        </div>
+        <canvas id="grafico-canvas"></canvas>
+        <div class="grafico-footer">
+          <div class="prov-dropdown" id="prov-dropdown">
+            <button class="prov-dropdown-btn" id="prov-dropdown-btn" onclick="toggleProvDropdown()">
+              Proveedores <span id="prov-dropdown-label">· Todos</span> ▾
+            </button>
+            <div class="prov-dropdown-panel" id="prov-dropdown-panel">
+              <button class="prov-check-row prov-check-todos" id="prov-check-all" onclick="toggleGraficoTodos()">
+                Mostrar todos
+              </button>
+              <div id="prov-check-list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Proveedores -->
+    <div class="tab-content" id="tab-proveedores">
+      <div id="proveedores-lista"></div>
+    </div>
+
+  </div>
+
+  <!-- Modal factura -->
+  <div class="modal-overlay" id="modal" style="display:none">
+    <div class="modal modal-split">
+
+      <!-- Panel izquierdo: detalle + edición -->
+      <div class="modal-panel-left">
+        <div class="modal-header">
+          <div class="modal-nav">
+            <button class="modal-nav-btn" id="btn-modal-prev" onclick="navegarModal(-1)" title="Anterior">‹</button>
+            <h2 id="modal-titulo">Factura</h2>
+            <button class="modal-nav-btn" id="btn-modal-next" onclick="navegarModal(1)" title="Siguiente">›</button>
+          </div>
+          <button class="modal-close" id="modal-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="factura-detail">
+            <div class="detail-row">
+              <span class="detail-label">Emisor</span>
+              <span class="detail-value" id="modal-emisor">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">RUT</span>
+              <span class="detail-value" id="modal-rut">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Folio</span>
+              <span class="detail-value" id="modal-folio">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Fecha Emisión</span>
+              <span class="detail-value" id="modal-fecha-emision">—</span>
+            </div>
+            <div class="detail-row highlight">
+              <span class="detail-label">Monto total</span>
+              <span class="detail-value" id="modal-monto">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Estado SII</span>
+              <span class="detail-value" id="modal-estado-sii">—</span>
+            </div>
+            <div class="detail-row" id="modal-nc-ref-row" style="display:none">
+              <span class="detail-label">Anula documento</span>
+              <span class="detail-value" id="modal-nc-ref">—</span>
+            </div>
+            <div class="detail-row" id="modal-nc-ref-btn-row" style="display:none">
+              <button type="button" class="btn btn-sm btn-secondary" id="btn-nc-resolver-ref">Buscar referencia en SII</button>
+            </div>
+            <div class="detail-row" id="modal-nc-anular-row" style="display:none;margin-top:10px;padding:12px;background:#fffbeb;border:1px solid #f6e05e;border-radius:8px">
+              <p id="modal-nc-anular-hint" style="margin:0 0 10px;font-size:13px;color:#744210;line-height:1.4"></p>
+              <button type="button" class="btn btn-sm btn-primary" id="btn-nc-ocultar-fe">Ocultar factura en la lista</button>
+              <button type="button" class="btn btn-sm btn-secondary" id="btn-nc-eliminar-fe" style="margin-left:8px" title="Quita el registro de PostgreSQL">Eliminar registro (BD)</button>
+            </div>
+            <div class="detail-row cuota-row modal-fe-only" style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0">
+              <span class="detail-label">Vcto 1 · <span id="modal-label-1">día 30</span></span>
+              <span class="detail-value vcto-edit-row">
+                <input type="date" id="modal-vcto-1" class="vcto-input"> <strong id="modal-monto-1">—</strong>
+              </span>
+            </div>
+            <div class="detail-row cuota-row modal-fe-only">
+              <span class="detail-label">Vcto 2 · <span id="modal-label-2">día 40</span></span>
+              <span class="detail-value vcto-edit-row">
+                <input type="date" id="modal-vcto-2" class="vcto-input"> <strong id="modal-monto-2">—</strong>
+              </span>
+            </div>
+            <div class="cuota-row vcto-actions modal-fe-only">
+              <button class="btn btn-sm btn-secondary" id="btn-extraer-pdf" onclick="extraerFechasPdf()">🔍 Extraer del PDF</button>
+              <button class="btn btn-sm btn-primary"   id="btn-guardar-vcto" onclick="guardarVencimientos()">Guardar fechas</button>
+            </div>
+          </div>
+
+          <div class="pago-info modal-fe-only">
+            <h3>Datos para transferencia</h3>
+            <div class="copy-row">
+              <span id="pago-rut-copy">—</span>
+              <button class="btn-copy" onclick="copiarTexto('pago-rut-copy')">Copiar RUT</button>
+            </div>
+            <div class="copy-row">
+              <span id="pago-monto-copy">—</span>
+              <button class="btn-copy" onclick="copiarTexto('pago-monto-copy')">Copiar monto</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-pay btn-sm modal-fe-only" id="btn-pagar-1">Pagar C1</button>
+          <button class="btn btn-pay btn-sm modal-fe-only" id="btn-pagar-2">Pagar C2</button>
+          <button class="btn btn-secondary" id="modal-cancel">Cerrar</button>
+        </div>
+      </div>
+
+      <!-- Panel derecho: visor PDF -->
+      <div class="modal-panel-pdf">
+        <iframe id="modal-pdf-iframe" src="" title="Factura PDF"></iframe>
+        <div class="pdf-placeholder" id="modal-pdf-placeholder">
+          <div class="pdf-placeholder-inner">
+            <div class="pdf-placeholder-icon">📄</div>
+            <p>Sin PDF descargado</p>
+            <button class="btn btn-secondary btn-sm" id="btn-modal-pdf">⬇ Descargar PDF</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

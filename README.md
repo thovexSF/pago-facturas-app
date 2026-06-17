@@ -1,175 +1,88 @@
-# 📄 App de Gestión de Facturas SII para Shopify
+# Bioma Facturación
 
-Una aplicación de Shopify que te permite gestionar tus facturas del SII (Servicio de Impuestos Internos de Chile) con recordatorios automáticos y pagos integrados con Mercado Pago.
+Monorepo unificado en Railway: **facturas por pagar** + **emisión SII** (Shopify).
 
-## 🚀 Características
+## Módulos
 
-- **Sincronización automática** con el portal del SII
-- **Recordatorios por email** antes del vencimiento
-- **Dashboard intuitivo** con estadísticas en tiempo real
-- **Integración con Mercado Pago** para pagos automáticos
-- **Interfaz responsive** optimizada para móviles
-- **Gestión completa** de facturas pendientes y pagadas
+| Ruta | Qué es |
+|------|--------|
+| `/` | **Facturas por pagar** — recibidas del SII, vencimientos, proveedores |
+| `/sii` | **Facturación SII** — pedidos Shopify con tag `factura`, preview, emitir DTE |
+| `/api/bioma/*` | API emisión Shopify |
+| `/api/sii-facturacion/*` | API SII avanzada (billing) |
 
-## 🛠️ Tecnologías Utilizadas
+## Railway
 
-- **Backend**: Node.js + Express
-- **Frontend**: HTML5, CSS3, JavaScript (Vanilla)
-- **Base de datos**: SQLite
-- **Autenticación**: Shopify OAuth
-- **Web scraping**: Puppeteer
-- **Email**: Nodemailer
-- **Pagos**: Mercado Pago API
-- **Scheduling**: Node-cron
+Un solo servicio, un solo `DATABASE_URL`, un solo deploy:
 
-## 📋 Requisitos Previos
+```
+npm install
+npm run build    # backend + frontend
+npm run start    # unifica todo en PORT
+```
 
-- Node.js 16+ 
-- Cuenta de Shopify Partner
-- Cuenta de Mercado Pago
-- Email configurado (Gmail recomendado)
-- ngrok para desarrollo local
+`railway.json` y `nixpacks.toml` ya configurados. Apunta el repo **bioma-facturacion** (este) al servicio Railway existente de pago facturas.
 
-## 🔧 Instalación
+### Variables de entorno (mismas que antes + Bioma)
 
-1. **Clona el repositorio**
-   ```bash
-   git clone <tu-repositorio>
-   cd facturas
-   ```
+```bash
+# PostgreSQL (compartida)
+DATABASE_URL=...
 
-2. **Instala las dependencias**
-   ```bash
-   npm install
-   ```
+# Facturas por pagar (módulo /)
+SII_RUT=...
+SII_PASSWORD=...
+SII_EMPRESA_RUT=78015129-3
+NOTIF_EMAIL_TO=...          # opcional
+NOTIF_EMAIL_FROM=...
+NOTIF_EMAIL_PASS=...
 
-3. **Configura las variables de entorno**
-   ```bash
-   cp env.example .env
-   ```
-   
-   Edita el archivo `.env` con tus credenciales:
-   ```env
-   SHOPIFY_API_KEY=tu_api_key_aqui
-   SHOPIFY_API_SECRET=tu_api_secret_aqui
-   SHOPIFY_APP_URL=https://tu-dominio.ngrok.io
-   EMAIL_USER=tu-email@gmail.com
-   EMAIL_PASSWORD=tu-password-de-aplicacion
-   MERCADOPAGO_ACCESS_TOKEN=tu_access_token_aqui
-   ```
+# Facturación SII Shopify (módulo /sii)
+BIOMA_SHOPIFY_SHOP=biomacoffee.myshopify.com
+BIOMA_SHOPIFY_API_CLIENT_ID=...
+BIOMA_SHOPIFY_API_CLIENT_SECRET=...
+BIOMA_EMPRESA_RUT=78015129-3
 
-4. **Configura ngrok para desarrollo**
-   ```bash
-   ngrok http 3000
-   ```
-   
-   Copia la URL HTTPS generada y úsala en `SHOPIFY_APP_URL`
+# SII workbench
+SII_USERNAME=...
+SII_PASSWORD=...
+SII_FIRMA_CLAVE=...
+```
 
-5. **Inicia la aplicación**
-   ```bash
-   npm start
-   ```
+## Desarrollo local
 
-## 🏗️ Configuración en Shopify
+```bash
+npm install
+npm run build
+PORT=3890 npm run start
+# → http://localhost:3890/       facturas por pagar
+# → http://localhost:3890/sii    facturación SII
+```
 
-1. **Crea una app en Shopify Partners**
-   - Ve a [partners.shopify.com](https://partners.shopify.com)
-   - Crea una nueva app
-   - Configura la URL de redirección: `https://tu-dominio.ngrok.io/api/auth/callback`
+Solo API + UI SII (sin pago):
 
-2. **Configura los permisos necesarios**
-   - `read_products`
-   - `write_products` 
-   - `read_orders`
-   - `write_orders`
+```bash
+npm run dev
+```
 
-3. **Instala la app en tu tienda de prueba**
+Solo pago facturas (standalone):
 
-## 📧 Configuración de Email
+```bash
+npm run dev:pago
+```
 
-Para usar Gmail:
-1. Habilita la verificación en 2 pasos
-2. Genera una contraseña de aplicación
-3. Usa esa contraseña en `EMAIL_PASSWORD`
+## Shopify
 
-## 💳 Configuración de Mercado Pago
+Una app en Dev Dashboard: **Facturación** → App URL = tu dominio Railway (`https://xxx.railway.app`).
 
-1. Crea una cuenta en [Mercado Pago](https://www.mercadopago.cl)
-2. Ve a "Desarrolladores" > "Tus credenciales"
-3. Copia tu Access Token de prueba o producción
+- `/` = gestión de facturas recibidas
+- `/sii` = emitir facturas a clientes Shopify
 
-## 🔄 Funcionalidades
+## Estructura
 
-### Dashboard
-- Estadísticas en tiempo real
-- Facturas recientes
-- Resumen de pagos pendientes
-
-### Gestión de Facturas
-- Agregar facturas manualmente
-- Sincronizar con SII automáticamente
-- Marcar como pagadas
-- Filtros por estado y fecha
-
-### Recordatorios Automáticos
-- Envío de emails 3 días antes del vencimiento
-- Configuración personalizable
-- Historial de recordatorios enviados
-
-### Integración SII
-- Login automático con RUT y contraseña
-- Extracción de facturas pendientes
-- Sincronización programada
-
-## 🚀 Despliegue en Producción
-
-1. **Configura un servidor** (Heroku, DigitalOcean, AWS, etc.)
-2. **Configura la base de datos** PostgreSQL para producción
-3. **Actualiza las URLs** en Shopify Partners
-4. **Configura el dominio** en las variables de entorno
-5. **Habilita HTTPS** para seguridad
-
-## 📱 Uso de la Aplicación
-
-1. **Instala la app** en tu tienda Shopify
-2. **Configura tus credenciales** del SII en la pestaña "Configuración"
-3. **Sincroniza tus facturas** desde el SII
-4. **Configura tu email** para recibir recordatorios
-5. **Integra Mercado Pago** para pagos automáticos
-
-## 🔒 Seguridad
-
-- Autenticación OAuth de Shopify
-- Encriptación de contraseñas
-- Validación de datos de entrada
-- HTTPS obligatorio en producción
-- Tokens seguros para APIs externas
-
-## 🐛 Solución de Problemas
-
-### Error de conexión con SII
-- Verifica que tu RUT y contraseña sean correctos
-- El SII puede tener medidas anti-bot, intenta más tarde
-
-### Emails no se envían
-- Verifica la configuración de Gmail
-- Revisa que la contraseña de aplicación sea correcta
-- Verifica que el puerto 587 esté abierto
-
-### Sincronización falla
-- Revisa los logs del servidor
-- Verifica que Puppeteer esté instalado correctamente
-- Asegúrate de que el SII esté accesible
-
-## 📞 Soporte
-
-Para soporte técnico o reportar bugs, contacta al desarrollador o crea un issue en el repositorio.
-
-## 📄 Licencia
-
-MIT License - Ver archivo LICENSE para más detalles.
-
----
-
-**Desarrollado con ❤️ para la comunidad Shopify Chile**
-
+```
+apps/pago-facturas/   ← facturas por pagar (antes repo aparte)
+backend/              ← APIs SII + montaje unificado
+frontend/             ← UI /sii
+shopify/              ← app embebida Admin (opcional)
+```

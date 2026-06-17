@@ -1,4 +1,12 @@
 node_modules/
-uploads/
+dist/
+build/
 .env
-database.sqlite
+.env.*
+!.env.example
+.DS_Store
+playwright-report/
+test-results/
+backend/certs/
+.shopify/
+*.log

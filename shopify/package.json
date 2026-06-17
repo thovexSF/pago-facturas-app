@@ -1,0 +1,33 @@
+{
+  "name": "bioma-factura-shopify",
+  "private": true,
+  "version": "0.1.0",
+  "description": "App embebida Shopify Admin — Facturación SII (emisión DTE, no pago)",
+  "type": "module",
+  "scripts": {
+    "dev": "shopify app dev",
+    "build": "remix vite:build",
+    "start": "remix-serve ./build/server/index.js",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@remix-run/node": "^2.8.0",
+    "@remix-run/react": "^2.8.0",
+    "@remix-run/serve": "^2.8.0",
+    "@shopify/polaris": "^12.0.0",
+    "isbot": "^4.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@remix-run/dev": "^2.8.0",
+    "@shopify/cli": "^3.90.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "typescript": "^5.3.0",
+    "vite": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

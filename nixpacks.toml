@@ -1,5 +1,15 @@
 [phases.install]
 cmds = [
-  "npm i",
+  "npm install",
   "npx playwright install chromium --with-deps"
 ]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[deploy]
+startCommand = "npm run start"
+healthcheckPath = "/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

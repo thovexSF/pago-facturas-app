@@ -1,0 +1,344 @@
+/**
+ * BiomaFacturacionService — orchestrates the bridge between Shopify orders and
+ * the SII portal scraper. Listing pending orders, persisting emission state,
+ * triggering preview/emit through SiiFacturacionService, and tagging back the
+ * Shopify order.
+ *
+ * The actual SII portal interaction stays in SiiFacturacionService — this
+ * service only owns the Shopify side and the bioma_factura_emisiones table.
+ */
+
+import { AppDataSource } from '../config/database';
+import {
+  BiomaFacturaEmisionEntity,
+  BiomaFacturaStatus,
+} from '../entities/BiomaFacturaEmisionEntity';
+import { SiiFacturaEntity } from '../entities/SiiFacturaEntity';
+import {
+  BiomaShopifyService,
+  ShopifyOrderForBioma,
+} from './BiomaShopifyService';
+import {
+  BIOMA_FACTURA_ATTR,
+  getOrderCustomAttribute,
+} from '../utils/biomaOrderAttrs';
+import { sanitizeDescripcionParaSii } from './SiiFacturacionService';
+
+export interface PendingOrderRow {
+  shopify: ShopifyOrderForBioma;
+  emision: BiomaFacturaEmisionEntity | null;
+}
+
+export interface FacturaItemForSii {
+  descripcion: string;
+  cantidad: number;
+  unidad?: string;
+  precioUnitario: number;
+  descuento?: number;
+  subtotal: number;
+}
+
+/** Reads a custom attribute by key (case-insensitive) from a Shopify order. */
+function attr(order: ShopifyOrderForBioma, key: string): string {
+  return getOrderCustomAttribute(order.customAttributes, key);
+}
+
+/**
+ * Normalises a Chilean phone number into a wa.me-friendly form (digits only,
+ * country code included). Returns null if there is nothing usable.
+ *
+ * Examples:
+ *   "+56 9 2181 6517" -> "56921816517"
+ *   "9 2181 6517"     -> "56921816517"
+ *   "921816517"       -> "56921816517"
+ */
+export function normalizePhoneForWhatsApp(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let digits = raw.replace(/\D+/g, '');
+  if (!digits) return null;
+  if (digits.startsWith('56')) return digits;
+  if (digits.length === 9) return `56${digits}`; // 9XXXXXXXX
+  if (digits.length === 8) return `569${digits}`; // missing the leading 9
+  if (digits.startsWith('0')) digits = digits.replace(/^0+/, '');
+  return digits.startsWith('56') ? digits : `56${digits}`;
+}
+
+/** IVA Chile — precios Shopify B2C vienen con IVA incluido; el SII tipo 33 espera neto. */
+const IVA_CHILE_FACTOR = 1.19;
+
+function shopifyMontoANetoSii(montoBruto: number, tipoCodigo: number): number {
+  if (montoBruto <= 0) return 0;
+  if (tipoCodigo !== 33) return Math.round(montoBruto);
+  return Math.round(montoBruto / IVA_CHILE_FACTOR);
+}
+
+export class BiomaFacturacionService {
+  private static get repo() {
+    return AppDataSource.getRepository(BiomaFacturaEmisionEntity);
+  }
+
+  private static get empresaRut(): string {
+    const v = process.env.BIOMA_EMPRESA_RUT;
+    if (!v) {
+      throw new Error(
+        'BIOMA_EMPRESA_RUT no configurado (RUT del emisor en SII, ej. 76123456-7)',
+      );
+    }
+    return v;
+  }
+
+  /** Default Spanish unit text used in SII line items. */
+  private static get defaultUnidad(): string {
+    return process.env.BIOMA_DEFAULT_UNIDAD || 'UN';
+  }
+
+  /** Returns the existing emission row for a Shopify order id, if any. */
+  static async findEmision(shopifyOrderId: string): Promise<BiomaFacturaEmisionEntity | null> {
+    return this.repo.findOne({ where: { shopifyOrderId } });
+  }
+
+  /** Normaliza RUT para comparar en DB (sin puntos, guión ni espacios). */
+  static normalizeRutKey(raw: string | null | undefined): string | null {
+    if (!raw?.trim()) return null;
+    return raw.replace(/\./g, '').replace(/-/g, '').replace(/\s/g, '').toLowerCase();
+  }
+
+  /**
+   * Resolves how to open the SII emit form for a Shopify order.
+   *
+   *   1. `BIOMA_FACTURA_TEMPLATE_CODIGO` env (override manual / pruebas)
+   *   2. Última factura emitida por Bioma al mismo RUT receptor
+   *   3. Última factura syncada en `sii_facturas` al mismo RUT receptor
+   *   4. Factura nueva vacía (`source: 'nueva'`, sin código plantilla)
+   */
+  static async resolveTemplateCodigo(opts?: {
+    rutReceptor?: string | null;
+    tipoCodigo?: number;
+  }): Promise<string | null> {
+    const info = await this.resolveTemplateInfo(opts);
+    return info.codigo;
+  }
+
+  /** Metadata de plantilla o modo «factura nueva». */
+  static async resolveTemplateInfo(opts?: {
+    rutReceptor?: string | null;
+    tipoCodigo?: number;
+  }): Promise<{
+    codigo: string | null;
+    folio?: number | null;
+    fecha?: string | null;
+    templateCliente?: string | null;
+    source?: 'env' | 'cliente_emision' | 'cliente_sii' | 'nueva';
+  }> {
+    const override = process.env.BIOMA_FACTURA_TEMPLATE_CODIGO?.trim();
+    if (override) {
+      return { codigo: override, source: 'env' };
+    }
+
+    const rutKey = this.normalizeRutKey(opts?.rutReceptor);
+    const tipoCodigo = opts?.tipoCodigo ?? 33;
+
+    if (rutKey) {
+      const ourForClient = await this.repo
+        .createQueryBuilder('e')
+        .where('e.empresa_rut = :empresaRut', { empresaRut: this.empresaRut })
+        .andWhere('e.status = :status', { status: 'emitted' })
+        .andWhere('e.sii_codigo IS NOT NULL')
+        .andWhere(
+          `LOWER(REPLACE(REPLACE(REPLACE(COALESCE(e.rut_receptor, ''), '.', ''), '-', ''), ' ', '')) = :rutKey`,
+          { rutKey },
+        )
+        .orderBy('e.emitted_at', 'DESC')
+        .getOne();
+
+      if (ourForClient?.siiCodigo) {
+        return {
+          codigo: ourForClient.siiCodigo,
+          folio: ourForClient.siiFolio,
+          templateCliente: ourForClient.razonSocial,
+          source: 'cliente_emision',
+        };
+      }
+
+      const siiRepo = AppDataSource.getRepository(SiiFacturaEntity);
+      const siiForClient = await siiRepo
+        .createQueryBuilder('f')
+        .where('f.empresa_rut = :empresaRut', { empresaRut: this.empresaRut })
+        .andWhere('f.tipo_codigo = :tipoCodigo', { tipoCodigo })
+        .andWhere(
+          `LOWER(REPLACE(REPLACE(REPLACE(COALESCE(f.rut_receptor, ''), '.', ''), '-', ''), ' ', '')) = :rutKey`,
+          { rutKey },
+        )
+        .orderBy('f.fecha', 'DESC')
+        .addOrderBy('f.folio', 'DESC')
+        .getOne();
+
+      if (siiForClient?.codigo) {
+        return {
+          codigo: siiForClient.codigo,
+          folio: siiForClient.folio,
+          fecha: siiForClient.fecha ? String(siiForClient.fecha) : null,
+          templateCliente: siiForClient.razonSocial,
+          source: 'cliente_sii',
+        };
+      }
+    }
+
+    return {
+      codigo: null,
+      source: 'nueva',
+      templateCliente: opts?.rutReceptor ? 'Factura nueva (sin historial para este RUT)' : 'Factura nueva',
+    };
+  }
+
+  static getEmpresaRutConfig(): string {
+    return this.empresaRut;
+  }
+
+  /**
+   * Lists pending Shopify orders (tagged `factura`, not yet emitted) joined
+   * with any existing emission state in our DB.
+   */
+  static async listPending(opts: {
+    pageSize?: number;
+    after?: string | null;
+  } = {}): Promise<{
+    rows: PendingOrderRow[];
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  }> {
+    const { orders, pageInfo } = await BiomaShopifyService.listPending({
+      pageSize: opts.pageSize ?? 50,
+      after: opts.after,
+    });
+
+    const ids = orders.map((o) => o.id);
+    const existing = ids.length
+      ? await this.repo
+          .createQueryBuilder('e')
+          .where('e.shopify_order_id IN (:...ids)', { ids })
+          .getMany()
+      : [];
+    const byId = new Map(existing.map((e) => [e.shopifyOrderId, e]));
+
+    const rows: PendingOrderRow[] = orders.map((shopify) => ({
+      shopify,
+      emision: byId.get(shopify.id) ?? null,
+    }));
+
+    return { rows, pageInfo };
+  }
+
+  /**
+   * Maps a Shopify order's line items into the SII items shape.
+   * Each line collapses discount into the unit price so subtotal matches.
+   * Para factura afecta (33), convierte precios Shopify (IVA incluido) a neto SII.
+   */
+  static buildItemsFromOrder(order: ShopifyOrderForBioma, tipoCodigo = 33): FacturaItemForSii[] {
+    return order.lineItems.map((li) => {
+      const cantidad = Math.max(1, Math.round(li.quantity || 1));
+      const subtotalBruto = Math.round(li.netSubtotal);
+      const subtotal = shopifyMontoANetoSii(subtotalBruto, tipoCodigo);
+      const precioUnitario = cantidad ? Math.round(subtotal / cantidad) : subtotal;
+      const descripcionParts = [li.title?.trim()].filter(Boolean) as string[];
+      if (li.variantTitle && li.variantTitle !== 'Default Title') {
+        descripcionParts.push(li.variantTitle);
+      }
+      return {
+        descripcion: sanitizeDescripcionParaSii(descripcionParts.join(' - ')),
+        cantidad,
+        unidad: this.defaultUnidad,
+        precioUnitario,
+        descuento: 0,
+        subtotal,
+      };
+    });
+  }
+
+  /**
+   * Creates or refreshes the `bioma_factura_emisiones` row from the current
+   * Shopify order state. Idempotent. Status is left as-is when present.
+   */
+  static async upsertFromShopify(
+    order: ShopifyOrderForBioma,
+  ): Promise<BiomaFacturaEmisionEntity> {
+    const existing = await this.findEmision(order.id);
+
+    const shippingPhone = order.shippingAddress?.phone ?? null;
+    const customerPhone = normalizePhoneForWhatsApp(
+      shippingPhone || order.customer?.phone || null,
+    );
+    const customerName =
+      [order.customer?.firstName, order.customer?.lastName].filter(Boolean).join(' ').trim() ||
+      order.shippingAddress?.name ||
+      null;
+
+    const data: Partial<BiomaFacturaEmisionEntity> = {
+      shopifyOrderId: order.id,
+      shopifyOrderName: order.name,
+      shopifyOrderNumber: order.orderNumber,
+      empresaRut: this.empresaRut,
+      rutReceptor: attr(order, BIOMA_FACTURA_ATTR.rut) || null,
+      razonSocial: attr(order, BIOMA_FACTURA_ATTR.razon) || null,
+      giroReceptor: attr(order, BIOMA_FACTURA_ATTR.giro) || null,
+      comunaReceptor: order.shippingAddress?.city || null,
+      ciudadReceptor: order.shippingAddress?.province || null,
+      dirReceptor: order.shippingAddress?.address1 || null,
+      customerPhone,
+      customerName,
+      customerEmail: order.customer?.email || null,
+      items: this.buildItemsFromOrder(order, existing?.tipoCodigo ?? 33).map((it) => ({
+        descripcion: it.descripcion,
+        cantidad: it.cantidad,
+        precioUnitario: it.precioUnitario,
+        subtotal: it.subtotal,
+      })),
+      tipoCodigo: existing?.tipoCodigo ?? 33,
+    };
+
+    if (existing) {
+      Object.assign(existing, data);
+      return this.repo.save(existing);
+    }
+    const created = this.repo.create({ ...data, status: 'pending' });
+    return this.repo.save(created);
+  }
+
+  static async setStatus(
+    shopifyOrderId: string,
+    status: BiomaFacturaStatus,
+    extra: Partial<BiomaFacturaEmisionEntity> = {},
+  ): Promise<BiomaFacturaEmisionEntity | null> {
+    const row = await this.findEmision(shopifyOrderId);
+    if (!row) return null;
+    row.status = status;
+    Object.assign(row, extra);
+    return this.repo.save(row);
+  }
+
+  /** Mark `whatsappSentAt` once the user opens the wa.me link. */
+  static async markWhatsAppSent(
+    shopifyOrderId: string,
+  ): Promise<BiomaFacturaEmisionEntity | null> {
+    const row = await this.findEmision(shopifyOrderId);
+    if (!row) return null;
+    row.whatsappSentAt = new Date();
+    return this.repo.save(row);
+  }
+
+  /** Build the wa.me URL and message for a given emission row. */
+  static buildWhatsAppLink(row: BiomaFacturaEmisionEntity): {
+    url: string | null;
+    text: string;
+    phone: string | null;
+  } {
+    const defaultMsg =
+      process.env.BIOMA_WHATSAPP_MESSAGE_TEMPLATE ||
+      'Hola {nombre}, te enviamos tu factura electrónica por el pedido {numero}. ☕ Cualquier consulta nos avisas. — Bioma Coffee Roasters';
+    const nombre = row.customerName?.split(' ')[0] || 'cliente';
+    const numero = row.shopifyOrderName || (row.shopifyOrderNumber ? `#${row.shopifyOrderNumber}` : '');
+    const text = defaultMsg.replace('{nombre}', nombre).replace('{numero}', numero);
+    const phone = row.customerPhone;
+    const url = phone ? `https://wa.me/${phone}?text=${encodeURIComponent(text)}` : null;
+    return { url, text, phone };
+  }
+}

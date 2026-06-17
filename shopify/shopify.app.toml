@@ -1,0 +1,27 @@
+# App Shopify Admin — misma app Facturación en Railway (/sii)
+
+client_id = "REPLACE_WITH_FACTURACION_CLIENT_ID"
+name = "Facturación"
+handle = "facturacion"
+application_url = "https://REPLACE_WITH_RAILWAY_URL/sii"
+embedded = true
+
+[auth]
+redirect_urls = [
+  "https://REPLACE_WITH_RAILWAY_URL/sii/auth/callback",
+  "https://REPLACE_WITH_RAILWAY_URL/sii/auth/shopify/callback",
+  "https://REPLACE_WITH_RAILWAY_URL/sii/api/auth/callback"
+]
+
+[build]
+automatically_update_urls_on_dev = true
+dev_store_url = "biomacoffee.myshopify.com"
+
+[webhooks]
+api_version = "2026-04"
+
+[access_scopes]
+scopes = "read_orders,write_orders,read_customers,read_all_orders"
+
+[pos]
+embedded = false
