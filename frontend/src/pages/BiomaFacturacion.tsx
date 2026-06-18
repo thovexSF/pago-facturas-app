@@ -76,9 +76,17 @@ function dteLabel(tipo: number): string {
   return 'Factura';
 }
 
-function templateLabel(t: PayloadData['template'] | null | undefined): string {
+function templateLabel(
+  t: PayloadData['template'] | null | undefined,
+  tipoCodigo?: number,
+): string {
   if (!t) return '—';
-  if (t.source === 'nueva') return 'Factura nueva (sin historial para este RUT)';
+  if (t.source === 'nueva') {
+    if (tipoCodigo === 39 || tipoCodigo === 41) {
+      return t.templateCliente || 'Boleta a consumidor final';
+    }
+    return t.templateCliente || 'Factura nueva (sin historial para este RUT)';
+  }
   if (t.source === 'cliente_emision') {
     return `Copiar última Bioma → ${t.templateCliente || 'cliente'} (folio ${t.folio ?? '?'})`;
   }
@@ -568,8 +576,8 @@ export default function BiomaFacturacion() {
           )}
           {moduleTab === 'boletas' && (
             <>
-              Pedidos B2C sin factura (sin toggle ni RUT). Por defecto solo{' '}
-              <strong>últimos 14 días</strong> — los viejos (#2303…) quedan en Histórico.
+              Pedidos B2C sin factura. La boleta va a{' '}
+              <strong>consumidor final</strong> (RUT 66.666.666-6 · Varios) — no se usa el RUT del comprador.
             </>
           )}
           {moduleTab === 'realizadas' && (
@@ -852,6 +860,12 @@ export default function BiomaFacturacion() {
                   <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
                     Preview — datos para el SII
                   </Typography>
+                  {(payload.tipoCodigo === 39 || payload.tipoCodigo === 41) && (
+                    <Alert severity="info" sx={{ mb: 1.5 }}>
+                      Boleta estándar: receptor <strong>66.666.666-6 · Varios</strong> (consumidor final).
+                      El nombre del cliente en Shopify es solo referencia interna.
+                    </Alert>
+                  )}
                   {payload.rutReceptor && !validateRut(payload.rutReceptor) && (
                     <Alert severity="warning" sx={{ mb: 1.5 }}>
                       RUT receptor inválido ({formatRut(payload.rutReceptor)}).
@@ -860,7 +874,7 @@ export default function BiomaFacturacion() {
                   <Box sx={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 0.75, fontSize: 13, mb: 1.5 }}>
                     {payload.rutReceptor && (
                       <>
-                        <Typography color="text.secondary">RUT</Typography>
+                        <Typography color="text.secondary">RUT receptor</Typography>
                         <Typography>{formatRut(payload.rutReceptor)}</Typography>
                       </>
                     )}
@@ -870,8 +884,18 @@ export default function BiomaFacturacion() {
                         <Typography>{payload.razonSocial}</Typography>
                       </>
                     )}
+                    {(selectedBoleta?.customerName || selectedRow?.shopify.shippingAddress?.name) &&
+                      (payload.tipoCodigo === 39 || payload.tipoCodigo === 41) && (
+                      <>
+                        <Typography color="text.secondary">Cliente Shopify</Typography>
+                        <Typography>
+                          {selectedBoleta?.customerName ||
+                            selectedRow?.shopify.shippingAddress?.name}
+                        </Typography>
+                      </>
+                    )}
                     <Typography color="text.secondary">Modo SII</Typography>
-                    <Typography>{templateLabel(payload.template)}</Typography>
+                    <Typography>{templateLabel(payload.template, payload.tipoCodigo)}</Typography>
                   </Box>
                   <Divider sx={{ my: 1.5 }} />
                   <Stack spacing={0.75}>

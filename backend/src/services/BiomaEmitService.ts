@@ -5,7 +5,7 @@ import { BiomaFacturacionService } from './BiomaFacturacionService';
 import { BiomaShopifyService } from './BiomaShopifyService';
 import { SiiFacturacionService } from './SiiFacturacionService';
 import { SiiCredentialsService } from './SiiCredentialsService';
-import { SII_RUT_CONSUMIDOR_FINAL } from '../utils/biomaOrderAttrs';
+import { boletaReceptorForSii } from '../utils/biomaOrderAttrs';
 
 export type BiomaEmitStep = 'abrir' | 'rellenar' | 'emitir';
 
@@ -79,6 +79,8 @@ export class BiomaEmitService {
       !!session.playwrightReady &&
       /listadoEmitidos|mipeAdminDocsEmi/i.test(emitPage.url());
 
+    const cf = boletaReceptorForSii();
+
     let result: Awaited<ReturnType<typeof SiiFacturacionService.emitirFactura>> | undefined;
     try {
       const creds = SiiCredentialsService.getInstance().getCredentials();
@@ -90,12 +92,12 @@ export class BiomaEmitService {
           tipoCodigo,
           fechaEmision: opts.fechaEmision || new Date().toISOString().split('T')[0],
           items,
-          rutReceptor: row.rutReceptor || (isBoleta ? SII_RUT_CONSUMIDOR_FINAL : ''),
-          razonSocial: row.razonSocial || (isBoleta ? row.customerName || 'Consumidor Final' : ''),
-          giroReceptor: row.giroReceptor || (isBoleta ? 'Particular' : ''),
-          comunaReceptor: row.comunaReceptor || '',
-          ciudadReceptor: row.ciudadReceptor || '',
-          dirReceptor: row.dirReceptor || '',
+          rutReceptor: isBoleta ? cf.rut : (row.rutReceptor || ''),
+          razonSocial: isBoleta ? cf.razonSocial : (row.razonSocial || ''),
+          giroReceptor: isBoleta ? '' : (row.giroReceptor || ''),
+          comunaReceptor: isBoleta ? '' : (row.comunaReceptor || ''),
+          ciudadReceptor: isBoleta ? '' : (row.ciudadReceptor || ''),
+          dirReceptor: isBoleta ? '' : (row.dirReceptor || ''),
         },
         {
           detenerEnPreview: !isEmit,

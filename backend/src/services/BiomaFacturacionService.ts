@@ -22,7 +22,8 @@ import {
   BIOMA_FACTURA_ATTR,
   getOrderCustomAttribute,
   orderNeedsFactura,
-  SII_RUT_CONSUMIDOR_FINAL,
+  isBoletaTipo,
+  boletaReceptorForSii,
 } from '../utils/biomaOrderAttrs';
 import { sanitizeDescripcionParaSii } from './SiiFacturacionService';
 
@@ -137,8 +138,17 @@ export class BiomaFacturacionService {
       return { codigo: override, source: 'env' };
     }
 
-    const rutKey = this.normalizeRutKey(opts?.rutReceptor);
     const tipoCodigo = opts?.tipoCodigo ?? 33;
+
+    if (isBoletaTipo(tipoCodigo)) {
+      return {
+        codigo: null,
+        source: 'nueva',
+        templateCliente: 'Boleta a consumidor final (sin RUT del comprador)',
+      };
+    }
+
+    const rutKey = this.normalizeRutKey(opts?.rutReceptor);
 
     if (rutKey) {
       const ourForClient = await this.repo
@@ -420,6 +430,8 @@ export class BiomaFacturacionService {
   ): Promise<BiomaFacturaEmisionEntity> {
     const existing = await this.findEmision(order.id);
     const tipoCodigo = orderNeedsFactura(order.customAttributes) ? 33 : 39;
+    const isBoleta = isBoletaTipo(existing?.tipoCodigo ?? tipoCodigo);
+    const cf = boletaReceptorForSii();
 
     const shippingPhone = order.shippingAddress?.phone ?? null;
     const customerPhone = normalizePhoneForWhatsApp(
@@ -436,16 +448,14 @@ export class BiomaFacturacionService {
       shopifyOrderNumber: order.orderNumber,
       shopifyProcessedAt: order.processedAt ? new Date(order.processedAt) : null,
       empresaRut: this.empresaRut,
-      rutReceptor:
-        attr(order, BIOMA_FACTURA_ATTR.rut) ||
-        (tipoCodigo === 39 ? SII_RUT_CONSUMIDOR_FINAL : null),
-      razonSocial:
-        attr(order, BIOMA_FACTURA_ATTR.razon) ||
-        (tipoCodigo === 39 ? customerName || 'Consumidor Final' : null),
-      giroReceptor: attr(order, BIOMA_FACTURA_ATTR.giro) || (tipoCodigo === 39 ? 'Particular' : null),
-      comunaReceptor: order.shippingAddress?.city || null,
-      ciudadReceptor: order.shippingAddress?.province || null,
-      dirReceptor: order.shippingAddress?.address1 || null,
+      rutReceptor: isBoleta ? cf.rut : attr(order, BIOMA_FACTURA_ATTR.rut) || null,
+      razonSocial: isBoleta
+        ? cf.razonSocial
+        : attr(order, BIOMA_FACTURA_ATTR.razon) || null,
+      giroReceptor: isBoleta ? null : attr(order, BIOMA_FACTURA_ATTR.giro) || null,
+      comunaReceptor: isBoleta ? null : order.shippingAddress?.city || null,
+      ciudadReceptor: isBoleta ? null : order.shippingAddress?.province || null,
+      dirReceptor: isBoleta ? null : order.shippingAddress?.address1 || null,
       customerPhone,
       customerName,
       customerEmail: order.customer?.email || null,

@@ -182,7 +182,7 @@ export class BiomaFacturacionController {
         subtotal: it.subtotal,
       }));
       const template = await BiomaFacturacionService.resolveTemplateInfo({
-        rutReceptor: row.rutReceptor,
+        rutReceptor: row.tipoCodigo === 39 || row.tipoCodigo === 41 ? null : row.rutReceptor,
         tipoCodigo: row.tipoCodigo || 33,
       });
       return res.json({
