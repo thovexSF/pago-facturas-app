@@ -2,8 +2,19 @@ const express = require('express');
 const path    = require('path');
 const { Pool }  = require('pg');
 const axios     = require('axios');
+const { MercadoPagoConfig, Preference, Payment } = require('mercadopago');
 require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 require('dotenv').config();
+
+// ─── MercadoPago ─────────────────────────────────────────────────────────────
+const mpAccessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+let mpClient = null;
+if (mpAccessToken) {
+  mpClient = new MercadoPagoConfig({ accessToken: mpAccessToken });
+  console.log('[MP] MercadoPago configurado');
+} else {
+  console.warn('[MP] MERCADOPAGO_ACCESS_TOKEN no configurado — pagos deshabilitados');
+}
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -75,6 +86,8 @@ async function setupDb() {
     ['pdf_data','BYTEA'],['pdf_nombre','VARCHAR(100)'],['pdf_at','TIMESTAMP'],
     ['tipo_doc','VARCHAR(10) DEFAULT \'33\''],['ref_tipo_doc','VARCHAR(10)'],['ref_folio','INTEGER'],
     ['anulada','BOOLEAN DEFAULT FALSE'],['anulada_por_folio','INTEGER'],
+    ['mp_preference_id_1','VARCHAR(100)'],['mp_payment_id_1','VARCHAR(100)'],['mp_status_1','VARCHAR(30)'],
+    ['mp_preference_id_2','VARCHAR(100)'],['mp_payment_id_2','VARCHAR(100)'],['mp_status_2','VARCHAR(30)'],
   ]) {
     await pool.query(`ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
   }
@@ -1280,6 +1293,8 @@ app.get('/api/facturas', async (req, res) => {
               vcto_2, monto_2, pagado_2, pagado_2_at,
               pdf_nombre, pdf_at, (pdf_data IS NOT NULL) AS has_pdf,
               tipo_doc, ref_tipo_doc, ref_folio, anulada, anulada_por_folio,
+              mp_preference_id_1, mp_payment_id_1, mp_status_1,
+              mp_preference_id_2, mp_payment_id_2, mp_status_2,
               created_at, updated_at
        FROM facturas_recibidas
        WHERE ($1::boolean OR COALESCE(anulada, FALSE) = FALSE)
@@ -1566,6 +1581,110 @@ app.put('/api/facturas/:id/pagar/:cuota', async (req, res) => {
       [req.params.id]
     );
     res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── API — MercadoPago ────────────────────────────────────────────────────────
+
+app.get('/api/mercadopago/status', (_req, res) => {
+  res.json({ enabled: !!mpClient });
+});
+
+app.post('/api/facturas/:id/mercadopago/:cuota', async (req, res) => {
+  if (!mpClient) return res.status(503).json({ error: 'MercadoPago no configurado' });
+  const { id, cuota } = req.params;
+  if (!['1','2'].includes(cuota)) return res.status(400).json({ error: 'cuota debe ser 1 o 2' });
+  try {
+    const { rows } = await pool.query(
+      `SELECT f.*, p.razon_social as proveedor_nombre
+       FROM facturas_recibidas f
+       LEFT JOIN proveedores p ON f.rut_emisor = p.rut_emisor
+       WHERE f.id = $1`, [id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Factura no encontrada' });
+    const f = rows[0];
+    const monto = cuota === '1' ? f.monto_1 : f.monto_2;
+    const pagado = cuota === '1' ? f.pagado_1 : f.pagado_2;
+    if (pagado) return res.status(400).json({ error: 'Cuota ya pagada' });
+    if (!monto || monto <= 0) return res.status(400).json({ error: 'Monto inválido' });
+
+    const existingPrefId = cuota === '1' ? f.mp_preference_id_1 : f.mp_preference_id_2;
+    if (existingPrefId) {
+      return res.json({ init_point: null, preference_id: existingPrefId, reuse: true });
+    }
+
+    const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+    const preference = new Preference(mpClient);
+    const result = await preference.create({ body: {
+      items: [{
+        title: `Factura N°${f.folio} — Cuota ${cuota} — ${f.proveedor_nombre || f.razon_social}`,
+        quantity: 1,
+        unit_price: Number(monto),
+        currency_id: 'CLP',
+      }],
+      external_reference: `factura_${id}_cuota_${cuota}`,
+      back_urls: {
+        success: `${baseUrl}/?mp=success&factura=${id}&cuota=${cuota}`,
+        failure: `${baseUrl}/?mp=failure&factura=${id}&cuota=${cuota}`,
+        pending: `${baseUrl}/?mp=pending&factura=${id}&cuota=${cuota}`,
+      },
+      auto_return: 'approved',
+      notification_url: `${baseUrl}/api/mercadopago/webhook`,
+    }});
+
+    await pool.query(
+      `UPDATE facturas_recibidas SET mp_preference_id_${cuota} = $1, mp_status_${cuota} = 'pending', updated_at = NOW() WHERE id = $2`,
+      [result.id, id]
+    );
+
+    res.json({ init_point: result.init_point, preference_id: result.id });
+  } catch (err) {
+    console.error('[MP] Error creando preferencia:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/mercadopago/webhook', async (req, res) => {
+  res.sendStatus(200);
+  if (!mpClient) return;
+  try {
+    const { type, data } = req.body;
+    if (type !== 'payment' || !data?.id) return;
+
+    const payment = new Payment(mpClient);
+    const pago = await payment.get({ id: data.id });
+
+    const extRef = pago.external_reference || '';
+    const match = extRef.match(/^factura_(\d+)_cuota_([12])$/);
+    if (!match) return;
+
+    const [, facturaId, cuota] = match;
+    const status = pago.status;
+
+    await pool.query(
+      `UPDATE facturas_recibidas SET mp_payment_id_${cuota} = $1, mp_status_${cuota} = $2, updated_at = NOW() WHERE id = $3`,
+      [String(pago.id), status, facturaId]
+    );
+
+    if (status === 'approved') {
+      await pool.query(
+        `UPDATE facturas_recibidas SET pagado_${cuota} = TRUE, pagado_${cuota}_at = NOW(), updated_at = NOW() WHERE id = $1`,
+        [facturaId]
+      );
+      console.log(`[MP] Factura ${facturaId} cuota ${cuota} marcada como pagada (payment ${pago.id})`);
+    }
+  } catch (err) {
+    console.error('[MP] Error procesando webhook:', err);
+  }
+});
+
+app.get('/api/facturas/:id/mercadopago/:cuota/status', async (req, res) => {
+  const { id, cuota } = req.params;
+  if (!['1','2'].includes(cuota)) return res.status(400).json({ error: 'cuota debe ser 1 o 2' });
+  try {
+    const { rows } = await pool.query(`SELECT mp_status_${cuota} as status, mp_payment_id_${cuota} as payment_id FROM facturas_recibidas WHERE id = $1`, [id]);
+    if (!rows.length) return res.status(404).json({ error: 'No encontrada' });
+    res.json(rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

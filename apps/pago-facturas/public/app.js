@@ -66,6 +66,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initCalendar();
   initTabs();
   initModal();
+  initMercadoPago();
+  checkMPReturnUrl();
   cargarTodo();
   syncAuto();
   cargarBannerVencimientos();
@@ -610,6 +612,8 @@ function abrirModal(f, lista) {
     };
   }
 
+  actualizarMPSeccion(f);
+
   document.getElementById('modal').style.display = 'flex';
 }
 
@@ -636,6 +640,111 @@ async function marcarCuota(cuota) {
     cerrarModal();
     await cargarFacturas();
   } catch (err) { mostrarToast(err.message, 'error'); }
+}
+
+// ─── MercadoPago ─────────────────────────────────────────────────────────────
+
+let mpEnabled = false;
+
+async function initMercadoPago() {
+  try {
+    const res = await fetch('/api/mercadopago/status');
+    const data = await res.json();
+    mpEnabled = data.enabled;
+  } catch { mpEnabled = false; }
+}
+
+function actualizarMPSeccion(f) {
+  const section = document.getElementById('mp-section');
+  if (!section || !mpEnabled || esDocNc(f)) {
+    if (section) section.style.display = 'none';
+    return;
+  }
+
+  const prov = proveedores.find(p => p.rut_emisor === f.rut_emisor);
+  const esContado = prov?.condicion === 'contado';
+  if (esContado) { section.style.display = 'none'; return; }
+
+  section.style.display = '';
+
+  for (const cuota of [1, 2]) {
+    const row = document.getElementById(`mp-cuota-${cuota}-row`);
+    const montoEl = document.getElementById(`mp-monto-${cuota}`);
+    const statusEl = document.getElementById(`mp-status-${cuota}`);
+    const btn = document.getElementById(`btn-mp-${cuota}`);
+
+    const monto = f[`monto_${cuota}`];
+    const pagado = f[`pagado_${cuota}`];
+    const mpStatus = f[`mp_status_${cuota}`];
+
+    if (!monto || monto <= 0) { row.style.display = 'none'; continue; }
+    row.style.display = '';
+    montoEl.textContent = '$' + formatMonto(monto);
+
+    if (pagado || mpStatus === 'approved') {
+      statusEl.textContent = 'Pagado';
+      statusEl.className = 'mp-cuota-status mp-status-approved';
+      btn.style.display = 'none';
+    } else if (mpStatus === 'pending' || mpStatus === 'in_process') {
+      statusEl.textContent = 'Pendiente';
+      statusEl.className = 'mp-cuota-status mp-status-pending';
+      btn.textContent = 'Reintentar pago';
+      btn.style.display = '';
+      btn.disabled = false;
+    } else {
+      statusEl.textContent = '';
+      statusEl.className = 'mp-cuota-status';
+      btn.textContent = 'Pagar con MP';
+      btn.style.display = '';
+      btn.disabled = false;
+    }
+  }
+}
+
+async function pagarConMP(cuota) {
+  if (!facturaActiva) return;
+  const btn = document.getElementById(`btn-mp-${cuota}`);
+  btn.disabled = true;
+  btn.textContent = 'Generando pago…';
+  try {
+    const res = await fetch(`/api/facturas/${facturaActiva.id}/mercadopago/${cuota}`, { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Error al crear pago');
+    }
+    const data = await res.json();
+    if (data.init_point) {
+      window.open(data.init_point, '_blank');
+      mostrarToast('Redirigiendo a MercadoPago…', 'success');
+    } else {
+      mostrarToast('Preferencia de pago creada. Intenta nuevamente.', 'success');
+    }
+    await cargarFacturas();
+    const updated = facturas.find(x => x.id === facturaActiva.id);
+    if (updated) actualizarMPSeccion(updated);
+  } catch (err) {
+    mostrarToast(err.message, 'error');
+    btn.disabled = false;
+    btn.textContent = 'Pagar con MP';
+  }
+}
+
+function checkMPReturnUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const mpStatus = params.get('mp');
+  const facturaId = params.get('factura');
+  const cuota = params.get('cuota');
+  if (!mpStatus || !facturaId) return;
+
+  window.history.replaceState({}, '', window.location.pathname);
+
+  if (mpStatus === 'success') {
+    mostrarToast(`Pago de cuota ${cuota} procesado correctamente`, 'success');
+  } else if (mpStatus === 'pending') {
+    mostrarToast(`Pago de cuota ${cuota} pendiente de confirmación`, 'success');
+  } else {
+    mostrarToast(`Pago de cuota ${cuota} no completado`, 'error');
+  }
 }
 
 // ─── PDF ──────────────────────────────────────────────────────────────────────
