@@ -3120,7 +3120,10 @@ export class SiiFacturacionService {
     const ultimoDialogoSii = { texto: '' };
     wireSafeDialogs(page, { capture: ultimoDialogoSii });
     const t0 = Date.now();
+    const lockHeavyEmit = !detenerEnPreview;
+    if (lockHeavyEmit) SiiFacturacionService.beginHeavySiiOp('emitir');
 
+    try {
     if (!opts?.skipPtrTkn) {
       await this.ensurePtrTknOnPage(page, opts?.skipEmpresaSelect ? undefined : empresaRut);
     } else {
@@ -3137,7 +3140,7 @@ export class SiiFacturacionService {
     }).catch(async () => {
       await page.goto(url, { waitUntil: 'commit', timeout: 60000, referer: SII_URLS.listadoEmitidos });
     });
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(400);
 
     const pageUrl = page.url();
     const pageTitle = await page.title().catch(() => '?');
@@ -3189,9 +3192,9 @@ export class SiiFacturacionService {
 
     // Sobrescribir receptor del pedido Shopify (la plantilla trae otro cliente)
     const waitEmitFormReady = async () => {
-      await page.waitForSelector('form[name="VIEW_EFXP"], form#VIEW_EFXP', { timeout: 45000, state: 'attached' });
+      await page.waitForSelector('form[name="VIEW_EFXP"], form#VIEW_EFXP', { timeout: 30000, state: 'attached' });
       await page.waitForLoadState('domcontentloaded').catch(() => {});
-      await page.waitForTimeout(1200);
+      await page.waitForTimeout(400);
     };
 
     const readEmitFormField = async (fieldName: string): Promise<string> => {
@@ -3239,15 +3242,24 @@ export class SiiFacturacionService {
     let siiComuna = '';
     let siiCiudad = '';
     if (rutSplit) {
-      // Cambiar RUT dispara recarga del formulario en el SII — esperar antes de seguir
-      const navDone = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() =>
-        page.waitForLoadState('domcontentloaded', { timeout: 45000 }).catch(() => {}),
-      );
-      await setFieldSafe('EFXP_RUT_RECEP', rutSplit.body);
-      await setFieldSafe('EFXP_DV_RECEP', rutSplit.dv);
-      await page.locator('input[name="EFXP_DV_RECEP"]').press('Tab').catch(() => {});
-      await navDone;
-      await waitEmitFormReady();
+      const rutActual = await readEmitFormField('EFXP_RUT_RECEP');
+      const dvActual = (await readEmitFormField('EFXP_DV_RECEP')).toUpperCase();
+      const rutYaOk =
+        rutActual.replace(/\./g, '') === rutSplit.body.replace(/\./g, '') &&
+        dvActual === rutSplit.dv.toUpperCase();
+      if (!rutYaOk) {
+        // Cambiar RUT dispara recarga del formulario en el SII — esperar antes de seguir
+        const navDone = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() =>
+          page.waitForLoadState('domcontentloaded', { timeout: 25000 }).catch(() => {}),
+        );
+        await setFieldSafe('EFXP_RUT_RECEP', rutSplit.body);
+        await setFieldSafe('EFXP_DV_RECEP', rutSplit.dv);
+        await page.locator('input[name="EFXP_DV_RECEP"]').press('Tab').catch(() => {});
+        await navDone;
+        await waitEmitFormReady();
+      } else {
+        console.log('[SII] emitir — RUT receptor ya coincide, omitiendo recarga SII');
+      }
       const postRutHtml = await page.content().catch(() => '');
       if (isSiiRejectionOrBlockHtml(postRutHtml)) {
         SiiFacturacionService.markSiiBlocked('SII rechazó al cambiar RUT receptor');
@@ -3669,24 +3681,26 @@ export class SiiFacturacionService {
       }).catch(() => {});
       console.log(`[SII] emitir — click en btnSign realizado, esperando prompt/modal de clave…`);
       // onDialogoFirma es el único handler — no usar waitForEvent('dialog') en paralelo
-      for (let i = 0; i < 50 && !dialogoFirmaRespondido && !errorFirma; i++) {
-        await new Promise((r) => setTimeout(r, 500));
+      for (let i = 0; i < 30 && !dialogoFirmaRespondido && !errorFirma; i++) {
+        await new Promise((r) => setTimeout(r, 400));
       }
-      // Pausa breve y dump diagnóstico para ver qué abre el SII tras el click
-      await new Promise(r => setTimeout(r, 1200));
+      // Dump diagnóstico solo con SII_DEBUG=1
+      await new Promise(r => setTimeout(r, 400));
       const pagesPost = ctx2.pages().filter(p => !p.isClosed());
       console.log(`[SII] emitir — páginas tras click: ${pagesPost.map(p => p.url()).join(' | ')}`);
-      for (const pg of pagesPost) {
-        const pgTxt = await pg.$eval('body', (el: any) => (el.innerText || '').replace(/\s+/g, ' ').slice(0, 300)).catch(() => '');
-        const pgInputs = await pg.evaluate(() => {
-          const d = (globalThis as any).document;
-          if (!d) return [];
-          return Array.from(d.querySelectorAll('input,button')).map((e: any) =>
-            `${e.tagName}[name=${e.name}][type=${e.type}][value=${e.value}]`
-          );
-        }).catch(() => []);
-        console.log(`[SII] emitir — página ${pg.url()} inputs:`, JSON.stringify(pgInputs));
-        console.log(`[SII] emitir — página ${pg.url()} texto: ${pgTxt}`);
+      if (/^(1|true|yes)$/i.test(String(process.env.SII_DEBUG || '').trim())) {
+        for (const pg of pagesPost) {
+          const pgTxt = await pg.$eval('body', (el: any) => (el.innerText || '').replace(/\s+/g, ' ').slice(0, 300)).catch(() => '');
+          const pgInputs = await pg.evaluate(() => {
+            const d = (globalThis as any).document;
+            if (!d) return [];
+            return Array.from(d.querySelectorAll('input,button')).map((e: any) =>
+              `${e.tagName}[name=${e.name}][type=${e.type}][value=${e.value}]`
+            );
+          }).catch(() => []);
+          console.log(`[SII] emitir — página ${pg.url()} inputs:`, JSON.stringify(pgInputs));
+          console.log(`[SII] emitir — página ${pg.url()} texto: ${pgTxt}`);
+        }
       }
 
       // El SII puede pedir la clave de firma via:
@@ -3760,18 +3774,19 @@ export class SiiFacturacionService {
       }
 
       // Dar tiempo a que lleguen dialogs/alertas post-firma
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 600));
 
       if (errorFirma) {
         return { success: false, folio, error: `Error de firma SII: ${errorFirma}` };
       }
 
-      // Determinar página final de resultado (puede ser workPage o una nueva pestaña)
+      // Determinar página final de resultado (puede ser workPage, mipeSendXML o listado)
       let resultPage = workPage;
       for (const p of ctx2.pages()) {
         if (p.isClosed()) continue;
         const u = p.url();
-        if (/mipeAdminDocsEmi|listadoEmitidos|exito|emitid/i.test(u)) { resultPage = p; break; }
+        if (/mipeSendXML/i.test(u)) { resultPage = p; break; }
+        if (/mipeAdminDocsEmi|listadoEmitidos|exito|emitid/i.test(u)) { resultPage = p; }
       }
 
       const urlFinal = resultPage.url();
@@ -3792,12 +3807,17 @@ export class SiiFacturacionService {
 
       const sendXmlOk = ctx2.pages().some((p) => !p.isClosed() && /mipeSendXML/i.test(p.url()));
       const folioFinalMatch = pageTextFinal.match(/[Ff]olio[:\s#N°°]*(\d+)/);
-      const folioFinal = folioFinalMatch ? parseInt(folioFinalMatch[1], 10) : folio;
-      const siiCodigo = SiiFacturacionService.extractSiiCodigoFromPages(ctx2) ?? undefined;
+      let folioFinal = folioFinalMatch ? parseInt(folioFinalMatch[1], 10) : folio;
+      const siiCodigo = (await SiiFacturacionService.extractSiiCodigoFromContext(ctx2)) ?? undefined;
+      if (!folioFinal && siiCodigo) {
+        const folioFromHtml = await SiiFacturacionService.extractFolioFromContext(ctx2).catch(() => null);
+        if (folioFromHtml) folioFinal = folioFromHtml;
+      }
 
       const esEmitidoOk =
         (folioFinal && folioFinal > 0) ||
         sendXmlOk ||
+        (/enviad.*exitosamente|documento tributario.*enviado/i.test(pageTextFinal)) ||
         (/emitid|DTE emitido|fue enviado|procesado correctamente/i.test(pageTextFinal) &&
           !/folio\s*no\s*asignado/i.test(pageTextFinal)) ||
         /mipeAdminDocsEmi|exito/i.test(urlFinal);
@@ -3845,6 +3865,9 @@ export class SiiFacturacionService {
           pageDialogHandlers.delete(p);
         }
       }
+    }
+    } finally {
+      if (lockHeavyEmit) SiiFacturacionService.endHeavySiiOp('emitir');
     }
   }
 
@@ -4164,6 +4187,47 @@ export class SiiFacturacionService {
     return null;
   }
 
+  /** Extrae DHDR_CODIGO desde URLs o HTML (p. ej. mipeSendXML.cgi tras firma exitosa). */
+  static async extractSiiCodigoFromContext(ctx: BrowserContext): Promise<string | null> {
+    const fromUrl = this.extractSiiCodigoFromPages(ctx);
+    if (fromUrl) return fromUrl;
+    for (const p of ctx.pages()) {
+      if (p.isClosed()) continue;
+      const fromHtml = await this.extractSiiCodigoFromPageHtml(p).catch(() => null);
+      if (fromHtml) return fromHtml;
+    }
+    return null;
+  }
+
+  private static async extractSiiCodigoFromPageHtml(page: Page): Promise<string | null> {
+    const html = await page.content().catch(() => '');
+    if (!html) return null;
+    const patterns = [
+      /DHDR_CODIGO=(\d+)/i,
+      /[?&]CODIGO=(\d+)/i,
+      /name=["']DHDR_CODIGO["'][^>]*value=["'](\d+)["']/i,
+      /value=["'](\d+)["'][^>]*name=["']DHDR_CODIGO["']/i,
+    ];
+    for (const re of patterns) {
+      const m = html.match(re);
+      if (m?.[1]) return m[1];
+    }
+    return null;
+  }
+
+  static async extractFolioFromContext(ctx: BrowserContext): Promise<number | null> {
+    for (const p of ctx.pages()) {
+      if (p.isClosed()) continue;
+      const txt = await p.$eval('body', (el: any) => el.innerText || '').catch(() => '');
+      const m = txt.match(/[Ff]olio[:\s#N°°]*(\d+)/);
+      if (m?.[1]) return parseInt(m[1], 10);
+      const html = await p.content().catch(() => '');
+      const hm = html.match(/[Ff]olio[^0-9]*(\d{1,8})/i);
+      if (hm?.[1]) return parseInt(hm[1], 10);
+    }
+    return null;
+  }
+
   /** Última factura emitida en el listado SII para un RUT receptor (pág. reciente). */
   static async findUltimaFacturaParaReceptor(
     axiosClient: AxiosInstance,
@@ -4303,6 +4367,31 @@ export class SiiFacturacionService {
   // ── Background job: descarga silenciosa de PDFs pendientes ───────────────
 
   private static _bgJobs = new Set<string>(); // evita jobs duplicados por empresaRut
+  private static _heavySiiOps = 0;
+
+  /** Bloquea sync histórico y descarga masiva de PDFs mientras hay emisión/firma activa. */
+  static beginHeavySiiOp(label: string): void {
+    this._heavySiiOps++;
+    console.log(`[SII] heavy op +1 (${label}) depth=${this._heavySiiOps}`);
+  }
+
+  static endHeavySiiOp(label: string): void {
+    this._heavySiiOps = Math.max(0, this._heavySiiOps - 1);
+    console.log(`[SII] heavy op -1 (${label}) depth=${this._heavySiiOps}`);
+  }
+
+  static isHeavySiiOpInProgress(): boolean {
+    return this._heavySiiOps > 0;
+  }
+
+  static async waitForHeavySiiOpSlot(pollMs = 2000, maxWaitMs = 600000): Promise<boolean> {
+    const t0 = Date.now();
+    while (this.isHeavySiiOpInProgress()) {
+      if (Date.now() - t0 > maxWaitMs) return false;
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+    return true;
+  }
 
   static startBackgroundPdfDownload(
     context: BrowserContext,
@@ -4312,10 +4401,21 @@ export class SiiFacturacionService {
     this._bgJobs.add(empresaRut);
 
     (async () => {
+      if (!(await this.waitForHeavySiiOpSlot())) {
+        console.log(`[SII bg] PDF job pospuesto — emisión SII en curso (${empresaRut})`);
+        this._bgJobs.delete(empresaRut);
+        return;
+      }
+
       const repo = AppDataSource.getRepository(SiiFacturaEntity);
       let consecutiveErrors = 0;
 
       while (true) {
+        if (this.isHeavySiiOpInProgress()) {
+          await new Promise((r) => setTimeout(r, 3000));
+          continue;
+        }
+
         const factura = await repo.findOne({
           where: { empresaRut, hasPdf: false },
           order: { folio: 'DESC' },
@@ -4581,6 +4681,11 @@ export class SiiFacturacionService {
     console.log(`[SII histSync] ${empresaRut} | Iniciando sync histórico: ${quarters.length} trimestres`);
 
     for (let i = 0; i < quarters.length; i++) {
+      if (!(await this.waitForHeavySiiOpSlot(3000, 600000))) {
+        console.log(`[SII histSync] ${empresaRut} | Esperando fin de emisión SII…`);
+        i--;
+        continue;
+      }
       const q = quarters[i];
       console.log(`[SII histSync] ${empresaRut} | Trimestre ${i + 1}/${quarters.length}: ${q.label} (${q.desde} → ${q.hasta})`);
       const result = await this.syncFacturas(axiosClient, empresaRut, tipoCodigo, {

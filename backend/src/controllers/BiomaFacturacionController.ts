@@ -272,28 +272,8 @@ export class BiomaFacturacionController {
       }
 
       // Real emit succeeded — persist folio/código y tag Shopify.
-      let siiCodigo = result.siiCodigo || codigoTemplate;
-      let siiFolio = result.folio ?? null;
-
-      if ((!siiCodigo || !siiFolio) && row.rutReceptor) {
-        const ultima = await SiiFacturacionService.findUltimaFacturaParaReceptor(
-          session.axiosClient,
-          row.rutReceptor,
-          tipoCodigo || row.tipoCodigo || 33,
-        );
-        if (ultima) {
-          siiCodigo = siiCodigo || ultima.codigo;
-          siiFolio = siiFolio || ultima.folio;
-        }
-      }
-
-      if (siiCodigo && context) {
-        try {
-          await SiiFacturacionService.downloadPdf(context, siiCodigo);
-        } catch (pdfErr: any) {
-          console.warn('[bioma] PDF post-emitir:', pdfErr?.message || pdfErr);
-        }
-      }
+      const siiCodigo = result.siiCodigo || codigoTemplate;
+      const siiFolio = result.folio ?? null;
 
       const updated = await BiomaFacturacionService.setStatus(orderId, 'emitted', {
         siiFolio,
