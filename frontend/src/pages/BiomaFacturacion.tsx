@@ -14,7 +14,6 @@ import StatCard from '../components/StatCard';
 const BIOMA_API = `${API_CONFIG.BASE_URL}/api/bioma`;
 const SII_API = `${API_CONFIG.BASE_URL}/api/sii-facturacion`;
 
-type ScraperStep = 'abrir' | 'rellenar' | 'emitir';
 
 interface ShopifyOrderForBioma {
   id: string;
@@ -30,6 +29,7 @@ interface BiomaEmision {
   status: 'pending' | 'drafting' | 'emitting' | 'emitted' | 'error';
   lastError: string | null;
   siiFolio: number | null;
+  siiCodigo?: string | null;
 }
 
 interface PendingRow {
@@ -78,12 +78,6 @@ function statusChip(status?: BiomaEmision['status']) {
   if (status === 'error') return <Chip size="small" label="Error" color="error" />;
   return <Chip size="small" label={String(status)} />;
 }
-
-const STEP_LABELS: Record<ScraperStep, string> = {
-  abrir: '① Abrir formulario SII',
-  rellenar: '② Rellenar con datos Shopify',
-  emitir: '③ Emitir factura',
-};
 
 export default function BiomaFacturacion() {
   const [empresaRut, setEmpresaRut] = useState('');
@@ -273,50 +267,71 @@ export default function BiomaFacturacion() {
     }
   }, [loadBlockStatus]);
 
-  const runScraperStep = useCallback(async (orderId: string, step: ScraperStep) => {
+  const emitirFactura = useCallback(async (orderId: string) => {
     if (siiBlocked.blocked) {
-      setError(`SII en pausa ~${siiBlocked.retryAfterMinutes} min. No reintentes el scraper.`);
+      setError(`SII en pausa ~${siiBlocked.retryAfterMinutes} min.`);
       return;
     }
     if (!sessionReady) {
-      setError('Abre sesión SII en Configuración antes de usar el scraper');
+      setError('Abre sesión SII antes de emitir');
       setConfigOpen(true);
       return;
     }
-    if (step !== 'abrir' && !templateReady(payload?.template)) {
-      setError('No se pudo resolver plantilla SII ni modo factura nueva.');
+    if (!templateReady(payload?.template)) {
+      setError('No se pudo resolver plantilla SII.');
       return;
     }
-    if (step === 'emitir') {
-      const ok = window.confirm(
-        '¿Emitir la factura en el SII?\n\nSe validará, firmará y guardará el DTE. ' +
-        'Asegúrate de haber revisado el formulario (paso ②) o los datos del preview.',
-      );
-      if (!ok) return;
-    }
+    const ok = window.confirm(
+      '¿Emitir factura en el SII?\n\nTarda ~1 minuto. Si algo falla, corrígelo manual en sii.cl.',
+    );
+    if (!ok) return;
+
     setBusyOrderId(orderId);
     setError(null);
     try {
-      const res = await fetch(`${BIOMA_API}/scraper/${encodeURIComponent(orderId)}`, {
+      const res = await fetch(`${BIOMA_API}/emitir/${encodeURIComponent(orderId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, step }),
+        body: JSON.stringify({ sessionId }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.error || data.result?.error || `HTTP ${res.status}`);
       }
-      setSnack(data.message || data.result?.aviso || `${STEP_LABELS[step]} — OK`);
-      setLastAviso(data.message || data.result?.aviso || null);
+      const folio = data.row?.siiFolio || data.result?.folio;
+      setSnack(folio ? `Factura emitida — folio ${folio}` : 'Factura emitida en el SII');
       await loadPending();
       if (selectedId === orderId) await loadPayload(orderId);
     } catch (e: any) {
-      setError(`${STEP_LABELS[step]}: ${e?.message || e}`);
+      setError(`Emitir: ${e?.message || e}`);
       await loadBlockStatus();
     } finally {
       setBusyOrderId(null);
     }
   }, [sessionReady, sessionId, payload, loadPending, loadPayload, selectedId, siiBlocked, loadBlockStatus]);
+
+  const descargarPdf = useCallback(async (orderId: string) => {
+    if (!sessionReady) {
+      setError('Abre sesión SII para descargar el PDF');
+      return;
+    }
+    setBusyOrderId(orderId);
+    setError(null);
+    try {
+      const res = await fetch(`${BIOMA_API}/pdf/${encodeURIComponent(orderId)}/fetch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+      window.open(`${BIOMA_API}/pdf/${encodeURIComponent(orderId)}`, '_blank');
+    } catch (e: any) {
+      setError(`PDF: ${e?.message || e}`);
+    } finally {
+      setBusyOrderId(null);
+    }
+  }, [sessionReady, sessionId]);
 
   const pendingRows = rows.filter((r) => r.emision?.status !== 'emitted');
   const pendingCount = pendingRows.length;
@@ -583,38 +598,35 @@ export default function BiomaFacturacion() {
                 </Paper>
               )}
 
-              <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
-                <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>Checklist</Typography>
-                <Stack spacing={0.75} fontSize={13}>
-                  <Box>{sessionReady ? '✅' : '⬜'} Sesión SII abierta</Box>
-                  <Box>{templateReady(payload?.template) ? '✅' : '⬜'} Plantilla o factura nueva resuelta</Box>
-                  <Box>{payload?.rutReceptor && payload?.razonSocial ? '✅' : '⬜'} RUT y razón social del cliente</Box>
-                  <Box>{!siiBlocked.blocked ? '✅' : '⬜'} SII no bloqueado</Box>
-                </Stack>
-              </Paper>
-
-              <Typography variant="subtitle2" sx={{ mb: 0.5, fontWeight: 600 }}>Emitir en el SII</Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-                Recomendado: ② Rellenar → revisar Chrome → ③ Emitir.
-              </Typography>
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap>
-                {(Object.keys(STEP_LABELS) as ScraperStep[]).map((step) => (
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+                {selectedRow.emision?.status !== 'emitted' ? (
                   <Button
-                    key={step}
-                    variant={step === 'emitir' || step === 'rellenar' ? 'contained' : 'outlined'}
-                    color={step === 'emitir' ? 'success' : step === 'rellenar' ? 'primary' : 'inherit'}
-                    disabled={
-                      isBusy ||
-                      !sessionReady ||
-                      siiBlocked.blocked ||
-                      (step !== 'abrir' && !templateReady(payload?.template))
-                    }
-                    onClick={() => runScraperStep(selectedRow.shopify.id, step)}
+                    variant="contained"
+                    color="success"
+                    size="large"
+                    disabled={isBusy || !sessionReady || siiBlocked.blocked || !templateReady(payload?.template)}
+                    onClick={() => emitirFactura(selectedRow.shopify.id)}
                   >
-                    {isBusy ? 'Procesando…' : STEP_LABELS[step]}
+                    {isBusy ? 'Emitiendo en SII… (~1 min)' : 'Emitir factura'}
                   </Button>
-                ))}
+                ) : (
+                  <Button
+                    variant="outlined"
+                    disabled={isBusy || !sessionReady}
+                    onClick={() => descargarPdf(selectedRow.shopify.id)}
+                  >
+                    Descargar PDF
+                  </Button>
+                )}
               </Stack>
+              {selectedRow.emision?.status === 'emitted' && selectedRow.emision.siiFolio ? (
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                  Folio SII: <strong>{selectedRow.emision.siiFolio}</strong>
+                </Typography>
+              ) : null}
+              <Typography variant="caption" color="text.secondary" display="block">
+                Un solo paso: abre formulario, rellena datos Shopify, firma y guarda. Si falla, corrige en sii.cl.
+              </Typography>
 
               {selectedRow.emision?.lastError && (
                 <Alert severity="warning" sx={{ mt: 2 }}>{selectedRow.emision.lastError}</Alert>

@@ -195,7 +195,11 @@ export class BiomaFacturacionController {
       }));
 
       const context = await SiiFacturacionService.ensureBrowserForSession(session);
-      const emitPage = await context.newPage();
+      const { page: emitPage, reused } = await SiiFacturacionService.acquireScraperPage(session);
+      const reusedPtrTkn =
+        reused &&
+        !!session.playwrightReady &&
+        /listadoEmitidos|mipeAdminDocsEmi/i.test(emitPage.url());
       let result;
       try {
         const creds = SiiCredentialsService.getInstance().getCredentials();
@@ -219,6 +223,7 @@ export class BiomaFacturacionController {
             previewSoloFormulario: scraperStep === 'rellenar',
             scraperStep,
             skipEmpresaSelect: !!session.playwrightReady,
+            skipPtrTkn: reusedPtrTkn,
             esperarMsEnPreview: Number.isFinite(parseInt(String(esperarMsEnPreview), 10))
               ? parseInt(String(esperarMsEnPreview), 10)
               : undefined,
@@ -226,9 +231,9 @@ export class BiomaFacturacionController {
           },
         );
       } finally {
-        const keepOpen = !!result?.detenidoEnPreview;
-        if (!keepOpen) {
+        if (!result?.success && !result?.detenidoEnPreview) {
           await emitPage.close().catch(() => {});
+          if (session.scraperPage === emitPage) session.scraperPage = undefined;
         }
       }
 
@@ -266,10 +271,33 @@ export class BiomaFacturacionController {
         });
       }
 
-      // Real emit succeeded — persist folio and tag Shopify.
+      // Real emit succeeded — persist folio/código y tag Shopify.
+      let siiCodigo = result.siiCodigo || codigoTemplate;
+      let siiFolio = result.folio ?? null;
+
+      if ((!siiCodigo || !siiFolio) && row.rutReceptor) {
+        const ultima = await SiiFacturacionService.findUltimaFacturaParaReceptor(
+          session.axiosClient,
+          row.rutReceptor,
+          tipoCodigo || row.tipoCodigo || 33,
+        );
+        if (ultima) {
+          siiCodigo = siiCodigo || ultima.codigo;
+          siiFolio = siiFolio || ultima.folio;
+        }
+      }
+
+      if (siiCodigo && context) {
+        try {
+          await SiiFacturacionService.downloadPdf(context, siiCodigo);
+        } catch (pdfErr: any) {
+          console.warn('[bioma] PDF post-emitir:', pdfErr?.message || pdfErr);
+        }
+      }
+
       const updated = await BiomaFacturacionService.setStatus(orderId, 'emitted', {
-        siiFolio: result.folio ?? null,
-        siiCodigo: codigoTemplate, // until we map to the new código (TBD with SII flow)
+        siiFolio,
+        siiCodigo,
         emittedAt: new Date(),
         lastError: null,
       });
@@ -280,13 +308,52 @@ export class BiomaFacturacionController {
         console.error('[bioma] tag swap failed (factura emitted but Shopify tag not updated):', tagErr?.message || tagErr);
       }
 
-      return res.json({ success: true, step: 'emitir', result, row: updated });
+      return res.json({ success: true, step: 'emitir', result, row: updated, pdfUrl: siiCodigo ? `/api/bioma/pdf/${encodeURIComponent(orderId)}` : null });
     } catch (err: any) {
       console.error('[bioma] emit flow error:', err?.message || err);
       await BiomaFacturacionService.setStatus(orderId, 'error', {
         lastError: err?.message || String(err),
       }).catch(() => {});
       return res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  }
+
+  // POST /api/bioma/pdf/:orderId/fetch — busca PDF en SII y lo guarda
+  static async fetchPdf(req: Request, res: Response) {
+    const orderId = req.params.orderId;
+    const { sessionId } = req.body || {};
+    if (!sessionId) return res.status(400).json({ error: 'sessionId requerido' });
+    try {
+      const row = await BiomaFacturacionService.findEmision(orderId);
+      if (!row) return res.status(404).json({ error: 'Sin registro de emisión' });
+      const session = SiiFacturacionService.getSession(sessionId);
+      if (!session?.context) return res.status(401).json({ error: 'Sesión SII no válida' });
+
+      let codigo = row.siiCodigo;
+      if (!codigo && row.rutReceptor) {
+        const ultima = await SiiFacturacionService.findUltimaFacturaParaReceptor(
+          session.axiosClient,
+          row.rutReceptor,
+          row.tipoCodigo || 33,
+        );
+        if (ultima) {
+          codigo = ultima.codigo;
+          await BiomaFacturacionService.setStatus(orderId, row.status, {
+            siiCodigo: ultima.codigo,
+            siiFolio: ultima.folio,
+          });
+        }
+      }
+      if (!codigo) return res.status(404).json({ error: 'Sin código SII — emite primero o revisa en sii.cl' });
+
+      await SiiFacturacionService.downloadPdf(session.context, codigo);
+      return res.json({
+        success: true,
+        pdfUrl: `/api/bioma/pdf/${encodeURIComponent(orderId)}`,
+        siiCodigo: codigo,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || String(err) });
     }
   }
 

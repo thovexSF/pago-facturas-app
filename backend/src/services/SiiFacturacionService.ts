@@ -122,6 +122,8 @@ interface SiiSession {
   credentials?: { rut: string; password: string };
   /** true si el browser ya hizo login completo (ptrTkn disponible) */
   playwrightReady?: boolean;
+  /** Pestaña Playwright reutilizable entre pasos abrir/rellenar/emitir (mismo tab = ptrTkn válido). */
+  scraperPage?: Page;
 }
 
 const sessions = new Map<string, SiiSession>();
@@ -2221,7 +2223,7 @@ export class SiiFacturacionService {
     }
     console.log('[SII] ensurePtrTkn — navegando al listado de emitidos...');
     await page.goto(SII_URLS.listadoEmitidos, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(600);
+    await page.waitForTimeout(400);
     const html = await page.content().catch(() => '');
     if (SiiFacturacionService.isSiiPtrTknErrorHtml(html) || isSiiRejectionOrBlockHtml(html)) {
       const reason = SiiFacturacionService.isSiiPtrTknErrorHtml(html)
@@ -3090,10 +3092,13 @@ export class SiiFacturacionService {
       scraperStep?: 'abrir' | 'rellenar' | 'emitir';
       /** Si la sesión Playwright ya eligió empresa, no repetir selectEmpresa. */
       skipEmpresaSelect?: boolean;
+      /** Si el tab ya visitó el listado emitidos (ptrTkn), omitir ensurePtrTkn. */
+      skipPtrTkn?: boolean;
     }
   ): Promise<{
     success: boolean;
     folio?: number;
+    siiCodigo?: string;
     error?: string;
     detenidoEnPreview?: boolean;
     previewUrl?: string;
@@ -3114,9 +3119,13 @@ export class SiiFacturacionService {
 
     const ultimoDialogoSii = { texto: '' };
     wireSafeDialogs(page, { capture: ultimoDialogoSii });
+    const t0 = Date.now();
 
-    // Asegurar ptrTkn en este tab antes de abrir el formulario
-    await this.ensurePtrTknOnPage(page, opts?.skipEmpresaSelect ? undefined : empresaRut);
+    if (!opts?.skipPtrTkn) {
+      await this.ensurePtrTknOnPage(page, opts?.skipEmpresaSelect ? undefined : empresaRut);
+    } else {
+      console.log('[SII] emitir — reutilizando tab con ptrTkn (sin listado emitidos)');
+    }
 
     const url = buildEmitFormUrl(tipoCodigo, codigoOriginal);
     const modo = codigoOriginal?.trim() ? `copiar ${codigoOriginal}` : 'factura nueva';
@@ -3128,7 +3137,7 @@ export class SiiFacturacionService {
     }).catch(async () => {
       await page.goto(url, { waitUntil: 'commit', timeout: 60000, referer: SII_URLS.listadoEmitidos });
     });
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(800);
 
     const pageUrl = page.url();
     const pageTitle = await page.title().catch(() => '?');
@@ -3335,7 +3344,9 @@ export class SiiFacturacionService {
         type: e.type || e.tagName.toLowerCase(),
       })).filter((e: any) => e.name);
     }).catch(() => []);
-    console.log('[SII] emitir — TODOS los inputs del form:', JSON.stringify(allInputNames));
+    if (/^(1|true|yes)$/i.test(String(process.env.SII_DEBUG || '').trim())) {
+      console.log('[SII] emitir — inputs form:', allInputNames.length);
+    }
 
     // Función genérica: rellena el primer input cuyo name matchee el patrón
     const fillByPattern = async (pattern: RegExp, value: string) => {
@@ -3772,11 +3783,24 @@ export class SiiFacturacionService {
       console.log(`[SII] emitir — URL final: ${urlFinal}`);
       console.log(`[SII] emitir — texto final (primeros 400): ${pageTextFinal.slice(0, 400)}`);
 
-      // Verificar éxito real: SII redirige a página de confirmación o muestra "emitido"
+      if (/folio\s*no\s*asignado/i.test(pageTextFinal)) {
+        return {
+          success: false,
+          error: 'El SII no asignó folio. Revisa datos del pedido o emite manualmente en sii.cl.',
+        };
+      }
+
+      const sendXmlOk = ctx2.pages().some((p) => !p.isClosed() && /mipeSendXML/i.test(p.url()));
+      const folioFinalMatch = pageTextFinal.match(/[Ff]olio[:\s#N°°]*(\d+)/);
+      const folioFinal = folioFinalMatch ? parseInt(folioFinalMatch[1], 10) : folio;
+      const siiCodigo = SiiFacturacionService.extractSiiCodigoFromPages(ctx2) ?? undefined;
+
       const esEmitidoOk =
-        /emitid|DTE emitido|fue enviado|procesado correctamente|folio asignado/i.test(pageTextFinal) ||
-        /mipeAdminDocsEmi|listadoEmitidos|exito/i.test(urlFinal) ||
-        (firmaResult === 'nav' && dialogoFirmaRespondido);
+        (folioFinal && folioFinal > 0) ||
+        sendXmlOk ||
+        (/emitid|DTE emitido|fue enviado|procesado correctamente/i.test(pageTextFinal) &&
+          !/folio\s*no\s*asignado/i.test(pageTextFinal)) ||
+        /mipeAdminDocsEmi|exito/i.test(urlFinal);
 
       if (!esEmitidoOk && firmaResult === 'timeout') {
         // Diagnóstico completo en timeout
@@ -3794,12 +3818,20 @@ export class SiiFacturacionService {
         };
       }
 
-      // Extraer folio final desde la página de confirmación si cambió
-      const folioFinalMatch = pageTextFinal.match(/[Ff]olio[:\s]+(\d+)/);
-      const folioFinal = folioFinalMatch ? parseInt(folioFinalMatch[1], 10) : folio;
+      if (!esEmitidoOk) {
+        return {
+          success: false,
+          folio: folioFinal,
+          siiCodigo,
+          error:
+            'La firma se envió pero el SII no confirmó la emisión (sin folio). Revisa en sii.cl antes de reintentar.',
+        };
+      }
 
-      console.log(`[SII] emitir GUARDAR OK — folio=${folioFinal} url=${urlFinal} firmaResult=${firmaResult} dialogoFirma=${dialogoFirmaRespondido}`);
-      return { success: true, folio: folioFinal };
+      console.log(
+        `[SII] emitir OK — folio=${folioFinal ?? '—'} codigo=${siiCodigo ?? '—'} (${Date.now() - t0}ms)`,
+      );
+      return { success: true, folio: folioFinal, siiCodigo };
     } finally {
       ctx2.off('page', onNuevaPagina);
       for (const p of paginasConHandler) {
@@ -4067,6 +4099,7 @@ export class SiiFacturacionService {
           const listHtml = await bootstrapPage.content().catch(() => '');
           if (!isSiiRejectionOrBlockHtml(listHtml)) {
             session.playwrightReady = true;
+            session.scraperPage = bootstrapPage;
             console.log('[SII] Playwright listo via cookies HTTP');
             return context;
           }
@@ -4075,7 +4108,9 @@ export class SiiFacturacionService {
       } catch (err: any) {
         console.warn('[SII] Bootstrap HTTP falló:', err?.message || err);
       } finally {
-        await safeClosePage(bootstrapPage);
+        if (session.scraperPage !== bootstrapPage) {
+          await safeClosePage(bootstrapPage);
+        }
       }
     }
 
@@ -4092,15 +4127,59 @@ export class SiiFacturacionService {
         if (ok) {
           await this.ensurePtrTknOnPage(loginPage, session.empresaRut);
           session.playwrightReady = true;
+          session.scraperPage = loginPage;
           console.log('[SII] Contexto listo: login Playwright completo, ptrTkn disponible');
         }
       } catch (err: any) {
         console.warn('[SII] Playwright login falló:', err?.message || err);
       } finally {
-        await safeClosePage(loginPage);
+        if (session.scraperPage !== loginPage) {
+          await safeClosePage(loginPage);
+        }
       }
     }
     return context;
+  }
+
+  /** Reutiliza la pestaña con ptrTkn ya inicializado (evita listado emitidos duplicado). */
+  static async acquireScraperPage(session: SiiSession): Promise<{ page: Page; reused: boolean }> {
+    const context = await this.ensureBrowserForSession(session);
+    const existing = session.scraperPage;
+    if (existing && !existing.isClosed()) {
+      return { page: existing, reused: true };
+    }
+    const page = await context.newPage();
+    wireSafeDialogs(page);
+    session.scraperPage = page;
+    return { page, reused: false };
+  }
+
+  static extractSiiCodigoFromPages(ctx: BrowserContext): string | null {
+    for (const p of ctx.pages()) {
+      if (p.isClosed()) continue;
+      const url = p.url();
+      const m = url.match(/[?&](?:CODIGO|DHDR_CODIGO)=([^&]+)/i);
+      if (m?.[1]) return decodeURIComponent(m[1]);
+    }
+    return null;
+  }
+
+  /** Última factura emitida en el listado SII para un RUT receptor (pág. reciente). */
+  static async findUltimaFacturaParaReceptor(
+    axiosClient: AxiosInstance,
+    rutReceptor: string,
+    tipoCodigo = 33,
+  ): Promise<{ codigo: string; folio: number } | null> {
+    const key = rutReceptor.replace(/\./g, '').replace(/-/g, '').replace(/\s/g, '').toLowerCase();
+    if (!key) return null;
+    const list = await this.getFacturasEmitidas(axiosClient, { tipoCodigo, maxPaginas: 2 });
+    for (const f of list) {
+      const fk = (f.rutReceptor || '').replace(/\./g, '').replace(/-/g, '').replace(/\s/g, '').toLowerCase();
+      if (fk === key && f.codigo && f.folio > 0) {
+        return { codigo: f.codigo, folio: f.folio };
+      }
+    }
+    return null;
   }
 
   // ── Ver factura real en SII ───────────────────────────────────────────────

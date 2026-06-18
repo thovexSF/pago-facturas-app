@@ -11,6 +11,7 @@ router.post('/sync/:orderId', BiomaFacturacionController.sync);
 router.get('/emision/:orderId', BiomaFacturacionController.getEmision);
 router.post('/preview/:orderId', BiomaFacturacionController.preview);
 router.post('/emitir/:orderId', BiomaFacturacionController.emitir);
+router.post('/pdf/:orderId/fetch', BiomaFacturacionController.fetchPdf);
 router.get('/pdf/:orderId', BiomaFacturacionController.pdf);
 router.get('/whatsapp-link/:orderId', BiomaFacturacionController.whatsappLink);
 router.post('/whatsapp-sent/:orderId', BiomaFacturacionController.whatsappSent);
