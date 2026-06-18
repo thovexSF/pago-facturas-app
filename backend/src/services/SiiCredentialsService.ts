@@ -18,12 +18,20 @@ export class SiiCredentialsService {
     return SiiCredentialsService.instance;
   }
 
+  private static siiUsername(): string {
+    return (
+      process.env.SII_USERNAME?.trim() ||
+      process.env.SII_RUT?.trim() ||
+      ''
+    );
+  }
+
   hasCredentials(): boolean {
-    return !!(process.env.SII_USERNAME?.trim() && process.env.SII_PASSWORD?.trim());
+    return !!(SiiCredentialsService.siiUsername() && process.env.SII_PASSWORD?.trim());
   }
 
   getCredentials(): SiiCredentials | null {
-    const username = process.env.SII_USERNAME?.trim();
+    const username = SiiCredentialsService.siiUsername();
     const password = process.env.SII_PASSWORD?.trim();
     if (!username || !password) return null;
     const companies: string[] = [];
