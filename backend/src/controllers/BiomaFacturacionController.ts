@@ -1,8 +1,9 @@
 import { Request, Response } from 'express';
 import { BiomaFacturacionService } from '../services/BiomaFacturacionService';
 import { BiomaShopifyService } from '../services/BiomaShopifyService';
+import { BiomaEmitService } from '../services/BiomaEmitService';
+import { BiomaAutoEmitService } from '../services/BiomaAutoEmitService';
 import { SiiFacturacionService } from '../services/SiiFacturacionService';
-import { SiiCredentialsService } from '../services/SiiCredentialsService';
 
 /**
  * Endpoints under /api/bioma/* that bridge Shopify orders with the existing
@@ -25,6 +26,52 @@ export class BiomaFacturacionController {
         ...info,
       });
     } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  }
+
+  // GET /api/bioma/config — auto-emisión y empresa
+  static async config(_req: Request, res: Response) {
+    try {
+      return res.json({
+        success: true,
+        empresaRut: BiomaFacturacionService.getEmpresaRutConfig(),
+        autoEmitFactura: BiomaAutoEmitService.isAutoEmitFacturaEnabled(),
+        autoEmitBoleta: BiomaAutoEmitService.isAutoEmitBoletaEnabled(),
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  }
+
+  // GET /api/bioma/facturas-realizadas
+  static async facturasRealizadas(req: Request, res: Response) {
+    try {
+      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
+      const pageSize = req.query.pageSize ? parseInt(String(req.query.pageSize), 10) : 50;
+      const data = await BiomaFacturacionService.listRealizadas({
+        page: Number.isFinite(page) ? page : 1,
+        pageSize: Number.isFinite(pageSize) ? pageSize : 50,
+      });
+      return res.json({ success: true, ...data });
+    } catch (err: any) {
+      console.error('[bioma] facturasRealizadas error:', err?.message || err);
+      return res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  }
+
+  // GET /api/bioma/boletas-pendientes
+  static async boletasPendientes(req: Request, res: Response) {
+    try {
+      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
+      const pageSize = req.query.pageSize ? parseInt(String(req.query.pageSize), 10) : 50;
+      const data = await BiomaFacturacionService.listBoletasPendientes({
+        page: Number.isFinite(page) ? page : 1,
+        pageSize: Number.isFinite(pageSize) ? pageSize : 50,
+      });
+      return res.json({ success: true, ...data });
+    } catch (err: any) {
+      console.error('[bioma] boletasPendientes error:', err?.message || err);
       return res.status(500).json({ success: false, error: err?.message || String(err) });
     }
   }
@@ -158,137 +205,53 @@ export class BiomaFacturacionController {
     if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
     if (!sessionId) return res.status(400).json({ error: 'sessionId requerido (crea una sesión SII primero)' });
 
-    const session = SiiFacturacionService.getSession(sessionId);
-    if (!session) return res.status(401).json({ error: 'Sesión SII no encontrada o expirada' });
-
     const { scraperStep } = flags;
-    const isEmit = scraperStep === 'emitir';
 
     try {
-      const order = await BiomaShopifyService.getOrder(orderId);
-      if (!order) return res.status(404).json({ error: 'Pedido no encontrado en Shopify' });
-      const row = await BiomaFacturacionService.upsertFromShopify(order);
-
-      const templateInfo = await BiomaFacturacionService.resolveTemplateInfo({
-        rutReceptor: row.rutReceptor,
-        tipoCodigo: tipoCodigo || row.tipoCodigo || 33,
+      const out = await BiomaEmitService.emitOrder(orderId, {
+        sessionId,
+        scraperStep,
+        codigoOriginal,
+        tipoCodigo,
+        fechaEmision,
+        esperarMsEnPreview: Number.isFinite(parseInt(String(esperarMsEnPreview), 10))
+          ? parseInt(String(esperarMsEnPreview), 10)
+          : undefined,
       });
-      const codigoTemplate =
-        (codigoOriginal && String(codigoOriginal).trim()) ||
-        templateInfo.codigo ||
-        null;
 
-      if (scraperStep === 'rellenar') {
-        await BiomaFacturacionService.setStatus(orderId, 'drafting');
-      } else if (isEmit) {
-        await BiomaFacturacionService.setStatus(orderId, 'emitting');
-      }
-
-      const items = BiomaFacturacionService.buildItemsFromOrder(
-        order,
-        row.tipoCodigo || 33,
-      ).map((it, i) => ({
-        numero: i + 1,
-        descripcion: it.descripcion,
-        cantidad: it.cantidad,
-        precioUnitario: it.precioUnitario,
-      }));
-
-      const context = await SiiFacturacionService.ensureBrowserForSession(session);
-      const { page: emitPage, reused } = await SiiFacturacionService.acquireScraperPage(session);
-      const reusedPtrTkn =
-        reused &&
-        !!session.playwrightReady &&
-        /listadoEmitidos|mipeAdminDocsEmi/i.test(emitPage.url());
-      let result;
-      try {
-        const creds = SiiCredentialsService.getInstance().getCredentials();
-        result = await SiiFacturacionService.emitirFactura(
-          emitPage,
-          {
-            codigoOriginal: codigoTemplate,
-            empresaRut: session.empresaRut,
-            tipoCodigo: tipoCodigo || row.tipoCodigo || 33,
-            fechaEmision: fechaEmision || new Date().toISOString().split('T')[0],
-            items,
-            rutReceptor: row.rutReceptor || '',
-            razonSocial: row.razonSocial || '',
-            giroReceptor: row.giroReceptor || '',
-            comunaReceptor: row.comunaReceptor || '',
-            ciudadReceptor: row.ciudadReceptor || '',
-            dirReceptor: row.dirReceptor || '',
-          },
-          {
-            detenerEnPreview: !isEmit,
-            previewSoloFormulario: scraperStep === 'rellenar',
-            scraperStep,
-            skipEmpresaSelect: !!session.playwrightReady,
-            skipPtrTkn: reusedPtrTkn,
-            esperarMsEnPreview: Number.isFinite(parseInt(String(esperarMsEnPreview), 10))
-              ? parseInt(String(esperarMsEnPreview), 10)
-              : undefined,
-            firmaClave: creds?.firmaClave,
-          },
-        );
-      } finally {
-        if (!result?.success && !result?.detenidoEnPreview) {
-          await emitPage.close().catch(() => {});
-          if (session.scraperPage === emitPage) session.scraperPage = undefined;
-        }
-      }
-
-      if (!result?.success) {
-        await BiomaFacturacionService.setStatus(orderId, 'error', {
-          lastError: result?.error || 'Scraper falló sin mensaje',
+      if (!out.success) {
+        const status = out.result?.detenidoEnPreview ? 200 : 502;
+        return res.status(status).json({
+          success: false,
+          error: out.error,
+          step: scraperStep,
+          result: out.result,
+          message: out.error,
         });
-        return res.status(502).json({ success: false, error: result?.error, step: scraperStep, result });
       }
 
-      if (!isEmit) {
-        if (scraperStep === 'rellenar') {
-          await BiomaFacturacionService.setStatus(orderId, 'drafting', { lastError: null });
-        }
+      if (scraperStep !== 'emitir') {
+        const templateInfo = await BiomaFacturacionService.resolveTemplateInfo({
+          rutReceptor: out.row?.rutReceptor,
+          tipoCodigo: tipoCodigo || out.row?.tipoCodigo || 33,
+        });
         return res.json({
           success: true,
           step: scraperStep,
-          result,
+          result: out.result,
           template: templateInfo,
-          row: await BiomaFacturacionService.findEmision(orderId),
-          message: result.aviso,
+          row: out.row,
+          message: out.result?.aviso,
         });
       }
 
-      if (!result?.folio && result?.detenidoEnPreview) {
-        await BiomaFacturacionService.setStatus(orderId, 'drafting', {
-          lastError: result.error || 'Firma manual pendiente en Chrome',
-        });
-        return res.json({
-          success: false,
-          step: scraperStep,
-          result,
-          error: result.error,
-          message: result.error,
-        });
-      }
-
-      // Real emit succeeded — persist folio/código y tag Shopify.
-      const siiCodigo = result.siiCodigo || codigoTemplate;
-      const siiFolio = result.folio ?? null;
-
-      const updated = await BiomaFacturacionService.setStatus(orderId, 'emitted', {
-        siiFolio,
-        siiCodigo,
-        emittedAt: new Date(),
-        lastError: null,
+      return res.json({
+        success: true,
+        step: 'emitir',
+        result: out.result,
+        row: out.row,
+        pdfUrl: out.pdfUrl,
       });
-
-      try {
-        await BiomaShopifyService.markEmitted(orderId);
-      } catch (tagErr: any) {
-        console.error('[bioma] tag swap failed (factura emitted but Shopify tag not updated):', tagErr?.message || tagErr);
-      }
-
-      return res.json({ success: true, step: 'emitir', result, row: updated, pdfUrl: siiCodigo ? `/api/bioma/pdf/${encodeURIComponent(orderId)}` : null });
     } catch (err: any) {
       console.error('[bioma] emit flow error:', err?.message || err);
       await BiomaFacturacionService.setStatus(orderId, 'error', {

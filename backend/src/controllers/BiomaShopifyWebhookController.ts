@@ -40,7 +40,8 @@ export class BiomaShopifyWebhookController {
     try {
       const result = await BiomaShopifyService.handleOrderPaidWebhook(payload);
       if (result.tagged) {
-        console.log(`[bioma webhook] Pedido ${result.orderName} etiquetado factura`);
+        const extra = result.autoQueued ? ' (auto-emit encolado)' : '';
+        console.log(`[bioma webhook] Pedido ${result.orderName} → ${result.kind}${extra}`);
       }
       return res.status(200).send('OK');
     } catch (err: any) {

@@ -6,10 +6,10 @@ Monorepo unificado en Railway: **facturas por pagar** + **emisión SII** (Shopif
 
 | Ruta | Qué es |
 |------|--------|
-| `/` | **Facturas por pagar** — recibidas del SII, vencimientos, proveedores |
-| `/sii` | **Facturación SII** — pedidos Shopify con tag `factura`, preview, emitir DTE |
-| `/api/bioma/*` | API emisión Shopify |
-| `/api/sii-facturacion/*` | API SII avanzada (billing) |
+| `/` | **Facturas proveedores** — recibidas del SII, calendario, vencimientos |
+| `/sii` | **Facturación** — facturas pendientes, boletas, realizadas, emisión SII |
+| `/api/bioma/*` | API emisión Shopify (facturas + boletas + auto-emit) |
+| `/api/sii-facturacion/*` | API SII interna (sesión, PDF, scraper) |
 
 ## Railway
 
@@ -42,6 +42,8 @@ BIOMA_SHOPIFY_SHOP=biomacoffee.myshopify.com
 BIOMA_SHOPIFY_API_CLIENT_ID=...
 BIOMA_SHOPIFY_API_CLIENT_SECRET=...
 BIOMA_EMPRESA_RUT=78015129-3
+BIOMA_AUTO_EMIT=1              # opcional: emitir factura al pagar (toggle checkout)
+BIOMA_AUTO_EMIT_BOLETA=1       # opcional: emitir boleta si NO hay toggle factura
 
 # SII workbench
 SII_USERNAME=...

@@ -21,6 +21,8 @@ import {
 import {
   BIOMA_FACTURA_ATTR,
   getOrderCustomAttribute,
+  orderWantsFactura,
+  SII_RUT_CONSUMIDOR_FINAL,
 } from '../utils/biomaOrderAttrs';
 import { sanitizeDescripcionParaSii } from './SiiFacturacionService';
 
@@ -228,6 +230,58 @@ export class BiomaFacturacionService {
     return { rows, pageInfo };
   }
 
+  /** Facturas/boletas ya emitidas (desde nuestra DB, no sync masivo SII avanzado). */
+  static async listRealizadas(opts: {
+    page?: number;
+    pageSize?: number;
+  } = {}): Promise<{
+    rows: BiomaFacturaEmisionEntity[];
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    const pageSize = Math.min(Math.max(opts.pageSize ?? 50, 1), 100);
+    const page = Math.max(opts.page ?? 1, 1);
+    const skip = (page - 1) * pageSize;
+
+    const qb = this.repo
+      .createQueryBuilder('e')
+      .where('e.empresa_rut = :empresaRut', { empresaRut: this.empresaRut })
+      .andWhere('e.status = :status', { status: 'emitted' })
+      .orderBy('e.emitted_at', 'DESC', 'NULLS LAST')
+      .addOrderBy('e.updated_at', 'DESC');
+
+    const total = await qb.getCount();
+    const rows = await qb.skip(skip).take(pageSize).getMany();
+    return { rows, total, page, pageSize };
+  }
+
+  /** Boletas pendientes de emitir (tipo 39, registradas vía webhook). */
+  static async listBoletasPendientes(opts: {
+    page?: number;
+    pageSize?: number;
+  } = {}): Promise<{
+    rows: BiomaFacturaEmisionEntity[];
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    const pageSize = Math.min(Math.max(opts.pageSize ?? 50, 1), 100);
+    const page = Math.max(opts.page ?? 1, 1);
+    const skip = (page - 1) * pageSize;
+
+    const qb = this.repo
+      .createQueryBuilder('e')
+      .where('e.empresa_rut = :empresaRut', { empresaRut: this.empresaRut })
+      .andWhere('e.tipo_codigo IN (:...tipos)', { tipos: [39, 41] })
+      .andWhere('e.status IN (:...statuses)', { statuses: ['pending', 'error', 'drafting'] })
+      .orderBy('e.created_at', 'DESC');
+
+    const total = await qb.getCount();
+    const rows = await qb.skip(skip).take(pageSize).getMany();
+    return { rows, total, page, pageSize };
+  }
+
   /**
    * Maps a Shopify order's line items into the SII items shape.
    * Each line collapses discount into the unit price so subtotal matches.
@@ -262,6 +316,8 @@ export class BiomaFacturacionService {
     order: ShopifyOrderForBioma,
   ): Promise<BiomaFacturaEmisionEntity> {
     const existing = await this.findEmision(order.id);
+    const wantsFactura = orderWantsFactura(order.customAttributes);
+    const tipoCodigo = wantsFactura ? 33 : 39;
 
     const shippingPhone = order.shippingAddress?.phone ?? null;
     const customerPhone = normalizePhoneForWhatsApp(
@@ -277,22 +333,26 @@ export class BiomaFacturacionService {
       shopifyOrderName: order.name,
       shopifyOrderNumber: order.orderNumber,
       empresaRut: this.empresaRut,
-      rutReceptor: attr(order, BIOMA_FACTURA_ATTR.rut) || null,
-      razonSocial: attr(order, BIOMA_FACTURA_ATTR.razon) || null,
-      giroReceptor: attr(order, BIOMA_FACTURA_ATTR.giro) || null,
+      rutReceptor:
+        attr(order, BIOMA_FACTURA_ATTR.rut) ||
+        (tipoCodigo === 39 ? SII_RUT_CONSUMIDOR_FINAL : null),
+      razonSocial:
+        attr(order, BIOMA_FACTURA_ATTR.razon) ||
+        (tipoCodigo === 39 ? customerName || 'Consumidor Final' : null),
+      giroReceptor: attr(order, BIOMA_FACTURA_ATTR.giro) || (tipoCodigo === 39 ? 'Particular' : null),
       comunaReceptor: order.shippingAddress?.city || null,
       ciudadReceptor: order.shippingAddress?.province || null,
       dirReceptor: order.shippingAddress?.address1 || null,
       customerPhone,
       customerName,
       customerEmail: order.customer?.email || null,
-      items: this.buildItemsFromOrder(order, existing?.tipoCodigo ?? 33).map((it) => ({
+      items: this.buildItemsFromOrder(order, existing?.tipoCodigo ?? tipoCodigo).map((it) => ({
         descripcion: it.descripcion,
         cantidad: it.cantidad,
         precioUnitario: it.precioUnitario,
         subtotal: it.subtotal,
       })),
-      tipoCodigo: existing?.tipoCodigo ?? 33,
+      tipoCodigo: existing?.status === 'emitted' ? existing.tipoCodigo : tipoCodigo,
     };
 
     if (existing) {

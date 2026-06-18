@@ -6,6 +6,9 @@ export const BIOMA_FACTURA_ATTR = {
   giro: '_giro_empresa',
 } as const;
 
+/** RUT estándar SII para boleta a consumidor final (sin datos de factura en checkout). */
+export const SII_RUT_CONSUMIDOR_FINAL = '66666666-6';
+
 export function getOrderCustomAttribute(
   attrs: Array<{ key: string; value: string }>,
   key: string,

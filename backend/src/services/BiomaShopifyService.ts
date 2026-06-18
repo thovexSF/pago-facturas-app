@@ -23,6 +23,8 @@ const DEFAULT_API_VERSION = '2025-10';
 export const DEFAULT_FACTURA_TAG = 'factura';
 /** Tag fijo al emitir DTE (reemplaza `factura`). Alineado con Shopify Flow. */
 export const FACTURA_EMITIDA_TAG = 'facturado';
+export const DEFAULT_BOLETA_TAG = 'boleta';
+export const BOLETA_EMITIDA_TAG = 'boletado';
 
 interface TokenCache {
   token: string;
@@ -411,6 +413,20 @@ export class BiomaShopifyService {
     await this.removeTags(orderId, [this.facturaTag]);
   }
 
+  static async markBoletaEmitted(orderId: string): Promise<void> {
+    await this.addTags(orderId, [BOLETA_EMITIDA_TAG]);
+    await this.removeTags(orderId, [DEFAULT_BOLETA_TAG]);
+  }
+
+  /** Marca pedido según tipo DTE emitido. */
+  static async markDteEmitted(orderId: string, tipoCodigo: number): Promise<void> {
+    if (tipoCodigo === 39 || tipoCodigo === 41) {
+      await this.markBoletaEmitted(orderId);
+    } else {
+      await this.markEmitted(orderId);
+    }
+  }
+
   /**
    * Webhook orders/paid: si el cliente activó factura en checkout, agrega tag `factura`
    * para que aparezca en el workbench (BiomaFacturacion).
@@ -418,7 +434,13 @@ export class BiomaShopifyService {
   static async handleOrderPaidWebhook(payload: {
     admin_graphql_api_id?: string;
     name?: string;
-  }): Promise<{ tagged: boolean; orderName?: string; reason?: string }> {
+  }): Promise<{
+    tagged: boolean;
+    orderName?: string;
+    reason?: string;
+    kind?: 'factura' | 'boleta';
+    autoQueued?: boolean;
+  }> {
     const orderGid = payload.admin_graphql_api_id;
     if (!orderGid) {
       return { tagged: false, reason: 'sin admin_graphql_api_id' };
@@ -429,21 +451,46 @@ export class BiomaShopifyService {
       return { tagged: false, orderName: payload.name, reason: 'pedido no encontrado' };
     }
 
-    if (!orderWantsFactura(order.customAttributes)) {
-      return { tagged: false, orderName: order.name, reason: 'sin _factura_enabled' };
+    const { BiomaFacturacionService } = await import('./BiomaFacturacionService');
+    const { BiomaAutoEmitService } = await import('./BiomaAutoEmitService');
+
+    if (orderWantsFactura(order.customAttributes)) {
+      if (order.tags.includes(this.facturaTag) || order.tags.includes(this.facturaEmitidaTag)) {
+        return { tagged: false, orderName: order.name, reason: 'ya procesado como factura', kind: 'factura' };
+      }
+
+      const rut = getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.rut);
+      if (!rut) {
+        console.warn(`[bioma] ${order.name}: factura activada pero sin RUT — no se etiqueta`);
+        return { tagged: false, orderName: order.name, reason: 'sin RUT', kind: 'factura' };
+      }
+
+      await this.addTags(orderGid, [this.facturaTag]);
+      await BiomaFacturacionService.upsertFromShopify(order);
+
+      let autoQueued = false;
+      if (BiomaAutoEmitService.isAutoEmitFacturaEnabled()) {
+        BiomaAutoEmitService.enqueue(orderGid, 'factura');
+        autoQueued = true;
+      }
+      return { tagged: true, orderName: order.name, kind: 'factura', autoQueued };
     }
 
-    if (order.tags.includes(this.facturaTag)) {
-      return { tagged: false, orderName: order.name, reason: 'ya tiene tag factura' };
+    // Sin toggle factura → boleta electrónica (B2C)
+    if (order.tags.includes(BOLETA_EMITIDA_TAG)) {
+      return { tagged: false, orderName: order.name, reason: 'boleta ya emitida', kind: 'boleta' };
     }
 
-    const rut = getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.rut);
-    if (!rut) {
-      console.warn(`[bioma] ${order.name}: factura activada pero sin RUT — no se etiqueta`);
-      return { tagged: false, orderName: order.name, reason: 'sin RUT' };
+    if (!order.tags.includes(DEFAULT_BOLETA_TAG)) {
+      await this.addTags(orderGid, [DEFAULT_BOLETA_TAG]);
     }
+    await BiomaFacturacionService.upsertFromShopify(order);
 
-    await this.addTags(orderGid, [this.facturaTag]);
-    return { tagged: true, orderName: order.name };
+    let autoQueued = false;
+    if (BiomaAutoEmitService.isAutoEmitBoletaEnabled()) {
+      BiomaAutoEmitService.enqueue(orderGid, 'boleta');
+      autoQueued = true;
+    }
+    return { tagged: true, orderName: order.name, kind: 'boleta', autoQueued };
   }
 }

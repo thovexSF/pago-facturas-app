@@ -3,7 +3,7 @@ import {
   Box, Typography, Paper, Button, Alert, CircularProgress, Table, TableBody,
   TableCell, TableContainer, TableHead, TableRow, Chip, Snackbar,
   Stack, LinearProgress, Accordion, AccordionSummary, AccordionDetails,
-  Grid, Divider,
+  Grid, Divider, Tabs, Tab,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/esm/ExpandMore.js';
 import RefreshIcon from '@mui/icons-material/esm/Refresh.js';
@@ -41,6 +41,7 @@ interface PayloadData {
   rutReceptor: string | null;
   razonSocial: string | null;
   giroReceptor: string | null;
+  tipoCodigo?: number;
   items: Array<{ numero: number; descripcion: string; cantidad: number; precioUnitario: number; subtotal: number }>;
   template: {
     codigo: string | null;
@@ -48,6 +49,30 @@ interface PayloadData {
     templateCliente?: string | null;
     source?: 'env' | 'cliente_emision' | 'cliente_sii' | 'nueva';
   };
+}
+
+interface EmisionDbRow {
+  shopifyOrderId: string;
+  shopifyOrderName: string;
+  customerName: string | null;
+  rutReceptor: string | null;
+  razonSocial: string | null;
+  tipoCodigo: number;
+  status: BiomaEmision['status'];
+  siiFolio: number | null;
+  siiCodigo: string | null;
+  emittedAt: string | null;
+  createdAt?: string | null;
+  lastError: string | null;
+}
+
+type ModuleTab = 'pendientes' | 'boletas' | 'realizadas';
+
+function dteLabel(tipo: number): string {
+  if (tipo === 39) return 'Boleta';
+  if (tipo === 41) return 'Boleta exenta';
+  if (tipo === 34) return 'Factura exenta';
+  return 'Factura';
 }
 
 function templateLabel(t: PayloadData['template'] | null | undefined): string {
@@ -80,12 +105,18 @@ function statusChip(status?: BiomaEmision['status']) {
 }
 
 export default function BiomaFacturacion() {
+  const [moduleTab, setModuleTab] = useState<ModuleTab>('pendientes');
   const [empresaRut, setEmpresaRut] = useState('');
+  const [autoEmitFactura, setAutoEmitFactura] = useState(false);
+  const [autoEmitBoleta, setAutoEmitBoleta] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(() => localStorage.getItem('biomaSiiSessionId'));
   const [configOpen, setConfigOpen] = useState(() => !localStorage.getItem('biomaSiiSessionId'));
 
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<PendingRow[]>([]);
+  const [boletasRows, setBoletasRows] = useState<EmisionDbRow[]>([]);
+  const [realizadasRows, setRealizadasRows] = useState<EmisionDbRow[]>([]);
+  const [realizadasTotal, setRealizadasTotal] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [payload, setPayload] = useState<PayloadData | null>(null);
   const [payloadLoading, setPayloadLoading] = useState(false);
@@ -168,6 +199,45 @@ export default function BiomaFacturacion() {
     }
   }, []);
 
+  const loadBoletas = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${BIOMA_API}/boletas-pendientes?pageSize=50`);
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+      setBoletasRows(data.rows || []);
+    } catch (e: any) {
+      setError(`Boletas: ${e?.message || e}`);
+      setBoletasRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadRealizadas = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${BIOMA_API}/facturas-realizadas?pageSize=50`);
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+      setRealizadasRows(data.rows || []);
+      setRealizadasTotal(data.total ?? data.rows?.length ?? 0);
+    } catch (e: any) {
+      setError(`Realizadas: ${e?.message || e}`);
+      setRealizadasRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const refreshCurrentTab = useCallback(() => {
+    if (moduleTab === 'pendientes') return loadPending();
+    if (moduleTab === 'boletas') return loadBoletas();
+    return loadRealizadas();
+  }, [moduleTab, loadPending, loadBoletas, loadRealizadas]);
+
   const loadPayload = useCallback(async (orderId: string) => {
     setPayloadLoading(true);
     try {
@@ -183,17 +253,33 @@ export default function BiomaFacturacion() {
     }
   }, []);
 
-  useEffect(() => { loadPending(); }, [loadPending]);
+  useEffect(() => { loadPending(); loadBoletas(); loadRealizadas(); }, [loadPending, loadBoletas, loadRealizadas]);
 
   useEffect(() => {
-    fetch(`${BIOMA_API}/template-codigo`)
+    fetch(`${BIOMA_API}/config`)
       .then((r) => r.json())
-      .then((d) => { if (d.empresaRut) setEmpresaRut(d.empresaRut); })
-      .catch(() => {});
+      .then((d) => {
+        if (d.empresaRut) setEmpresaRut(d.empresaRut);
+        setAutoEmitFactura(!!d.autoEmitFactura);
+        setAutoEmitBoleta(!!d.autoEmitBoleta);
+      })
+      .catch(() => {
+        fetch(`${BIOMA_API}/template-codigo`)
+          .then((r) => r.json())
+          .then((d) => { if (d.empresaRut) setEmpresaRut(d.empresaRut); })
+          .catch(() => {});
+      });
   }, []);
 
   const selectOrder = useCallback((row: PendingRow) => {
     const id = row.shopify.id;
+    setSelectedId((prev) => (prev === id ? null : id));
+    setPayload(null);
+    if (id) loadPayload(id);
+  }, [loadPayload]);
+
+  const selectBoleta = useCallback((row: EmisionDbRow) => {
+    const id = row.shopifyOrderId;
     setSelectedId((prev) => (prev === id ? null : id));
     setPayload(null);
     if (id) loadPayload(id);
@@ -267,7 +353,7 @@ export default function BiomaFacturacion() {
     }
   }, [loadBlockStatus]);
 
-  const emitirFactura = useCallback(async (orderId: string) => {
+  const emitirDte = useCallback(async (orderId: string, opts?: { isBoleta?: boolean }) => {
     if (siiBlocked.blocked) {
       setError(`SII en pausa ~${siiBlocked.retryAfterMinutes} min.`);
       return;
@@ -277,12 +363,15 @@ export default function BiomaFacturacion() {
       setConfigOpen(true);
       return;
     }
-    if (!templateReady(payload?.template)) {
+    const isBoleta = opts?.isBoleta ?? payload?.tipoCodigo === 39;
+    if (!isBoleta && !templateReady(payload?.template)) {
       setError('No se pudo resolver plantilla SII.');
       return;
     }
     const ok = window.confirm(
-      '¿Emitir factura en el SII?\n\nTarda ~1 minuto. Si algo falla, corrígelo manual en sii.cl.',
+      isBoleta
+        ? '¿Emitir boleta electrónica en el SII?\n\nTarda ~1 minuto.'
+        : '¿Emitir factura en el SII?\n\nTarda ~1 minuto. Si algo falla, corrígelo manual en sii.cl.',
     );
     if (!ok) return;
 
@@ -299,8 +388,11 @@ export default function BiomaFacturacion() {
         throw new Error(data.error || data.result?.error || `HTTP ${res.status}`);
       }
       const folio = data.row?.siiFolio || data.result?.folio;
-      setSnack(folio ? `Factura emitida — folio ${folio}` : 'Factura emitida en el SII');
+      const tipo = data.row?.tipoCodigo ?? (isBoleta ? 39 : 33);
+      setSnack(folio ? `${dteLabel(tipo)} emitida — folio ${folio}` : `${dteLabel(tipo)} emitida en el SII`);
       await loadPending();
+      await loadBoletas();
+      await loadRealizadas();
       if (selectedId === orderId) await loadPayload(orderId);
     } catch (e: any) {
       setError(`Emitir: ${e?.message || e}`);
@@ -308,7 +400,7 @@ export default function BiomaFacturacion() {
     } finally {
       setBusyOrderId(null);
     }
-  }, [sessionReady, sessionId, payload, loadPending, loadPayload, selectedId, siiBlocked, loadBlockStatus]);
+  }, [sessionReady, sessionId, payload, loadPending, loadBoletas, loadRealizadas, loadPayload, selectedId, siiBlocked, loadBlockStatus]);
 
   const descargarPdf = useCallback(async (orderId: string) => {
     if (!sessionReady) {
@@ -335,10 +427,10 @@ export default function BiomaFacturacion() {
 
   const pendingRows = rows.filter((r) => r.emision?.status !== 'emitted');
   const pendingCount = pendingRows.length;
-  const errorCount = rows.filter((r) => r.emision?.status === 'error').length;
-  const emittedCount = rows.filter((r) => r.emision?.status === 'emitted').length;
+  const boletasCount = boletasRows.length;
   const pendingMonto = pendingRows.reduce((sum, r) => sum + (r.shopify.total || 0), 0);
   const selectedRow = rows.find((r) => r.shopify.id === selectedId) ?? null;
+  const selectedBoleta = boletasRows.find((r) => r.shopifyOrderId === selectedId) ?? null;
   const isBusy = busyOrderId === selectedId;
 
   return (
@@ -351,11 +443,31 @@ export default function BiomaFacturacion() {
           mb: 2.5,
         }}
       >
-        <StatCard value={pendingCount} label="Pedidos pendientes" variant={pendingCount ? 'warning' : 'default'} />
-        <StatCard value={errorCount} label="Con error" variant={errorCount ? 'warning' : 'default'} />
+        <StatCard value={pendingCount} label="Facturas pendientes" variant={pendingCount ? 'warning' : 'default'} />
+        <StatCard value={boletasCount} label="Boletas pendientes" variant={boletasCount ? 'warning' : 'default'} />
+        <StatCard value={realizadasTotal} label="Realizadas" variant="success" />
         <StatCard value={fmt(pendingMonto)} label="Monto por facturar" variant="amount" />
-        <StatCard value={emittedCount} label="Emitidas en lista" variant="success" />
       </Box>
+
+      {(autoEmitFactura || autoEmitBoleta) && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          Auto-emisión activa:
+          {autoEmitFactura && ' facturas (toggle checkout)'}
+          {autoEmitFactura && autoEmitBoleta && ' ·'}
+          {autoEmitBoleta && ' boletas (sin toggle)'}
+          {' '}— vía webhook <code>orders/paid</code> y cola en servidor.
+        </Alert>
+      )}
+
+      <Tabs
+        value={moduleTab}
+        onChange={(_, v: ModuleTab) => { setModuleTab(v); setSelectedId(null); setPayload(null); }}
+        sx={{ mb: 2, borderBottom: '2px solid #e2e8f0' }}
+      >
+        <Tab value="pendientes" label={`Facturas pendientes (${pendingCount})`} />
+        <Tab value="boletas" label={`Boletas pendientes (${boletasCount})`} />
+        <Tab value="realizadas" label={`Realizadas (${realizadasTotal})`} />
+      </Tabs>
 
       <Box
         sx={{
@@ -368,16 +480,24 @@ export default function BiomaFacturacion() {
         }}
       >
         <Typography variant="body2" color="text.secondary">
-          Pedidos Shopify con tag <strong>factura</strong> — preview y emisión DTE en el SII.
+          {moduleTab === 'pendientes' && (
+            <>Pedidos con tag <strong>factura</strong> (toggle checkout) — emisión DTE tipo 33.</>
+          )}
+          {moduleTab === 'boletas' && (
+            <>Pedidos B2C sin toggle factura — boleta electrónica tipo 39.</>
+          )}
+          {moduleTab === 'realizadas' && (
+            <>Documentos emitidos desde este módulo (facturas y boletas).</>
+          )}
         </Typography>
         <Button
           variant="contained"
           startIcon={<RefreshIcon />}
-          onClick={loadPending}
+          onClick={refreshCurrentTab}
           disabled={loading}
           sx={{ flexShrink: 0 }}
         >
-          Refrescar pedidos
+          Refrescar
         </Button>
       </Box>
 
@@ -422,7 +542,7 @@ export default function BiomaFacturacion() {
       >
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Typography fontWeight={500}>
-            Configuración SII {sessionReady ? '· sesión activa' : '· requerida para pasos ①②③'}
+            Configuración SII {sessionReady ? '· sesión activa' : '· requerida para emitir'}
           </Typography>
         </AccordionSummary>
         <AccordionDetails>
@@ -467,12 +587,63 @@ export default function BiomaFacturacion() {
       {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>{error}</Alert>}
       {loading && <LinearProgress sx={{ mb: 2, borderRadius: 1 }} />}
 
+      {moduleTab === 'realizadas' && (
+        <TableContainer component={Paper} variant="outlined" sx={{ bgcolor: '#fff' }}>
+          <Table size="small" stickyHeader>
+            <TableHead>
+              <TableRow>
+                <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Pedido</TableCell>
+                <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Tipo</TableCell>
+                <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Cliente</TableCell>
+                <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Folio</TableCell>
+                <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Emitida</TableCell>
+                <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>PDF</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {realizadasRows.length === 0 && !loading && (
+                <TableRow>
+                  <TableCell colSpan={6} align="center" sx={{ py: 6, color: 'text.secondary' }}>
+                    Aún no hay documentos emitidos desde este módulo.
+                  </TableCell>
+                </TableRow>
+              )}
+              {realizadasRows.map((row) => (
+                <TableRow key={row.shopifyOrderId} hover>
+                  <TableCell><Typography fontWeight={600} fontSize={13}>{row.shopifyOrderName}</Typography></TableCell>
+                  <TableCell>{dteLabel(row.tipoCodigo)}</TableCell>
+                  <TableCell>
+                    <Typography fontSize={13}>{row.razonSocial || row.customerName || '—'}</Typography>
+                    {row.rutReceptor && <Typography variant="caption">{formatRut(row.rutReceptor)}</Typography>}
+                  </TableCell>
+                  <TableCell>{row.siiFolio ?? '—'}</TableCell>
+                  <TableCell>
+                    {row.emittedAt ? new Date(row.emittedAt).toLocaleString('es-CL') : '—'}
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      disabled={!row.siiCodigo || busyOrderId === row.shopifyOrderId}
+                      onClick={() => descargarPdf(row.shopifyOrderId)}
+                    >
+                      PDF
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
+
+      {moduleTab !== 'realizadas' && (
       <Grid container spacing={2}>
-        <Grid item xs={12} md={selectedRow ? 5 : 12}>
+        <Grid item xs={12} md={(selectedRow || selectedBoleta) ? 5 : 12}>
           <TableContainer
             component={Paper}
             variant="outlined"
-            sx={{ bgcolor: '#fff', maxHeight: selectedRow ? 640 : undefined, overflow: 'auto' }}
+            sx={{ bgcolor: '#fff', maxHeight: (selectedRow || selectedBoleta) ? 640 : undefined, overflow: 'auto' }}
           >
             <Table size="small" stickyHeader>
               <TableHead>
@@ -480,19 +651,28 @@ export default function BiomaFacturacion() {
                   <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Pedido</TableCell>
                   <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Fecha</TableCell>
                   <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Cliente</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Total</TableCell>
+                  {moduleTab === 'pendientes' && (
+                    <TableCell align="right" sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Total</TableCell>
+                  )}
                   <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Estado</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {rows.length === 0 && !loading && (
+                {moduleTab === 'pendientes' && pendingRows.length === 0 && !loading && (
                   <TableRow>
                     <TableCell colSpan={5} align="center" sx={{ py: 6, color: 'text.secondary' }}>
-                      No hay pedidos con tag factura pendientes de emitir.
+                      No hay facturas pendientes (tag factura en Shopify).
                     </TableCell>
                   </TableRow>
                 )}
-                {rows.map((row) => {
+                {moduleTab === 'boletas' && boletasRows.length === 0 && !loading && (
+                  <TableRow>
+                    <TableCell colSpan={4} align="center" sx={{ py: 6, color: 'text.secondary' }}>
+                      No hay boletas pendientes. Llegan vía webhook al pagar pedidos sin toggle factura.
+                    </TableCell>
+                  </TableRow>
+                )}
+                {moduleTab === 'pendientes' && pendingRows.map((row) => {
                   const isSelected = selectedId === row.shopify.id;
                   const attrs = Object.fromEntries(
                     row.shopify.customAttributes.map((a) => [a.key, a.value]),
@@ -505,24 +685,37 @@ export default function BiomaFacturacion() {
                       hover
                       selected={isSelected}
                       onClick={() => selectOrder(row)}
-                      sx={{
-                        cursor: 'pointer',
-                        '&.Mui-selected': { bgcolor: 'rgba(43, 108, 176, 0.08) !important' },
-                        '&.Mui-selected:hover': { bgcolor: 'rgba(43, 108, 176, 0.12) !important' },
-                      }}
+                      sx={{ cursor: 'pointer', '&.Mui-selected': { bgcolor: 'rgba(43, 108, 176, 0.08) !important' } }}
                     >
-                      <TableCell>
-                        <Typography fontWeight={600} fontSize={13}>{row.shopify.name}</Typography>
-                      </TableCell>
+                      <TableCell><Typography fontWeight={600} fontSize={13}>{row.shopify.name}</Typography></TableCell>
                       <TableCell>{new Date(row.shopify.processedAt).toLocaleDateString('es-CL')}</TableCell>
                       <TableCell>
                         <Typography fontSize={13}>{razon || row.shopify.shippingAddress?.name || '—'}</Typography>
                         {rut && <Typography variant="caption">{formatRut(rut)}</Typography>}
                       </TableCell>
-                      <TableCell align="right">
-                        <Typography fontWeight={600} fontSize={13}>{fmt(row.shopify.total)}</Typography>
-                      </TableCell>
+                      <TableCell align="right"><Typography fontWeight={600} fontSize={13}>{fmt(row.shopify.total)}</Typography></TableCell>
                       <TableCell>{statusChip(row.emision?.status)}</TableCell>
+                    </TableRow>
+                  );
+                })}
+                {moduleTab === 'boletas' && boletasRows.map((row) => {
+                  const isSelected = selectedId === row.shopifyOrderId;
+                  return (
+                    <TableRow
+                      key={row.shopifyOrderId}
+                      hover
+                      selected={isSelected}
+                      onClick={() => selectBoleta(row)}
+                      sx={{ cursor: 'pointer', '&.Mui-selected': { bgcolor: 'rgba(43, 108, 176, 0.08) !important' } }}
+                    >
+                      <TableCell><Typography fontWeight={600} fontSize={13}>{row.shopifyOrderName}</Typography></TableCell>
+                      <TableCell>
+                        {row.createdAt
+                          ? new Date(row.createdAt).toLocaleDateString('es-CL')
+                          : '—'}
+                      </TableCell>
+                      <TableCell><Typography fontSize={13}>{row.customerName || 'Consumidor final'}</Typography></TableCell>
+                      <TableCell>{statusChip(row.status)}</TableCell>
                     </TableRow>
                   );
                 })}
@@ -531,14 +724,16 @@ export default function BiomaFacturacion() {
           </TableContainer>
         </Grid>
 
-        {selectedRow && (
+        {(selectedRow || selectedBoleta) && (
           <Grid item xs={12} md={7}>
             <Paper variant="outlined" sx={{ p: 2.5, bgcolor: '#fff', position: { md: 'sticky' }, top: 16 }}>
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
                 <Box>
-                  <Typography variant="h6">{selectedRow.shopify.name}</Typography>
+                  <Typography variant="h6">
+                    {selectedRow?.shopify.name || selectedBoleta?.shopifyOrderName}
+                  </Typography>
                   <Typography variant="caption">
-                    {new Date(selectedRow.shopify.processedAt).toLocaleString('es-CL')}
+                    {dteLabel(payload?.tipoCodigo ?? (moduleTab === 'boletas' ? 39 : 33))}
                   </Typography>
                 </Box>
                 <Chip
@@ -563,24 +758,22 @@ export default function BiomaFacturacion() {
                   </Typography>
                   {payload.rutReceptor && !validateRut(payload.rutReceptor) && (
                     <Alert severity="warning" sx={{ mb: 1.5 }}>
-                      RUT receptor inválido ({formatRut(payload.rutReceptor)}). Corrígelo en Shopify.
+                      RUT receptor inválido ({formatRut(payload.rutReceptor)}).
                     </Alert>
                   )}
-                  <Box
-                    sx={{
-                      display: 'grid',
-                      gridTemplateColumns: '120px 1fr',
-                      gap: 0.75,
-                      fontSize: 13,
-                      mb: 1.5,
-                    }}
-                  >
-                    <Typography color="text.secondary">RUT</Typography>
-                    <Typography>{payload.rutReceptor ? formatRut(payload.rutReceptor) : '—'}</Typography>
-                    <Typography color="text.secondary">Razón social</Typography>
-                    <Typography>{payload.razonSocial || '—'}</Typography>
-                    <Typography color="text.secondary">Giro</Typography>
-                    <Typography>{payload.giroReceptor || '—'}</Typography>
+                  <Box sx={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 0.75, fontSize: 13, mb: 1.5 }}>
+                    {payload.rutReceptor && (
+                      <>
+                        <Typography color="text.secondary">RUT</Typography>
+                        <Typography>{formatRut(payload.rutReceptor)}</Typography>
+                      </>
+                    )}
+                    {payload.razonSocial && (
+                      <>
+                        <Typography color="text.secondary">Razón social</Typography>
+                        <Typography>{payload.razonSocial}</Typography>
+                      </>
+                    )}
                     <Typography color="text.secondary">Modo SII</Typography>
                     <Typography>{templateLabel(payload.template)}</Typography>
                   </Box>
@@ -588,53 +781,47 @@ export default function BiomaFacturacion() {
                   <Stack spacing={0.75}>
                     {payload.items.map((it) => (
                       <Typography key={it.numero} fontSize={13}>
-                        {it.cantidad}× {it.descripcion} — <strong>{fmt(it.precioUnitario)}</strong> neto
+                        {it.cantidad}× {it.descripcion} — <strong>{fmt(it.precioUnitario)}</strong>
+                        {payload.tipoCodigo === 33 ? ' neto' : ''}
                       </Typography>
                     ))}
                   </Stack>
-                  <Button size="small" sx={{ mt: 1.5 }} onClick={() => loadPayload(selectedRow.shopify.id)}>
-                    Actualizar preview
-                  </Button>
                 </Paper>
               )}
 
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
-                {selectedRow.emision?.status !== 'emitted' ? (
-                  <Button
-                    variant="contained"
-                    color="success"
-                    size="large"
-                    disabled={isBusy || !sessionReady || siiBlocked.blocked || !templateReady(payload?.template)}
-                    onClick={() => emitirFactura(selectedRow.shopify.id)}
-                  >
-                    {isBusy ? 'Emitiendo en SII… (~1 min)' : 'Emitir factura'}
-                  </Button>
-                ) : (
-                  <Button
-                    variant="outlined"
-                    disabled={isBusy || !sessionReady}
-                    onClick={() => descargarPdf(selectedRow.shopify.id)}
-                  >
-                    Descargar PDF
-                  </Button>
-                )}
+                <Button
+                  variant="contained"
+                  color="success"
+                  size="large"
+                  disabled={
+                    isBusy || !sessionReady || siiBlocked.blocked ||
+                    (moduleTab === 'pendientes' && !templateReady(payload?.template))
+                  }
+                  onClick={() => emitirDte(
+                    selectedRow?.shopify.id || selectedBoleta!.shopifyOrderId,
+                    { isBoleta: moduleTab === 'boletas' },
+                  )}
+                >
+                  {isBusy
+                    ? 'Emitiendo en SII… (~1 min)'
+                    : moduleTab === 'boletas' ? 'Emitir boleta' : 'Emitir factura'}
+                </Button>
               </Stack>
-              {selectedRow.emision?.status === 'emitted' && selectedRow.emision.siiFolio ? (
-                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-                  Folio SII: <strong>{selectedRow.emision.siiFolio}</strong>
-                </Typography>
-              ) : null}
               <Typography variant="caption" color="text.secondary" display="block">
-                Un solo paso: abre formulario, rellena datos Shopify, firma y guarda. Si falla, corrige en sii.cl.
+                Emisión automática: {autoEmitFactura ? 'facturas ON' : 'facturas OFF'} · {autoEmitBoleta ? 'boletas ON' : 'boletas OFF'} (variables Railway).
               </Typography>
 
-              {selectedRow.emision?.lastError && (
-                <Alert severity="warning" sx={{ mt: 2 }}>{selectedRow.emision.lastError}</Alert>
+              {(selectedRow?.emision?.lastError || selectedBoleta?.lastError) && (
+                <Alert severity="warning" sx={{ mt: 2 }}>
+                  {selectedRow?.emision?.lastError || selectedBoleta?.lastError}
+                </Alert>
               )}
             </Paper>
           </Grid>
         )}
       </Grid>
+      )}
 
       <Snackbar open={!!snack} autoHideDuration={5000} onClose={() => setSnack(null)} message={snack || ''} />
     </Box>
