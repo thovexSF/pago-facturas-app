@@ -1628,9 +1628,8 @@ app.post('/api/facturas/:id/mercadopago/:cuota', async (req, res) => {
       return res.json({ init_point: null, preference_id: existingPrefId, reuse: true });
     }
 
-    const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
-    const preference = new Preference(mpClient);
-    const result = await preference.create({ body: {
+    const baseUrl = process.env.APP_URL || `https://${req.get('host')}`;
+    const prefBody = {
       items: [{
         title: `Factura N°${f.folio} — Cuota ${cuota} — ${f.proveedor_nombre || f.razon_social}`,
         quantity: 1,
@@ -1645,7 +1644,9 @@ app.post('/api/facturas/:id/mercadopago/:cuota', async (req, res) => {
       },
       auto_return: 'approved',
       notification_url: `${baseUrl}/api/mercadopago/webhook`,
-    }});
+    };
+    const preference = new Preference(mpClient);
+    const result = await preference.create({ body: prefBody });
 
     await pool.query(
       `UPDATE facturas_recibidas SET mp_preference_id_${cuota} = $1, mp_status_${cuota} = 'pending', updated_at = NOW() WHERE id = $2`,
