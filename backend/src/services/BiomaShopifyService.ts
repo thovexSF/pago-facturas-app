@@ -20,7 +20,6 @@ import {
   getOrderCustomAttribute,
   orderHasEmitidoShopifyTag,
   orderNeedsFactura,
-  orderWantsFactura,
 } from '../utils/biomaOrderAttrs';
 
 const DEFAULT_API_VERSION = '2025-10';
@@ -422,12 +421,11 @@ export class BiomaShopifyService {
   } = {}): Promise<{ orders: ShopifyOrderForBioma[]; pageInfo: PageInfo }> {
     const pageSize = Math.min(Math.max(opts.pageSize ?? 50, 1), 100);
     const after = opts.after ?? null;
-    const daysBack = opts.daysBack ?? 90;
-    const since = new Date();
-    since.setDate(since.getDate() - daysBack);
-    const sinceIso = since.toISOString().split('T')[0];
+    const daysBack = opts.daysBack ?? 365;
+    const sinceMs = Date.now() - daysBack * 86_400_000;
 
-    const queryStr = `financial_status:paid processed_at:>=${sinceIso}`;
+    // Query simple: Shopify a veces falla con processed_at:>= en GraphQL search
+    const queryStr = 'financial_status:paid';
     const data = await this.graphql<{ orders: any }>(ORDERS_QUERY, {
       cursor: after,
       query: queryStr,
@@ -436,7 +434,12 @@ export class BiomaShopifyService {
     const edges = data.orders?.edges ?? [];
     const orders = edges
       .map((edge: any) => mapOrderNode(edge.node))
-      .filter((o: ShopifyOrderForBioma) => !orderHasEmitidoShopifyTag(o.tags));
+      .filter((o: ShopifyOrderForBioma) => {
+        if (o.displayFinancialStatus !== 'PAID') return false;
+        if (orderHasEmitidoShopifyTag(o.tags)) return false;
+        const t = o.processedAt ? new Date(o.processedAt).getTime() : 0;
+        return !t || t >= sinceMs;
+      });
     return {
       orders,
       pageInfo: {
@@ -444,6 +447,89 @@ export class BiomaShopifyService {
         endCursor: data.orders?.pageInfo?.endCursor ?? null,
       },
     };
+  }
+
+  /**
+   * Registra un pedido pagado como factura o boleta (webhook + sync).
+   */
+  static async processPaidOrder(order: ShopifyOrderForBioma): Promise<{
+    tagged: boolean;
+    orderName?: string;
+    reason?: string;
+    kind?: 'factura' | 'boleta';
+    autoQueued?: boolean;
+  }> {
+    const orderGid = order.id;
+    const { BiomaFacturacionService } = await import('./BiomaFacturacionService');
+    const { BiomaAutoEmitService } = await import('./BiomaAutoEmitService');
+
+    if (order.displayFinancialStatus !== 'PAID') {
+      return { tagged: false, orderName: order.name, reason: 'no pagado' };
+    }
+
+    if (orderNeedsFactura(order.customAttributes)) {
+      if (orderHasEmitidoShopifyTag(order.tags)) {
+        return { tagged: false, orderName: order.name, reason: 'ya emitido', kind: 'factura' };
+      }
+      const rut = getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.rut);
+      if (!rut) {
+        console.warn(`[bioma] ${order.name}: factura requerida pero sin RUT — no se etiqueta`);
+        return { tagged: false, orderName: order.name, reason: 'sin RUT', kind: 'factura' };
+      }
+      if (!order.tags.includes(this.facturaTag)) {
+        await this.addTags(orderGid, [this.facturaTag]);
+      }
+      await BiomaFacturacionService.upsertFromShopify(order);
+      let autoQueued = false;
+      if (BiomaAutoEmitService.isAutoEmitFacturaEnabled()) {
+        BiomaAutoEmitService.enqueue(orderGid, 'factura');
+        autoQueued = true;
+      }
+      return { tagged: true, orderName: order.name, kind: 'factura', autoQueued };
+    }
+
+    return this.registerBoletaOrder(order);
+  }
+
+  /** B2C sin toggle/RUT factura → boleta tipo 39 en DB + tag opcional. */
+  static async registerBoletaOrder(order: ShopifyOrderForBioma): Promise<{
+    tagged: boolean;
+    orderName?: string;
+    reason?: string;
+    kind: 'boleta';
+    autoQueued?: boolean;
+  }> {
+    const orderGid = order.id;
+    const { BiomaFacturacionService } = await import('./BiomaFacturacionService');
+    const { BiomaAutoEmitService } = await import('./BiomaAutoEmitService');
+
+    if (orderHasEmitidoShopifyTag(order.tags)) {
+      return { tagged: false, orderName: order.name, reason: 'ya emitido', kind: 'boleta' };
+    }
+
+    const existing = await BiomaFacturacionService.findEmision(orderGid);
+    if (existing?.status === 'emitted') {
+      return { tagged: false, orderName: order.name, reason: 'ya emitida en DB', kind: 'boleta' };
+    }
+
+    if (order.tags.includes(this.facturaTag)) {
+      await this.removeTags(orderGid, [this.facturaTag]);
+    }
+    if (!order.tags.includes(DEFAULT_BOLETA_TAG)) {
+      await this.addTags(orderGid, [DEFAULT_BOLETA_TAG]).catch(() => {});
+    }
+
+    const row = await BiomaFacturacionService.upsertFromShopify(order);
+    if (row.tipoCodigo !== 39 && row.status !== 'emitted') {
+      await BiomaFacturacionService.setTipoCodigo(orderGid, 39);
+    }
+
+    let autoQueued = false;
+    if (BiomaAutoEmitService.isAutoEmitBoletaEnabled()) {
+      BiomaAutoEmitService.enqueue(orderGid, 'boleta');
+      autoQueued = true;
+    }
+    return { tagged: true, orderName: order.name, kind: 'boleta', autoQueued };
   }
 
   /** Convenience: tag emitida con folio SII. */
@@ -492,50 +578,6 @@ export class BiomaShopifyService {
       return { tagged: false, orderName: payload.name, reason: 'pedido no encontrado' };
     }
 
-    const { BiomaFacturacionService } = await import('./BiomaFacturacionService');
-    const { BiomaAutoEmitService } = await import('./BiomaAutoEmitService');
-
-    if (orderWantsFactura(order.customAttributes)) {
-      if (orderHasEmitidoShopifyTag(order.tags)) {
-        return { tagged: false, orderName: order.name, reason: 'ya emitido', kind: 'factura' };
-      }
-
-      const rut = getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.rut);
-      if (!rut) {
-        console.warn(`[bioma] ${order.name}: factura activada pero sin RUT — no se etiqueta`);
-        return { tagged: false, orderName: order.name, reason: 'sin RUT', kind: 'factura' };
-      }
-
-      await this.addTags(orderGid, [this.facturaTag]);
-      await BiomaFacturacionService.upsertFromShopify(order);
-
-      let autoQueued = false;
-      if (BiomaAutoEmitService.isAutoEmitFacturaEnabled()) {
-        BiomaAutoEmitService.enqueue(orderGid, 'factura');
-        autoQueued = true;
-      }
-      return { tagged: true, orderName: order.name, kind: 'factura', autoQueued };
-    }
-
-    // Sin toggle factura → boleta electrónica (B2C)
-    if (orderHasEmitidoShopifyTag(order.tags)) {
-      return { tagged: false, orderName: order.name, reason: 'ya emitido', kind: 'boleta' };
-    }
-
-    // Quitar tag factura erróneo (p. ej. Shopify Flow en todos los pagados)
-    if (order.tags.includes(this.facturaTag)) {
-      await this.removeTags(orderGid, [this.facturaTag]);
-    }
-    if (!order.tags.includes(DEFAULT_BOLETA_TAG)) {
-      await this.addTags(orderGid, [DEFAULT_BOLETA_TAG]);
-    }
-    await BiomaFacturacionService.upsertFromShopify(order);
-
-    let autoQueued = false;
-    if (BiomaAutoEmitService.isAutoEmitBoletaEnabled()) {
-      BiomaAutoEmitService.enqueue(orderGid, 'boleta');
-      autoQueued = true;
-    }
-    return { tagged: true, orderName: order.name, kind: 'boleta', autoQueued };
+    return this.processPaidOrder(order);
   }
 }

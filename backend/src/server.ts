@@ -45,6 +45,12 @@ async function main() {
     BiomaShopifyWebhookController.ordersPaid,
   );
 
+  app.post(
+    '/api/bioma/webhooks/orders-updated',
+    express.raw({ type: 'application/json' }),
+    BiomaShopifyWebhookController.ordersUpdated,
+  );
+
   app.use(express.json({ limit: '2mb' }));
 
   app.get('/api/health', (_req, res) => {

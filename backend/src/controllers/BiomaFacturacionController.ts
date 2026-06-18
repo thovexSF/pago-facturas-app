@@ -65,9 +65,12 @@ export class BiomaFacturacionController {
     try {
       const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
       const pageSize = req.query.pageSize ? parseInt(String(req.query.pageSize), 10) : 50;
+      const sync = req.query.sync !== '0' && req.query.sync !== 'false';
       const data = await BiomaFacturacionService.listBoletasPendientes({
         page: Number.isFinite(page) ? page : 1,
         pageSize: Number.isFinite(pageSize) ? pageSize : 50,
+        sync,
+        maxSyncPages: 25,
       });
       return res.json({ success: true, ...data });
     } catch (err: any) {

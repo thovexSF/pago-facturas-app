@@ -22,7 +22,6 @@ import {
   BIOMA_FACTURA_ATTR,
   getOrderCustomAttribute,
   orderNeedsFactura,
-  orderWantsFactura,
   SII_RUT_CONSUMIDOR_FINAL,
 } from '../utils/biomaOrderAttrs';
 import { sanitizeDescripcionParaSii } from './SiiFacturacionService';
@@ -261,7 +260,10 @@ export class BiomaFacturacionService {
    * Importa pedidos B2C pagados (sin toggle/RUT factura) como boletas pendientes.
    * Cubre históricos y pedidos donde Flow etiquetó `factura` a todos.
    */
-  static async syncBoletasFromShopify(opts: { maxPages?: number } = {}): Promise<{
+  static async syncBoletasFromShopify(opts: {
+    maxPages?: number;
+    daysBack?: number;
+  } = {}): Promise<{
     scanned: number;
     registered: number;
     skipped: number;
@@ -270,15 +272,16 @@ export class BiomaFacturacionService {
     let registered = 0;
     let skipped = 0;
     let after: string | null = null;
-    const maxPages = opts.maxPages ?? 3;
+    const maxPages = opts.maxPages ?? 20;
+    const daysBack = opts.daysBack ?? 365;
 
     for (let page = 0; page < maxPages; page++) {
       const { orders, pageInfo } = await BiomaShopifyService.listPaidOrders({
         pageSize: 50,
         after,
-        daysBack: 120,
+        daysBack,
       });
-      if (!orders.length) break;
+      if (!orders.length && !pageInfo.hasNextPage) break;
 
       for (const order of orders) {
         scanned++;
@@ -286,25 +289,18 @@ export class BiomaFacturacionService {
           skipped++;
           continue;
         }
-        const existing = await this.findEmision(order.id);
-        if (existing?.status === 'emitted') {
-          skipped++;
-          continue;
-        }
-        await this.upsertFromShopify(order);
-        if (!order.tags.includes('boleta')) {
-          await BiomaShopifyService.addTags(order.id, ['boleta']).catch(() => {});
-        }
-        if (order.tags.includes('factura')) {
-          await BiomaShopifyService.removeTags(order.id, ['factura']).catch(() => {});
-        }
-        registered++;
+        const result = await BiomaShopifyService.registerBoletaOrder(order);
+        if (result.tagged) registered++;
+        else skipped++;
       }
 
       if (!pageInfo.hasNextPage) break;
       after = pageInfo.endCursor;
     }
 
+    console.log(
+      `[bioma] syncBoletas: scanned=${scanned} registered=${registered} skipped=${skipped}`,
+    );
     return { scanned, registered, skipped };
   }
 
@@ -334,16 +330,26 @@ export class BiomaFacturacionService {
     return { rows, total, page, pageSize };
   }
 
-  /** Boletas pendientes de emitir (tipo 39, registradas vía webhook). */
+  /** Boletas pendientes de emitir (tipo 39). Sincroniza desde Shopify si sync=true. */
   static async listBoletasPendientes(opts: {
     page?: number;
     pageSize?: number;
+    sync?: boolean;
+    maxSyncPages?: number;
   } = {}): Promise<{
     rows: BiomaFacturaEmisionEntity[];
     total: number;
     page: number;
     pageSize: number;
+    syncStats?: { scanned: number; registered: number; skipped: number };
   }> {
+    let syncStats: { scanned: number; registered: number; skipped: number } | undefined;
+    if (opts.sync !== false) {
+      syncStats = await this.syncBoletasFromShopify({
+        maxPages: opts.maxSyncPages ?? 25,
+        daysBack: 365,
+      });
+    }
     const pageSize = Math.min(Math.max(opts.pageSize ?? 50, 1), 100);
     const page = Math.max(opts.page ?? 1, 1);
     const skip = (page - 1) * pageSize;
@@ -352,12 +358,14 @@ export class BiomaFacturacionService {
       .createQueryBuilder('e')
       .where('e.empresa_rut = :empresaRut', { empresaRut: this.empresaRut })
       .andWhere('e.tipo_codigo IN (:...tipos)', { tipos: [39, 41] })
-      .andWhere('e.status IN (:...statuses)', { statuses: ['pending', 'error', 'drafting'] })
+      .andWhere('e.status IN (:...statuses)', {
+        statuses: ['pending', 'error', 'drafting', 'emitting'],
+      })
       .orderBy('e.created_at', 'DESC');
 
     const total = await qb.getCount();
     const rows = await qb.skip(skip).take(pageSize).getMany();
-    return { rows, total, page, pageSize };
+    return { rows, total, page, pageSize, syncStats };
   }
 
   /**
@@ -394,8 +402,7 @@ export class BiomaFacturacionService {
     order: ShopifyOrderForBioma,
   ): Promise<BiomaFacturaEmisionEntity> {
     const existing = await this.findEmision(order.id);
-    const wantsFactura = orderWantsFactura(order.customAttributes);
-    const tipoCodigo = wantsFactura ? 33 : 39;
+    const tipoCodigo = orderNeedsFactura(order.customAttributes) ? 33 : 39;
 
     const shippingPhone = order.shippingAddress?.phone ?? null;
     const customerPhone = normalizePhoneForWhatsApp(
@@ -439,6 +446,13 @@ export class BiomaFacturacionService {
     }
     const created = this.repo.create({ ...data, status: 'pending' });
     return this.repo.save(created);
+  }
+
+  static async setTipoCodigo(shopifyOrderId: string, tipoCodigo: number): Promise<void> {
+    const row = await this.findEmision(shopifyOrderId);
+    if (!row || row.status === 'emitted') return;
+    row.tipoCodigo = tipoCodigo;
+    await this.repo.save(row);
   }
 
   static async setStatus(

@@ -199,14 +199,20 @@ export default function BiomaFacturacion() {
     }
   }, []);
 
-  const loadBoletas = useCallback(async () => {
+  const loadBoletas = useCallback(async (opts?: { quiet?: boolean }) => {
     setLoading(true);
-    setError(null);
+    if (!opts?.quiet) setError(null);
     try {
-      const res = await fetch(`${BIOMA_API}/boletas-pendientes?pageSize=50`);
+      const res = await fetch(`${BIOMA_API}/boletas-pendientes?pageSize=100&sync=1`);
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
       setBoletasRows(data.rows || []);
+      if (data.syncStats && !opts?.quiet) {
+        const s = data.syncStats;
+        setSnack(
+          `Boletas: ${data.total ?? data.rows?.length ?? 0} pendientes (${s.registered} registradas de ${s.scanned} pedidos revisados)`,
+        );
+      }
     } catch (e: any) {
       setError(`Boletas: ${e?.message || e}`);
       setBoletasRows([]);
@@ -253,7 +259,9 @@ export default function BiomaFacturacion() {
     }
   }, []);
 
-  useEffect(() => { loadPending(); loadBoletas(); loadRealizadas(); }, [loadPending, loadBoletas, loadRealizadas]);
+  useEffect(() => {
+    if (moduleTab === 'boletas') void loadBoletas({ quiet: true });
+  }, [moduleTab, loadBoletas]);
 
   useEffect(() => {
     fetch(`${BIOMA_API}/config`)
@@ -270,6 +278,11 @@ export default function BiomaFacturacion() {
           .catch(() => {});
       });
   }, []);
+
+  useEffect(() => {
+    void loadPending();
+    void loadRealizadas();
+  }, [loadPending, loadRealizadas]);
 
   const selectOrder = useCallback((row: PendingRow) => {
     const id = row.shopify.id;
@@ -458,26 +471,8 @@ export default function BiomaFacturacion() {
   }, [loadPending, loadRealizadas]);
 
   const importarBoletas = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`${BIOMA_API}/sync-boletas`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maxPages: 5 }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
-      setBoletasRows(data.rows || []);
-      setSnack(
-        `Importación: ${data.stats?.registered ?? 0} boletas nuevas (${data.stats?.scanned ?? 0} pedidos revisados)`,
-      );
-    } catch (e: any) {
-      setError(`Importar boletas: ${e?.message || e}`);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    await loadBoletas();
+  }, [loadBoletas]);
 
   const pendingRows = rows.filter((r) => r.emision?.status !== 'emitted');
   const pendingCount = pendingRows.length;
