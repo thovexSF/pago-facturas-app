@@ -163,7 +163,9 @@ export class BiomaEmitService {
     });
 
     try {
-      await BiomaShopifyService.markDteEmitted(orderId, tipoCodigo);
+      if (siiFolio && siiFolio > 0) {
+        await BiomaShopifyService.markDteEmitted(orderId, tipoCodigo, siiFolio);
+      }
     } catch (tagErr: any) {
       console.error('[bioma emit] tag swap failed:', tagErr?.message || tagErr);
     }

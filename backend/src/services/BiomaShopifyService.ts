@@ -15,7 +15,11 @@
 import axios from 'axios';
 import {
   BIOMA_FACTURA_ATTR,
+  boletaEmitidaTag,
+  facturaEmitidaTag,
   getOrderCustomAttribute,
+  orderHasEmitidoShopifyTag,
+  orderNeedsFactura,
   orderWantsFactura,
 } from '../utils/biomaOrderAttrs';
 
@@ -361,7 +365,7 @@ export class BiomaShopifyService {
     const pageSize = Math.min(Math.max(options.pageSize ?? 50, 1), 250);
     const after = options.after ?? null;
 
-    const parts: string[] = [`tag:${tag}`, `-tag:${excludeTag}`];
+    const parts: string[] = [`tag:${tag}`];
     if (options.paidOnly !== false) {
       parts.push('financial_status:paid');
     }
@@ -374,8 +378,11 @@ export class BiomaShopifyService {
     });
 
     const edges = data.orders?.edges ?? [];
+    const orders = edges
+      .map((edge: any) => mapOrderNode(edge.node))
+      .filter((o: ShopifyOrderForBioma) => !orderHasEmitidoShopifyTag(o.tags));
     return {
-      orders: edges.map((edge: any) => mapOrderNode(edge.node)),
+      orders,
       pageInfo: {
         hasNextPage: data.orders?.pageInfo?.hasNextPage ?? false,
         endCursor: data.orders?.pageInfo?.endCursor ?? null,
@@ -407,23 +414,57 @@ export class BiomaShopifyService {
     if (errors.length) throw new Error(`tagsRemove userErrors: ${JSON.stringify(errors)}`);
   }
 
-  /** Convenience: replace `factura` with `facturado` atomically. */
-  static async markEmitted(orderId: string): Promise<void> {
-    await this.addTags(orderId, [this.facturaEmitidaTag]);
-    await this.removeTags(orderId, [this.facturaTag]);
+  /** Pedidos pagados recientes (para sync boletas / reconciliar). */
+  static async listPaidOrders(opts: {
+    pageSize?: number;
+    after?: string | null;
+    daysBack?: number;
+  } = {}): Promise<{ orders: ShopifyOrderForBioma[]; pageInfo: PageInfo }> {
+    const pageSize = Math.min(Math.max(opts.pageSize ?? 50, 1), 100);
+    const after = opts.after ?? null;
+    const daysBack = opts.daysBack ?? 90;
+    const since = new Date();
+    since.setDate(since.getDate() - daysBack);
+    const sinceIso = since.toISOString().split('T')[0];
+
+    const queryStr = `financial_status:paid processed_at:>=${sinceIso}`;
+    const data = await this.graphql<{ orders: any }>(ORDERS_QUERY, {
+      cursor: after,
+      query: queryStr,
+      first: pageSize,
+    });
+    const edges = data.orders?.edges ?? [];
+    const orders = edges
+      .map((edge: any) => mapOrderNode(edge.node))
+      .filter((o: ShopifyOrderForBioma) => !orderHasEmitidoShopifyTag(o.tags));
+    return {
+      orders,
+      pageInfo: {
+        hasNextPage: data.orders?.pageInfo?.hasNextPage ?? false,
+        endCursor: data.orders?.pageInfo?.endCursor ?? null,
+      },
+    };
   }
 
-  static async markBoletaEmitted(orderId: string): Promise<void> {
-    await this.addTags(orderId, [BOLETA_EMITIDA_TAG]);
-    await this.removeTags(orderId, [DEFAULT_BOLETA_TAG]);
+  /** Convenience: tag emitida con folio SII. */
+  static async markEmitted(orderId: string, folio: number): Promise<void> {
+    const emitTag = facturaEmitidaTag(folio);
+    await this.addTags(orderId, [emitTag]);
+    await this.removeTags(orderId, [this.facturaTag, FACTURA_EMITIDA_TAG]);
+  }
+
+  static async markBoletaEmitted(orderId: string, folio: number): Promise<void> {
+    const emitTag = boletaEmitidaTag(folio);
+    await this.addTags(orderId, [emitTag]);
+    await this.removeTags(orderId, [DEFAULT_BOLETA_TAG, BOLETA_EMITIDA_TAG, this.facturaTag]);
   }
 
   /** Marca pedido según tipo DTE emitido. */
-  static async markDteEmitted(orderId: string, tipoCodigo: number): Promise<void> {
+  static async markDteEmitted(orderId: string, tipoCodigo: number, folio: number): Promise<void> {
     if (tipoCodigo === 39 || tipoCodigo === 41) {
-      await this.markBoletaEmitted(orderId);
+      await this.markBoletaEmitted(orderId, folio);
     } else {
-      await this.markEmitted(orderId);
+      await this.markEmitted(orderId, folio);
     }
   }
 
@@ -455,8 +496,8 @@ export class BiomaShopifyService {
     const { BiomaAutoEmitService } = await import('./BiomaAutoEmitService');
 
     if (orderWantsFactura(order.customAttributes)) {
-      if (order.tags.includes(this.facturaTag) || order.tags.includes(this.facturaEmitidaTag)) {
-        return { tagged: false, orderName: order.name, reason: 'ya procesado como factura', kind: 'factura' };
+      if (orderHasEmitidoShopifyTag(order.tags)) {
+        return { tagged: false, orderName: order.name, reason: 'ya emitido', kind: 'factura' };
       }
 
       const rut = getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.rut);
@@ -477,10 +518,14 @@ export class BiomaShopifyService {
     }
 
     // Sin toggle factura → boleta electrónica (B2C)
-    if (order.tags.includes(BOLETA_EMITIDA_TAG)) {
-      return { tagged: false, orderName: order.name, reason: 'boleta ya emitida', kind: 'boleta' };
+    if (orderHasEmitidoShopifyTag(order.tags)) {
+      return { tagged: false, orderName: order.name, reason: 'ya emitido', kind: 'boleta' };
     }
 
+    // Quitar tag factura erróneo (p. ej. Shopify Flow en todos los pagados)
+    if (order.tags.includes(this.facturaTag)) {
+      await this.removeTags(orderGid, [this.facturaTag]);
+    }
     if (!order.tags.includes(DEFAULT_BOLETA_TAG)) {
       await this.addTags(orderGid, [DEFAULT_BOLETA_TAG]);
     }

@@ -425,6 +425,60 @@ export default function BiomaFacturacion() {
     }
   }, [sessionReady, sessionId]);
 
+  const marcarComoEmitida = useCallback(async (orderId: string) => {
+    const folioStr = window.prompt(
+      'Folio SII de la factura ya emitida (solo número):\n\nEl pedido saldrá de pendientes y el tag en Shopify será "factura #folio".',
+    );
+    if (!folioStr?.trim()) return;
+    const folio = parseInt(folioStr.trim(), 10);
+    if (!Number.isFinite(folio) || folio <= 0) {
+      setError('Folio inválido');
+      return;
+    }
+    const codigo = window.prompt('Código SII (opcional, Enter para omitir):')?.trim() || undefined;
+    setBusyOrderId(orderId);
+    setError(null);
+    try {
+      const res = await fetch(`${BIOMA_API}/marcar-emitida/${encodeURIComponent(orderId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siiFolio: folio, siiCodigo: codigo }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+      setSnack(data.message || `Asociado a factura #${folio}`);
+      setSelectedId(null);
+      await loadPending();
+      await loadRealizadas();
+    } catch (e: any) {
+      setError(`Marcar emitida: ${e?.message || e}`);
+    } finally {
+      setBusyOrderId(null);
+    }
+  }, [loadPending, loadRealizadas]);
+
+  const importarBoletas = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${BIOMA_API}/sync-boletas`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxPages: 5 }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+      setBoletasRows(data.rows || []);
+      setSnack(
+        `Importación: ${data.stats?.registered ?? 0} boletas nuevas (${data.stats?.scanned ?? 0} pedidos revisados)`,
+      );
+    } catch (e: any) {
+      setError(`Importar boletas: ${e?.message || e}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   const pendingRows = rows.filter((r) => r.emision?.status !== 'emitted');
   const pendingCount = pendingRows.length;
   const boletasCount = boletasRows.length;
@@ -481,10 +535,10 @@ export default function BiomaFacturacion() {
       >
         <Typography variant="body2" color="text.secondary">
           {moduleTab === 'pendientes' && (
-            <>Pedidos con tag <strong>factura</strong> (toggle checkout) — emisión DTE tipo 33.</>
+            <>Pedidos con tag <strong>factura</strong> y datos de facturación (toggle o RUT). Pedido manual: agrega tag + atributos RUT en Shopify.</>
           )}
           {moduleTab === 'boletas' && (
-            <>Pedidos B2C sin toggle factura — boleta electrónica tipo 39.</>
+            <>Pedidos B2C sin toggle factura. Usa <strong>Importar desde Shopify</strong> para cargar históricos.</>
           )}
           {moduleTab === 'realizadas' && (
             <>Documentos emitidos desde este módulo (facturas y boletas).</>
@@ -499,6 +553,16 @@ export default function BiomaFacturacion() {
         >
           Refrescar
         </Button>
+        {moduleTab === 'boletas' && (
+          <Button
+            variant="outlined"
+            onClick={importarBoletas}
+            disabled={loading}
+            sx={{ flexShrink: 0 }}
+          >
+            Importar desde Shopify
+          </Button>
+        )}
       </Box>
 
       {siiBlocked.blocked && (
@@ -668,7 +732,7 @@ export default function BiomaFacturacion() {
                 {moduleTab === 'boletas' && boletasRows.length === 0 && !loading && (
                   <TableRow>
                     <TableCell colSpan={4} align="center" sx={{ py: 6, color: 'text.secondary' }}>
-                      No hay boletas pendientes. Llegan vía webhook al pagar pedidos sin toggle factura.
+                      No hay boletas pendientes. Pulsa <strong>Importar desde Shopify</strong> o espera nuevos pedidos B2C (webhook).
                     </TableCell>
                   </TableRow>
                 )}
@@ -807,9 +871,20 @@ export default function BiomaFacturacion() {
                     ? 'Emitiendo en SII… (~1 min)'
                     : moduleTab === 'boletas' ? 'Emitir boleta' : 'Emitir factura'}
                 </Button>
+                {moduleTab === 'pendientes' && selectedRow && (
+                  <Button
+                    variant="outlined"
+                    color="secondary"
+                    disabled={isBusy}
+                    onClick={() => marcarComoEmitida(selectedRow.shopify.id)}
+                  >
+                    Ya emitida (asociar folio)
+                  </Button>
+                )}
               </Stack>
               <Typography variant="caption" color="text.secondary" display="block">
-                Emisión automática: {autoEmitFactura ? 'facturas ON' : 'facturas OFF'} · {autoEmitBoleta ? 'boletas ON' : 'boletas OFF'} (variables Railway).
+                Al emitir, el tag en Shopify pasa a <strong>factura #folio</strong> o <strong>boleta #folio</strong>.
+                {' '}Emisión auto: {autoEmitFactura ? 'facturas ON' : 'OFF'} · {autoEmitBoleta ? 'boletas ON' : 'OFF'}.
               </Typography>
 
               {(selectedRow?.emision?.lastError || selectedBoleta?.lastError) && (

@@ -3,6 +3,8 @@ import { BiomaFacturacionController } from '../controllers/BiomaFacturacionContr
 
 const router = Router();
 
+router.post('/marcar-emitida/:orderId', BiomaFacturacionController.marcarEmitida);
+router.post('/sync-boletas', BiomaFacturacionController.syncBoletas);
 router.get('/config', BiomaFacturacionController.config);
 router.get('/facturas-realizadas', BiomaFacturacionController.facturasRealizadas);
 router.get('/boletas-pendientes', BiomaFacturacionController.boletasPendientes);

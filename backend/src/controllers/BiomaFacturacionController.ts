@@ -119,6 +119,44 @@ export class BiomaFacturacionController {
     }
   }
 
+  // POST /api/bioma/marcar-emitida/:orderId — asociar folio histórico sin re-emitir
+  static async marcarEmitida(req: Request, res: Response) {
+    const orderId = req.params.orderId;
+    const { siiFolio, siiCodigo, tipoCodigo } = req.body || {};
+    const folio = parseInt(String(siiFolio), 10);
+    if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
+    if (!Number.isFinite(folio) || folio <= 0) {
+      return res.status(400).json({ error: 'siiFolio requerido (número de folio SII)' });
+    }
+    try {
+      const row = await BiomaFacturacionService.registerEmittedHistorica(orderId, {
+        siiFolio: folio,
+        siiCodigo: siiCodigo ? String(siiCodigo).trim() : null,
+        tipoCodigo: tipoCodigo ? parseInt(String(tipoCodigo), 10) : undefined,
+      });
+      return res.json({
+        success: true,
+        row,
+        message: `Pedido asociado a factura #${folio}. Tag Shopify actualizado.`,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  }
+
+  // POST /api/bioma/sync-boletas — importar B2C pagados como boletas pendientes
+  static async syncBoletas(req: Request, res: Response) {
+    try {
+      const stats = await BiomaFacturacionService.syncBoletasFromShopify({
+        maxPages: req.body?.maxPages ?? 5,
+      });
+      const data = await BiomaFacturacionService.listBoletasPendientes({ pageSize: 50 });
+      return res.json({ success: true, stats, ...data });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  }
+
   // GET /api/bioma/payload/:orderId — qué enviaríamos al SII (sin abrir browser)
   static async payload(req: Request, res: Response) {
     const orderId = req.params.orderId;

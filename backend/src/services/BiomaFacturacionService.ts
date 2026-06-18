@@ -21,6 +21,7 @@ import {
 import {
   BIOMA_FACTURA_ATTR,
   getOrderCustomAttribute,
+  orderNeedsFactura,
   orderWantsFactura,
   SII_RUT_CONSUMIDOR_FINAL,
 } from '../utils/biomaOrderAttrs';
@@ -222,12 +223,89 @@ export class BiomaFacturacionService {
       : [];
     const byId = new Map(existing.map((e) => [e.shopifyOrderId, e]));
 
-    const rows: PendingOrderRow[] = orders.map((shopify) => ({
-      shopify,
-      emision: byId.get(shopify.id) ?? null,
-    }));
+    const rows: PendingOrderRow[] = orders
+      .filter((shopify) => orderNeedsFactura(shopify.customAttributes))
+      .map((shopify) => ({
+        shopify,
+        emision: byId.get(shopify.id) ?? null,
+      }))
+      .filter((row) => row.emision?.status !== 'emitted');
 
     return { rows, pageInfo };
+  }
+
+  /**
+   * Registra emisión histórica (ya facturada en SII fuera del módulo o duplicado evitado).
+   */
+  static async registerEmittedHistorica(
+    shopifyOrderId: string,
+    data: { siiFolio: number; siiCodigo?: string | null; tipoCodigo?: number },
+  ): Promise<BiomaFacturaEmisionEntity> {
+    const order = await BiomaShopifyService.getOrder(shopifyOrderId);
+    if (!order) throw new Error('Pedido no encontrado en Shopify');
+    const row = await this.upsertFromShopify(order);
+    const tipo = data.tipoCodigo ?? row.tipoCodigo ?? 33;
+    const updated = await this.setStatus(shopifyOrderId, 'emitted', {
+      siiFolio: data.siiFolio,
+      siiCodigo: data.siiCodigo ?? row.siiCodigo,
+      tipoCodigo: tipo,
+      emittedAt: row.emittedAt ?? new Date(),
+      lastError: null,
+    });
+    if (!updated) throw new Error('No se pudo actualizar el registro');
+    await BiomaShopifyService.markDteEmitted(shopifyOrderId, tipo, data.siiFolio);
+    return updated;
+  }
+
+  /**
+   * Importa pedidos B2C pagados (sin toggle/RUT factura) como boletas pendientes.
+   * Cubre históricos y pedidos donde Flow etiquetó `factura` a todos.
+   */
+  static async syncBoletasFromShopify(opts: { maxPages?: number } = {}): Promise<{
+    scanned: number;
+    registered: number;
+    skipped: number;
+  }> {
+    let scanned = 0;
+    let registered = 0;
+    let skipped = 0;
+    let after: string | null = null;
+    const maxPages = opts.maxPages ?? 3;
+
+    for (let page = 0; page < maxPages; page++) {
+      const { orders, pageInfo } = await BiomaShopifyService.listPaidOrders({
+        pageSize: 50,
+        after,
+        daysBack: 120,
+      });
+      if (!orders.length) break;
+
+      for (const order of orders) {
+        scanned++;
+        if (orderNeedsFactura(order.customAttributes)) {
+          skipped++;
+          continue;
+        }
+        const existing = await this.findEmision(order.id);
+        if (existing?.status === 'emitted') {
+          skipped++;
+          continue;
+        }
+        await this.upsertFromShopify(order);
+        if (!order.tags.includes('boleta')) {
+          await BiomaShopifyService.addTags(order.id, ['boleta']).catch(() => {});
+        }
+        if (order.tags.includes('factura')) {
+          await BiomaShopifyService.removeTags(order.id, ['factura']).catch(() => {});
+        }
+        registered++;
+      }
+
+      if (!pageInfo.hasNextPage) break;
+      after = pageInfo.endCursor;
+    }
+
+    return { scanned, registered, skipped };
   }
 
   /** Facturas/boletas ya emitidas (desde nuestra DB, no sync masivo SII avanzado). */
