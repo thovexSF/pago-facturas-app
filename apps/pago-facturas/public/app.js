@@ -576,11 +576,17 @@ function abrirModal(f, lista) {
   btn1.className   = `btn btn-sm ${f.pagado_1?'btn-secondary':'btn-pay'}`;
   btn1.onclick     = () => marcarCuota(1);
 
+  const undoBtn1 = document.getElementById('btn-despagar-1');
+  if (undoBtn1) { undoBtn1.style.display = f.pagado_1 ? '' : 'none'; undoBtn1.onclick = () => desmarcarCuota(1); }
+
   const btn2 = document.getElementById('btn-pagar-2');
   btn2.textContent = f.pagado_2 ? '✓ Cuota 2 pagada' : 'Pagar cuota 2';
   btn2.disabled    = !!f.pagado_2;
   btn2.className   = `btn btn-sm ${f.pagado_2?'btn-secondary':'btn-pay'}`;
   btn2.onclick     = () => marcarCuota(2);
+
+  const undoBtn2 = document.getElementById('btn-despagar-2');
+  if (undoBtn2) { undoBtn2.style.display = f.pagado_2 ? '' : 'none'; undoBtn2.onclick = () => desmarcarCuota(2); }
 
   document.querySelectorAll('.cuota-row').forEach(r => {
     if (esNC) { r.style.display = 'none'; return; }
@@ -639,6 +645,19 @@ async function marcarCuota(cuota) {
     mostrarToast(`Cuota ${cuota} pagada`, 'success');
     cerrarModal();
     await cargarFacturas();
+  } catch (err) { mostrarToast(err.message, 'error'); }
+}
+
+async function desmarcarCuota(cuota) {
+  if (!facturaActiva) return;
+  if (!confirm(`¿Desmarcar cuota ${cuota} como NO pagada?`)) return;
+  try {
+    const res = await fetch(`/api/facturas/${facturaActiva.id}/despagar/${cuota}`, { method: 'PUT' });
+    if (!res.ok) throw new Error('Error al desmarcar cuota');
+    mostrarToast(`Cuota ${cuota} desmarcada`, 'success');
+    await cargarFacturas();
+    const upd = facturas.find(x => x.id === facturaActiva.id);
+    if (upd) abrirModal(upd, modalLista);
   } catch (err) { mostrarToast(err.message, 'error'); }
 }
 

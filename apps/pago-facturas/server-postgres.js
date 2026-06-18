@@ -1584,6 +1584,18 @@ app.put('/api/facturas/:id/pagar/:cuota', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.put('/api/facturas/:id/despagar/:cuota', async (req, res) => {
+  const { cuota } = req.params;
+  if (!['1','2'].includes(cuota)) return res.status(400).json({ error: 'cuota debe ser 1 o 2' });
+  try {
+    await pool.query(
+      `UPDATE facturas_recibidas SET pagado_${cuota}=FALSE, pagado_${cuota}_at=NULL, mp_status_${cuota}=NULL, mp_payment_id_${cuota}=NULL, mp_preference_id_${cuota}=NULL, updated_at=NOW() WHERE id=$1`,
+      [req.params.id]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ─── API — MercadoPago ────────────────────────────────────────────────────────
 
 app.get('/api/mercadopago/status', (_req, res) => {
