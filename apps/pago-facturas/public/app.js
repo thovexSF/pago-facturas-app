@@ -663,7 +663,8 @@ function actualizarMPSeccion(f) {
 
   const prov = proveedores.find(p => p.rut_emisor === f.rut_emisor);
   const esContado = prov?.condicion === 'contado';
-  if (esContado) { section.style.display = 'none'; return; }
+  const esArabica = (f.razon_social || '').toLowerCase().includes('arabica');
+  if (esContado || !esArabica) { section.style.display = 'none'; return; }
 
   section.style.display = '';
 

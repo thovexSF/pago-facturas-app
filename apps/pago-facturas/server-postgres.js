@@ -1603,6 +1603,9 @@ app.post('/api/facturas/:id/mercadopago/:cuota', async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ error: 'Factura no encontrada' });
     const f = rows[0];
+    if (!(f.razon_social || '').toLowerCase().includes('arabica')) {
+      return res.status(403).json({ error: 'Pago con MercadoPago solo habilitado para Arabica SPA' });
+    }
     const monto = cuota === '1' ? f.monto_1 : f.monto_2;
     const pagado = cuota === '1' ? f.pagado_1 : f.pagado_2;
     if (pagado) return res.status(400).json({ error: 'Cuota ya pagada' });
