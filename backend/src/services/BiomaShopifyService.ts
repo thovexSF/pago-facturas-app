@@ -10,7 +10,6 @@
  * Optional:
  *   - BIOMA_SHOPIFY_API_VERSION    (defaults to 2025-10)
  *   - BIOMA_FACTURA_TAG            (defaults to 'factura')
- *   - BIOMA_FACTURA_EMITIDA_TAG    (defaults to 'factura_emitida')
  */
 
 import axios from 'axios';
@@ -22,7 +21,8 @@ import {
 
 const DEFAULT_API_VERSION = '2025-10';
 export const DEFAULT_FACTURA_TAG = 'factura';
-export const DEFAULT_FACTURA_EMITIDA_TAG = 'factura_emitida';
+/** Tag fijo al emitir DTE (reemplaza `factura`). Alineado con Shopify Flow. */
+export const FACTURA_EMITIDA_TAG = 'facturado';
 
 interface TokenCache {
   token: string;
@@ -80,7 +80,7 @@ export interface ShopifyOrderForBioma {
 export interface ListPendingOptions {
   /** Tag to look for. Default: 'factura'. */
   tag?: string;
-  /** Exclusion tag (orders already emitted). Default: 'factura_emitida'. */
+  /** Exclusion tag (orders already emitted). Fixed: `facturado`. */
   excludeTag?: string;
   /** Maximum number of orders to return per page. Default 50, max 250. */
   pageSize?: number;
@@ -292,7 +292,7 @@ export class BiomaShopifyService {
   }
 
   static get facturaEmitidaTag(): string {
-    return process.env.BIOMA_FACTURA_EMITIDA_TAG || DEFAULT_FACTURA_EMITIDA_TAG;
+    return FACTURA_EMITIDA_TAG;
   }
 
   /** Returns a cached access token if still valid (with 60s safety margin). */
@@ -405,7 +405,7 @@ export class BiomaShopifyService {
     if (errors.length) throw new Error(`tagsRemove userErrors: ${JSON.stringify(errors)}`);
   }
 
-  /** Convenience: replace `factura` with `factura_emitida` atomically. */
+  /** Convenience: replace `factura` with `facturado` atomically. */
   static async markEmitted(orderId: string): Promise<void> {
     await this.addTags(orderId, [this.facturaEmitidaTag]);
     await this.removeTags(orderId, [this.facturaTag]);

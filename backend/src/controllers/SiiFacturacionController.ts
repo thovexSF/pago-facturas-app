@@ -27,11 +27,25 @@ setInterval(() => {
 }, 30 * 60 * 1000);
 
 export class SiiFacturacionController {
+  private static resolveEmpresaRut(fromBody?: string): string {
+    const body = fromBody?.trim();
+    if (body) return body;
+    const bioma = process.env.BIOMA_EMPRESA_RUT?.trim();
+    if (bioma) return bioma;
+    const sii = process.env.SII_EMPRESA_RUT?.trim();
+    if (sii) return sii;
+    throw new Error('empresaRut requerido (BIOMA_EMPRESA_RUT o SII_EMPRESA_RUT en Railway)');
+  }
 
   // POST /api/sii-facturacion/session/create
   static async createSession(req: Request, res: Response) {
-    const { empresaRut, deferPlaywright } = req.body;
-    if (!empresaRut) return res.status(400).json({ error: 'empresaRut requerido' });
+    const { empresaRut: bodyRut, deferPlaywright } = req.body;
+    let empresaRut: string;
+    try {
+      empresaRut = SiiFacturacionController.resolveEmpresaRut(bodyRut);
+    } catch (err: any) {
+      return res.status(400).json({ error: err?.message || 'empresaRut requerido' });
+    }
     try {
       const sessionId = await SiiFacturacionService.createSession(empresaRut);
 

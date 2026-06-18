@@ -3,7 +3,7 @@ import {
   Box, Typography, Paper, Button, Alert, CircularProgress, Table, TableBody,
   TableCell, TableContainer, TableHead, TableRow, Chip, Snackbar,
   Stack, LinearProgress, Accordion, AccordionSummary, AccordionDetails,
-  TextField, Grid, Divider,
+  Grid, Divider,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/esm/ExpandMore.js';
 import RefreshIcon from '@mui/icons-material/esm/Refresh.js';
@@ -86,7 +86,7 @@ const STEP_LABELS: Record<ScraperStep, string> = {
 };
 
 export default function BiomaFacturacion() {
-  const [empresaRut, setEmpresaRut] = useState(() => localStorage.getItem('biomaEmpresaRut') || '');
+  const [empresaRut, setEmpresaRut] = useState('');
   const [sessionId, setSessionId] = useState<string | null>(() => localStorage.getItem('biomaSiiSessionId'));
   const [configOpen, setConfigOpen] = useState(() => !localStorage.getItem('biomaSiiSessionId'));
 
@@ -192,13 +192,11 @@ export default function BiomaFacturacion() {
   useEffect(() => { loadPending(); }, [loadPending]);
 
   useEffect(() => {
-    if (empresaRut && !localStorage.getItem('biomaEmpresaRut')) {
-      fetch(`${BIOMA_API}/template-codigo`)
-        .then((r) => r.json())
-        .then((d) => { if (d.empresaRut) setEmpresaRut(d.empresaRut); })
-        .catch(() => {});
-    }
-  }, [empresaRut]);
+    fetch(`${BIOMA_API}/template-codigo`)
+      .then((r) => r.json())
+      .then((d) => { if (d.empresaRut) setEmpresaRut(d.empresaRut); })
+      .catch(() => {});
+  }, []);
 
   const selectOrder = useCallback((row: PendingRow) => {
     const id = row.shopify.id;
@@ -213,7 +211,7 @@ export default function BiomaFacturacion() {
       return;
     }
     if (!empresaRut) {
-      setError('Ingresa el RUT emisor (ej. 78015129-3)');
+      setError('RUT emisor no configurado en el servidor (BIOMA_EMPRESA_RUT)');
       return;
     }
     setCreatingSession(true);
@@ -228,7 +226,6 @@ export default function BiomaFacturacion() {
       if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
       setSessionId(data.sessionId);
       localStorage.setItem('biomaSiiSessionId', data.sessionId);
-      localStorage.setItem('biomaEmpresaRut', empresaRut);
       setConfigOpen(false);
       setSnack('Sesión SII lista (HTTP). Playwright se abre al usar el scraper.');
     } catch (e: any) {
@@ -415,14 +412,14 @@ export default function BiomaFacturacion() {
         </AccordionSummary>
         <AccordionDetails>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }}>
-            <TextField
-              label="RUT emisor"
-              size="small"
-              value={empresaRut}
-              onChange={(e) => setEmpresaRut(e.target.value)}
-              placeholder="78015129-3"
-              sx={{ minWidth: 200 }}
-            />
+            <Box>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Emisor (fijo)
+              </Typography>
+              <Typography fontWeight={600}>
+                {empresaRut ? formatRut(empresaRut) : 'Cargando…'}
+              </Typography>
+            </Box>
             {sessionReady ? (
               <>
                 <Chip label="Sesión OK" color="success" size="small" />
@@ -440,7 +437,8 @@ export default function BiomaFacturacion() {
             )}
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-            Usa <code>SII_PLAYWRIGHT_HEADED=true</code> en .env para ver Chrome al ejecutar el scraper.
+            En Railway el scraper corre headless (sin ventana Chrome). La firma usa{' '}
+            <code>SII_FIRMA_CLAVE</code> en las variables del servidor.
           </Typography>
         </AccordionDetails>
       </Accordion>
