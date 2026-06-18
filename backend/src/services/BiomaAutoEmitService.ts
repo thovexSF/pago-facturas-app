@@ -1,10 +1,12 @@
 /**
  * Cola de emisión automática tras webhook orders/paid.
- * Una emisión a la vez; reutiliza sesión SII del servidor.
+ * Facturas → sesión MiPyme; boletas → sesión e-Boleta.
  */
 import { BiomaEmitService } from './BiomaEmitService';
 import { BiomaFacturacionService } from './BiomaFacturacionService';
 import { SiiFacturacionService } from './SiiFacturacionService';
+import { EBoletaService } from './EBoletaService';
+import { boletaViaEBoleta } from '../utils/biomaOrderAttrs';
 
 type AutoEmitKind = 'factura' | 'boleta';
 
@@ -16,7 +18,8 @@ interface QueueJob {
 export class BiomaAutoEmitService {
   private static queue: QueueJob[] = [];
   private static processing = false;
-  private static serverSessionId: string | null = null;
+  private static mipymeSessionId: string | null = null;
+  private static eboletaSessionId: string | null = null;
 
   static isAutoEmitFacturaEnabled(): boolean {
     return /^(1|true|yes)$/i.test(String(process.env.BIOMA_AUTO_EMIT || '').trim());
@@ -33,15 +36,23 @@ export class BiomaAutoEmitService {
     void this.processQueue();
   }
 
-  private static async getServerSessionId(): Promise<string> {
-    if (this.serverSessionId) {
-      const existing = SiiFacturacionService.getSession(this.serverSessionId);
-      if (existing) return this.serverSessionId;
+  private static async getMipymeSessionId(): Promise<string> {
+    if (this.mipymeSessionId) {
+      const existing = SiiFacturacionService.getSession(this.mipymeSessionId);
+      if (existing) return this.mipymeSessionId;
     }
     const empresaRut = BiomaFacturacionService.getEmpresaRutConfig();
-    this.serverSessionId = await SiiFacturacionService.createSession(empresaRut);
-    console.log(`[bioma auto-emit] sesión SII servidor: ${this.serverSessionId}`);
-    return this.serverSessionId;
+    this.mipymeSessionId = await SiiFacturacionService.createSession(empresaRut);
+    console.log(`[bioma auto-emit] sesión MiPyme: ${this.mipymeSessionId}`);
+    return this.mipymeSessionId;
+  }
+
+  private static async getEboletaSessionId(): Promise<string> {
+    if (this.eboletaSessionId) return this.eboletaSessionId;
+    const empresaRut = BiomaFacturacionService.getEmpresaRutConfig();
+    this.eboletaSessionId = await EBoletaService.createSession(empresaRut);
+    console.log(`[bioma auto-emit] sesión e-Boleta: ${this.eboletaSessionId}`);
+    return this.eboletaSessionId;
   }
 
   private static async processQueue(): Promise<void> {
@@ -51,15 +62,24 @@ export class BiomaAutoEmitService {
     while (this.queue.length > 0) {
       const job = this.queue.shift()!;
       try {
-        SiiFacturacionService.assertSiiAvailable();
-        const sessionId = await this.getServerSessionId();
+        const sessionId =
+          job.kind === 'boleta' && boletaViaEBoleta()
+            ? await this.getEboletaSessionId()
+            : await this.getMipymeSessionId();
+
+        if (job.kind === 'factura') {
+          SiiFacturacionService.assertSiiAvailable();
+        }
+
         console.log(`[bioma auto-emit] emitiendo ${job.kind} ${job.orderId}…`);
         const out = await BiomaEmitService.emitOrder(job.orderId, {
           sessionId,
           scraperStep: 'emitir',
         });
         if (out.success) {
-          console.log(`[bioma auto-emit] OK ${job.orderId} folio=${out.row?.siiFolio ?? '—'}`);
+          console.log(
+            `[bioma auto-emit] OK ${job.orderId} folio=${out.row?.siiFolio ?? '—'} (${out.channel})`,
+          );
         } else {
           console.warn(`[bioma auto-emit] falló ${job.orderId}: ${out.error}`);
         }

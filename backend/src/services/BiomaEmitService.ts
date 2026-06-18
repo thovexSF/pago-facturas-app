@@ -5,7 +5,9 @@ import { BiomaFacturacionService } from './BiomaFacturacionService';
 import { BiomaShopifyService } from './BiomaShopifyService';
 import { SiiFacturacionService } from './SiiFacturacionService';
 import { SiiCredentialsService } from './SiiCredentialsService';
-import { boletaReceptorForSii } from '../utils/biomaOrderAttrs';
+import { EBoletaService } from './EBoletaService';
+import { EBoletaSessionService } from './EBoletaSessionService';
+import { boletaReceptorForSii, boletaViaEBoleta } from '../utils/biomaOrderAttrs';
 
 export type BiomaEmitStep = 'abrir' | 'rellenar' | 'emitir';
 
@@ -16,6 +18,7 @@ export interface BiomaEmitResult {
   result?: Awaited<ReturnType<typeof SiiFacturacionService.emitirFactura>>;
   row?: Awaited<ReturnType<typeof BiomaFacturacionService.findEmision>>;
   pdfUrl?: string | null;
+  channel?: 'mipyme' | 'eboleta';
 }
 
 export class BiomaEmitService {
@@ -30,14 +33,8 @@ export class BiomaEmitService {
       esperarMsEnPreview?: number;
     },
   ): Promise<BiomaEmitResult> {
-    SiiFacturacionService.assertSiiAvailable();
-
     const scraperStep = opts.scraperStep ?? 'emitir';
     const isEmit = scraperStep === 'emitir';
-    const session = SiiFacturacionService.getSession(opts.sessionId);
-    if (!session) {
-      return { success: false, step: scraperStep, error: 'Sesión SII no encontrada o expirada' };
-    }
 
     const order = await BiomaShopifyService.getOrder(orderId);
     if (!order) {
@@ -48,11 +45,21 @@ export class BiomaEmitService {
     const tipoCodigo = opts.tipoCodigo || row.tipoCodigo || 33;
     const isBoleta = tipoCodigo === 39 || tipoCodigo === 41;
 
+    if (isBoleta && boletaViaEBoleta()) {
+      return this.emitBoletaEBoleta(orderId, order, row, opts.sessionId, scraperStep, tipoCodigo);
+    }
+
+    SiiFacturacionService.assertSiiAvailable();
+
+    const session = SiiFacturacionService.getSession(opts.sessionId);
+    if (!session) {
+      return { success: false, step: scraperStep, error: 'Sesión SII no encontrada o expirada' };
+    }
+
     const templateInfo = await BiomaFacturacionService.resolveTemplateInfo({
       rutReceptor: isBoleta ? null : row.rutReceptor,
       tipoCodigo,
     });
-    // Boletas: formulario nuevo tipo 39 (no copiar factura 33 como plantilla).
     const codigoTemplate = isBoleta
       ? null
       : (opts.codigoOriginal && String(opts.codigoOriginal).trim()) ||
@@ -127,6 +134,7 @@ export class BiomaEmitService {
         step: scraperStep,
         error: result?.error || 'Scraper falló sin mensaje',
         result,
+        channel: 'mipyme',
       };
     }
 
@@ -139,6 +147,7 @@ export class BiomaEmitService {
         step: scraperStep,
         result,
         row: await BiomaFacturacionService.findEmision(orderId),
+        channel: 'mipyme',
       };
     }
 
@@ -151,6 +160,7 @@ export class BiomaEmitService {
         step: scraperStep,
         error: result.error,
         result,
+        channel: 'mipyme',
       };
     }
 
@@ -178,6 +188,91 @@ export class BiomaEmitService {
       result,
       row: updated ?? undefined,
       pdfUrl: siiCodigo ? `/api/bioma/pdf/${encodeURIComponent(orderId)}` : null,
+      channel: 'mipyme',
+    };
+  }
+
+  private static async emitBoletaEBoleta(
+    orderId: string,
+    order: Awaited<ReturnType<typeof BiomaShopifyService.getOrder>>,
+    row: Awaited<ReturnType<typeof BiomaFacturacionService.upsertFromShopify>>,
+    sessionId: string,
+    scraperStep: BiomaEmitStep,
+    tipoCodigo: number,
+  ): Promise<BiomaEmitResult> {
+    if (scraperStep !== 'emitir') {
+      return {
+        success: false,
+        step: scraperStep,
+        error: 'e-Boleta solo soporta emisión directa (no preview/rellenar por scraper MiPyme)',
+        channel: 'eboleta',
+      };
+    }
+
+    if (!EBoletaSessionService.getSession(sessionId)) {
+      return {
+        success: false,
+        step: scraperStep,
+        error:
+          'Sesión e-Boleta no encontrada. En la pestaña Boletas, crea sesión e-Boleta (no MiPyme).',
+        channel: 'eboleta',
+      };
+    }
+
+    await BiomaFacturacionService.setStatus(orderId, 'emitting');
+
+    const builtItems = BiomaFacturacionService.buildItemsFromOrder(order!, tipoCodigo);
+    const montoTotal = Math.round(order!.total || builtItems.reduce((s, it) => s + it.subtotal, 0));
+
+    const out = await EBoletaService.emitBoleta(sessionId, {
+      tipoCodigo,
+      items: builtItems.map((it) => ({
+        descripcion: it.descripcion,
+        cantidad: it.cantidad,
+        precioUnitario: it.precioUnitario,
+      })),
+      montoTotal,
+      detalleLabel: `${row.shopifyOrderName} — ${builtItems[0]?.descripcion || 'Venta'}`,
+      customerEmail: row.customerEmail,
+      customerPhone: row.customerPhone,
+    });
+
+    if (!out.success || !out.folio) {
+      await BiomaFacturacionService.setStatus(orderId, 'error', {
+        lastError: out.error || 'Emisión e-Boleta falló',
+      });
+      return {
+        success: false,
+        step: 'emitir',
+        error: out.error || 'Emisión e-Boleta falló',
+        channel: 'eboleta',
+      };
+    }
+
+    const updated = await BiomaFacturacionService.setStatus(orderId, 'emitted', {
+      siiFolio: out.folio,
+      siiCodigo: out.dte ? String(out.dte).slice(0, 255) : null,
+      pdfPublicUrl: out.pdfPublicUrl ?? null,
+      emittedAt: new Date(),
+      lastError: null,
+    });
+
+    try {
+      await BiomaShopifyService.markDteEmitted(orderId, tipoCodigo, out.folio);
+    } catch (tagErr: any) {
+      console.error('[bioma emit] tag swap failed:', tagErr?.message || tagErr);
+    }
+
+    const pdfUrl = out.pdfPublicUrl
+      ? `/api/bioma/pdf/${encodeURIComponent(orderId)}`
+      : null;
+
+    return {
+      success: true,
+      step: 'emitir',
+      row: updated ?? undefined,
+      pdfUrl,
+      channel: 'eboleta',
     };
   }
 }

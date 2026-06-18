@@ -24,6 +24,7 @@ import {
   orderNeedsFactura,
   isBoletaTipo,
   boletaReceptorForSii,
+  eboletaReceptorForSii,
 } from '../utils/biomaOrderAttrs';
 import { sanitizeDescripcionParaSii } from './SiiFacturacionService';
 
@@ -144,7 +145,7 @@ export class BiomaFacturacionService {
       return {
         codigo: null,
         source: 'nueva',
-        templateCliente: 'Boleta a consumidor final (sin RUT del comprador)',
+        templateCliente: 'Boleta e-Boleta · consumidor final (eboleta.sii.cl)',
       };
     }
 
@@ -431,7 +432,7 @@ export class BiomaFacturacionService {
     const existing = await this.findEmision(order.id);
     const tipoCodigo = orderNeedsFactura(order.customAttributes) ? 33 : 39;
     const isBoleta = isBoletaTipo(existing?.tipoCodigo ?? tipoCodigo);
-    const cf = boletaReceptorForSii();
+    const cf = isBoleta ? eboletaReceptorForSii() : boletaReceptorForSii();
 
     const shippingPhone = order.shippingAddress?.phone ?? null;
     const customerPhone = normalizePhoneForWhatsApp(

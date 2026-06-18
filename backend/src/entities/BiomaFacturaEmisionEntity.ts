@@ -91,6 +91,10 @@ export class BiomaFacturaEmisionEntity {
   @Column({ name: 'sii_track_id', type: 'varchar', length: 255, nullable: true })
   siiTrackId: string | null;
 
+  /** PDF público devuelto por e-Boleta (eboleta.sii.cl). */
+  @Column({ name: 'pdf_public_url', type: 'text', nullable: true })
+  pdfPublicUrl: string | null;
+
   /** Lifecycle status */
   @Column({ type: 'varchar', length: 20, default: 'pending' })
   status: BiomaFacturaStatus;

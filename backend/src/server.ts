@@ -7,8 +7,10 @@ import cors from 'cors';
 import { AppDataSource } from './config/database';
 import siiFacturacionRoutes from './routes/sii-facturacion.routes';
 import biomaFacturacionRoutes from './routes/bioma-facturacion.routes';
+import eboletaRoutes from './routes/eboleta.routes';
 import { BiomaShopifyWebhookController } from './controllers/BiomaShopifyWebhookController';
 import { SiiFacturacionService } from './services/SiiFacturacionService';
+import { EBoletaSessionService } from './services/EBoletaSessionService';
 
 const MONOREPO_ROOT = path.join(__dirname, '..', '..');
 const PAGO_DIR = path.join(MONOREPO_ROOT, 'apps', 'pago-facturas');
@@ -23,6 +25,7 @@ async function shutdown(signal: string) {
   console.log(`\n[server] ${signal} recibido — cerrando browsers y sesiones...`);
   try {
     await SiiFacturacionService.closeAllSessions();
+    await EBoletaSessionService.closeAllSessions();
   } catch (e) {
     console.error('[server] Error cerrando sesiones:', e);
   }
@@ -58,6 +61,7 @@ async function main() {
   });
 
   app.use('/api/sii-facturacion', siiFacturacionRoutes);
+  app.use('/api/eboleta', eboletaRoutes);
   app.use('/api/bioma', biomaFacturacionRoutes);
 
   // UI emisión SII (Vite build con base /sii/)

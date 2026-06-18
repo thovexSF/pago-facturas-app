@@ -13,6 +13,7 @@ import StatCard from '../components/StatCard';
 
 const BIOMA_API = `${API_CONFIG.BASE_URL}/api/bioma`;
 const SII_API = `${API_CONFIG.BASE_URL}/api/sii-facturacion`;
+const EBOLETA_API = `${API_CONFIG.BASE_URL}/api/eboleta`;
 
 
 interface ShopifyOrderForBioma {
@@ -120,7 +121,15 @@ export default function BiomaFacturacion() {
   const [autoEmitFactura, setAutoEmitFactura] = useState(false);
   const [autoEmitBoleta, setAutoEmitBoleta] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(() => localStorage.getItem('biomaSiiSessionId'));
-  const [configOpen, setConfigOpen] = useState(() => !localStorage.getItem('biomaSiiSessionId'));
+  const [eboletaSessionId, setEboletaSessionId] = useState<string | null>(
+    () => localStorage.getItem('biomaEboletaSessionId'),
+  );
+  const [configOpen, setConfigOpen] = useState(
+    () => !localStorage.getItem('biomaSiiSessionId') && !localStorage.getItem('biomaEboletaSessionId'),
+  );
+
+  const activeSessionId = moduleTab === 'boletas' ? eboletaSessionId : sessionId;
+  const sessionReady = !!activeSessionId;
 
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<PendingRow[]>([]);
@@ -316,7 +325,7 @@ export default function BiomaFacturacion() {
   }, [loadPayload]);
 
   const createSession = useCallback(async () => {
-    if (siiBlocked.blocked) {
+    if (moduleTab !== 'boletas' && siiBlocked.blocked) {
       setError(`SII en pausa (~${siiBlocked.retryAfterMinutes} min). Entra manual en sii.cl primero.`);
       return;
     }
@@ -327,6 +336,20 @@ export default function BiomaFacturacion() {
     setCreatingSession(true);
     setError(null);
     try {
+      if (moduleTab === 'boletas') {
+        const res = await fetch(`${EBOLETA_API}/session/create`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ empresaRut }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+        setEboletaSessionId(data.sessionId);
+        localStorage.setItem('biomaEboletaSessionId', data.sessionId);
+        setConfigOpen(false);
+        setSnack('Sesión e-Boleta lista (eboleta.sii.cl). Playwright abre al emitir.');
+        return;
+      }
       const res = await fetch(`${SII_API}/session/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -337,15 +360,26 @@ export default function BiomaFacturacion() {
       setSessionId(data.sessionId);
       localStorage.setItem('biomaSiiSessionId', data.sessionId);
       setConfigOpen(false);
-      setSnack('Sesión SII lista (HTTP). Playwright se abre al usar el scraper.');
+      setSnack('Sesión MiPyme lista (facturas). Playwright se abre al emitir.');
     } catch (e: any) {
-      setError(`Sesión SII: ${e?.message || e}`);
+      setError(`Sesión: ${e?.message || e}`);
     } finally {
       setCreatingSession(false);
     }
-  }, [empresaRut, siiBlocked]);
+  }, [empresaRut, siiBlocked, moduleTab]);
 
   const closeSession = useCallback(async () => {
+    if (moduleTab === 'boletas') {
+      if (!eboletaSessionId) return;
+      try {
+        await fetch(`${EBOLETA_API}/session/${eboletaSessionId}`, { method: 'DELETE' });
+      } finally {
+        setEboletaSessionId(null);
+        localStorage.removeItem('biomaEboletaSessionId');
+        setConfigOpen(true);
+      }
+      return;
+    }
     if (!sessionId) return;
     try {
       await fetch(`${SII_API}/session/${sessionId}`, { method: 'DELETE' });
@@ -354,15 +388,16 @@ export default function BiomaFacturacion() {
       localStorage.removeItem('biomaSiiSessionId');
       setConfigOpen(true);
     }
-  }, [sessionId]);
-
-  const sessionReady = !!sessionId;
+  }, [sessionId, eboletaSessionId, moduleTab]);
 
   const stopAllSii = useCallback(async () => {
     try {
       await fetch(`${SII_API}/session/close-all`, { method: 'POST' });
+      await fetch(`${EBOLETA_API}/session/close-all`, { method: 'POST' });
       setSessionId(null);
+      setEboletaSessionId(null);
       localStorage.removeItem('biomaSiiSessionId');
+      localStorage.removeItem('biomaEboletaSessionId');
       setSnack('Sesiones workbench cerradas — no toques el SII por un rato');
       await loadBlockStatus();
     } catch {
@@ -384,24 +419,24 @@ export default function BiomaFacturacion() {
   }, [loadBlockStatus]);
 
   const emitirDte = useCallback(async (orderId: string, opts?: { isBoleta?: boolean }) => {
-    if (siiBlocked.blocked) {
+    const isBoleta = opts?.isBoleta ?? payload?.tipoCodigo === 39;
+    if (!isBoleta && siiBlocked.blocked) {
       setError(`SII en pausa ~${siiBlocked.retryAfterMinutes} min.`);
       return;
     }
-    if (!sessionReady) {
-      setError('Abre sesión SII antes de emitir');
+    if (!sessionReady || !activeSessionId) {
+      setError(isBoleta ? 'Abre sesión e-Boleta antes de emitir' : 'Abre sesión MiPyme antes de emitir');
       setConfigOpen(true);
       return;
     }
-    const isBoleta = opts?.isBoleta ?? payload?.tipoCodigo === 39;
     if (!isBoleta && !templateReady(payload?.template)) {
       setError('No se pudo resolver plantilla SII.');
       return;
     }
     const ok = window.confirm(
       isBoleta
-        ? '¿Emitir boleta electrónica en el SII?\n\nTarda ~1 minuto.'
-        : '¿Emitir factura en el SII?\n\nTarda ~1 minuto. Si algo falla, corrígelo manual en sii.cl.',
+        ? '¿Emitir boleta en e-Boleta (eboleta.sii.cl)?\n\nTarda ~1 minuto.'
+        : '¿Emitir factura en MiPyme?\n\nTarda ~1 minuto. Si algo falla, corrígelo manual en sii.cl.',
     );
     if (!ok) return;
 
@@ -411,7 +446,7 @@ export default function BiomaFacturacion() {
       const res = await fetch(`${BIOMA_API}/emitir/${encodeURIComponent(orderId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId }),
+        body: JSON.stringify({ sessionId: activeSessionId }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -426,34 +461,32 @@ export default function BiomaFacturacion() {
       if (selectedId === orderId) await loadPayload(orderId);
     } catch (e: any) {
       setError(`Emitir: ${e?.message || e}`);
-      await loadBlockStatus();
+      if (!isBoleta) await loadBlockStatus();
     } finally {
       setBusyOrderId(null);
     }
-  }, [sessionReady, sessionId, payload, loadPending, loadBoletas, loadRealizadas, loadPayload, selectedId, siiBlocked, loadBlockStatus]);
+  }, [sessionReady, activeSessionId, payload, loadPending, loadBoletas, loadRealizadas, loadPayload, selectedId, siiBlocked, loadBlockStatus]);
 
   const descargarPdf = useCallback(async (orderId: string) => {
-    if (!sessionReady) {
-      setError('Abre sesión SII para descargar el PDF');
-      return;
-    }
     setBusyOrderId(orderId);
     setError(null);
     try {
-      const res = await fetch(`${BIOMA_API}/pdf/${encodeURIComponent(orderId)}/fetch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+      if (moduleTab !== 'boletas' && sessionReady && sessionId) {
+        const res = await fetch(`${BIOMA_API}/pdf/${encodeURIComponent(orderId)}/fetch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+      }
       window.open(`${BIOMA_API}/pdf/${encodeURIComponent(orderId)}`, '_blank');
     } catch (e: any) {
       setError(`PDF: ${e?.message || e}`);
     } finally {
       setBusyOrderId(null);
     }
-  }, [sessionReady, sessionId]);
+  }, [moduleTab, sessionReady, sessionId]);
 
   const marcarComoEmitida = useCallback(async (orderId: string) => {
     const folioStr = window.prompt(
@@ -576,8 +609,8 @@ export default function BiomaFacturacion() {
           )}
           {moduleTab === 'boletas' && (
             <>
-              Pedidos B2C sin factura. La boleta va a{' '}
-              <strong>consumidor final</strong> (RUT 66.666.666-6 · Varios) — no se usa el RUT del comprador.
+              Emisión vía <strong>e-Boleta</strong> (eboleta.sii.cl), no MiPyme.
+              Receptor: 66.666.666-6 · SII Boleta (consumidor final).
             </>
           )}
           {moduleTab === 'realizadas' && (
@@ -646,7 +679,8 @@ export default function BiomaFacturacion() {
       >
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Typography fontWeight={500}>
-            Configuración SII {sessionReady ? '· sesión activa' : '· requerida para emitir'}
+            {moduleTab === 'boletas' ? 'e-Boleta' : 'MiPyme (facturas)'}{' '}
+            {sessionReady ? '· sesión activa' : '· requerida para emitir'}
           </Typography>
         </AccordionSummary>
         <AccordionDetails>
@@ -669,15 +703,29 @@ export default function BiomaFacturacion() {
                 variant="contained"
                 size="small"
                 onClick={createSession}
-                disabled={creatingSession || !empresaRut || siiBlocked.blocked}
+                disabled={creatingSession || !empresaRut || (moduleTab !== 'boletas' && siiBlocked.blocked)}
               >
-                {creatingSession ? 'Conectando…' : 'Abrir sesión SII'}
+                {creatingSession
+                  ? 'Conectando…'
+                  : moduleTab === 'boletas'
+                    ? 'Abrir sesión e-Boleta'
+                    : 'Abrir sesión MiPyme'}
               </Button>
             )}
           </Stack>
           <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-            En Railway el scraper corre headless (sin ventana Chrome). La firma usa{' '}
-            <code>SII_FIRMA_CLAVE</code> en las variables del servidor.
+            {moduleTab === 'boletas' ? (
+              <>
+                Boletas usan el portal{' '}
+                <a href="https://eboleta.sii.cl/emitir/" target="_blank" rel="noreferrer">eboleta.sii.cl</a>
+                {' '}(misma clave tributaria que SII_USERNAME / SII_PASSWORD).
+              </>
+            ) : (
+              <>
+                Facturas usan MiPyme (<code>www1.sii.cl</code>). Firma con{' '}
+                <code>SII_FIRMA_CLAVE</code> en Railway.
+              </>
+            )}
           </Typography>
         </AccordionDetails>
       </Accordion>
@@ -841,7 +889,13 @@ export default function BiomaFacturacion() {
                   </Typography>
                 </Box>
                 <Chip
-                  label={sessionReady ? 'Sesión SII activa' : 'Sin sesión SII'}
+                  label={
+                    sessionReady
+                      ? moduleTab === 'boletas'
+                        ? 'Sesión e-Boleta activa'
+                        : 'Sesión MiPyme activa'
+                      : 'Sin sesión'
+                  }
                   color={sessionReady ? 'success' : 'default'}
                   size="small"
                   variant={sessionReady ? 'filled' : 'outlined'}
@@ -862,7 +916,7 @@ export default function BiomaFacturacion() {
                   </Typography>
                   {(payload.tipoCodigo === 39 || payload.tipoCodigo === 41) && (
                     <Alert severity="info" sx={{ mb: 1.5 }}>
-                      Boleta estándar: receptor <strong>66.666.666-6 · Varios</strong> (consumidor final).
+                      e-Boleta: receptor <strong>66.666.666-6 · SII Boleta</strong> (consumidor final).
                       El nombre del cliente en Shopify es solo referencia interna.
                     </Alert>
                   )}
@@ -915,7 +969,7 @@ export default function BiomaFacturacion() {
                   color="success"
                   size="large"
                   disabled={
-                    isBusy || !sessionReady || siiBlocked.blocked ||
+                    isBusy || !sessionReady || (moduleTab !== 'boletas' && siiBlocked.blocked) ||
                     (moduleTab === 'pendientes' && !templateReady(payload?.template))
                   }
                   onClick={() => emitirDte(

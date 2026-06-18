@@ -12,12 +12,37 @@ export const SII_RUT_CONSUMIDOR_FINAL = '66666666-6';
 /** Razón social habitual en boleta electrónica sin identificar al comprador. */
 export const SII_RAZON_BOLETA_CF = 'Varios';
 
+/** Valores receptor genérico en portal e-Boleta (eboleta.sii.cl). */
+export const EBOLETA_RAZON_CF = 'SII Boleta';
+export const EBOLETA_COMUNA_CF = 'Santiago';
+export const EBOLETA_DIRECCION_CF = 'Santiago';
+
 export function isBoletaTipo(tipoCodigo: number): boolean {
   return tipoCodigo === 39 || tipoCodigo === 41;
 }
 
 export function boletaReceptorForSii(): { rut: string; razonSocial: string } {
   return { rut: SII_RUT_CONSUMIDOR_FINAL, razonSocial: SII_RAZON_BOLETA_CF };
+}
+
+/** Receptor consumidor final para emisión vía e-Boleta SII. */
+export function eboletaReceptorForSii(): {
+  rut: string;
+  razonSocial: string;
+  direccion: string;
+  comuna: string;
+} {
+  return {
+    rut: SII_RUT_CONSUMIDOR_FINAL,
+    razonSocial: EBOLETA_RAZON_CF,
+    direccion: EBOLETA_DIRECCION_CF,
+    comuna: EBOLETA_COMUNA_CF,
+  };
+}
+
+export function boletaViaEBoleta(): boolean {
+  const v = String(process.env.BIOMA_BOLETA_VIA || 'eboleta').trim().toLowerCase();
+  return v !== 'mipyme';
 }
 
 /** Tag al emitir factura (incluye folio SII). */

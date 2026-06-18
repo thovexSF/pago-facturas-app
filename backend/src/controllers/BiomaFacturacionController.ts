@@ -38,6 +38,7 @@ export class BiomaFacturacionController {
         empresaRut: BiomaFacturacionService.getEmpresaRutConfig(),
         autoEmitFactura: BiomaAutoEmitService.isAutoEmitFacturaEnabled(),
         autoEmitBoleta: BiomaAutoEmitService.isAutoEmitBoletaEnabled(),
+        boletaVia: process.env.BIOMA_BOLETA_VIA || 'eboleta',
       });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err?.message || String(err) });
@@ -238,16 +239,22 @@ export class BiomaFacturacionController {
     res: Response,
     flags: { scraperStep: 'abrir' | 'rellenar' | 'emitir' },
   ) {
-    try {
-      SiiFacturacionService.assertSiiAvailable();
-    } catch (err: any) {
-      return res.status(429).json({ success: false, error: err?.message || String(err) });
-    }
     const orderId = req.params.orderId;
     const { sessionId, codigoOriginal, tipoCodigo, fechaEmision, esperarMsEnPreview } =
       req.body || {};
     if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
-    if (!sessionId) return res.status(400).json({ error: 'sessionId requerido (crea una sesión SII primero)' });
+    if (!sessionId) return res.status(400).json({ error: 'sessionId requerido' });
+
+    const tipo = tipoCodigo ? parseInt(String(tipoCodigo), 10) : undefined;
+    const isBoletaEmit = tipo === 39 || tipo === 41;
+
+    if (!isBoletaEmit) {
+      try {
+        SiiFacturacionService.assertSiiAvailable();
+      } catch (err: any) {
+        return res.status(429).json({ success: false, error: err?.message || String(err) });
+      }
+    }
 
     const { scraperStep } = flags;
 
@@ -350,11 +357,15 @@ export class BiomaFacturacionController {
   static async pdf(req: Request, res: Response) {
     try {
       const row = await BiomaFacturacionService.findEmision(req.params.orderId);
-      if (!row || !row.siiCodigo) {
+      if (!row) {
         return res.status(404).json({ error: 'Factura aún no emitida o sin código SII' });
       }
-      // Reuse the existing serve-pdf endpoint contract: redirect the client to it.
-      // The Sii route mounts as /api/sii-facturacion/pdf/:codigo
+      if (row.pdfPublicUrl) {
+        return res.redirect(307, row.pdfPublicUrl);
+      }
+      if (!row.siiCodigo) {
+        return res.status(404).json({ error: 'Sin PDF disponible (e-Boleta sin URL o sin código MiPyme)' });
+      }
       const target = `/api/sii-facturacion/pdf/${encodeURIComponent(row.siiCodigo)}`;
       return res.redirect(307, target);
     } catch (err: any) {
