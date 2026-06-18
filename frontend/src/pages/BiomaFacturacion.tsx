@@ -67,6 +67,7 @@ interface EmisionDbRow {
 }
 
 type ModuleTab = 'pendientes' | 'boletas' | 'realizadas';
+type BoletasRango = 'semana' | 'mes' | 'historico';
 
 function dteLabel(tipo: number): string {
   if (tipo === 39) return 'Boleta';
@@ -106,6 +107,7 @@ function statusChip(status?: BiomaEmision['status']) {
 
 export default function BiomaFacturacion() {
   const [moduleTab, setModuleTab] = useState<ModuleTab>('pendientes');
+  const [boletasRango, setBoletasRango] = useState<BoletasRango>('semana');
   const [empresaRut, setEmpresaRut] = useState('');
   const [autoEmitFactura, setAutoEmitFactura] = useState(false);
   const [autoEmitBoleta, setAutoEmitBoleta] = useState(false);
@@ -199,18 +201,25 @@ export default function BiomaFacturacion() {
     }
   }, []);
 
-  const loadBoletas = useCallback(async (opts?: { quiet?: boolean }) => {
+  const boletasDaysBack = boletasRango === 'semana' ? 14 : boletasRango === 'mes' ? 45 : 0;
+
+  const loadBoletas = useCallback(async (opts?: { quiet?: boolean; daysBack?: number }) => {
+    const days = opts?.daysBack ?? boletasDaysBack;
     setLoading(true);
     if (!opts?.quiet) setError(null);
     try {
-      const res = await fetch(`${BIOMA_API}/boletas-pendientes?pageSize=100&sync=1`);
+      const res = await fetch(
+        `${BIOMA_API}/boletas-pendientes?pageSize=100&sync=1&daysBack=${days}`,
+      );
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
       setBoletasRows(data.rows || []);
       if (data.syncStats && !opts?.quiet) {
         const s = data.syncStats;
+        const rango =
+          days === 0 ? 'histórico' : days <= 14 ? 'últimos 14 días' : `últimos ${days} días`;
         setSnack(
-          `Boletas: ${data.total ?? data.rows?.length ?? 0} pendientes (${s.registered} registradas de ${s.scanned} pedidos revisados)`,
+          `Boletas (${rango}): ${data.total ?? 0} pendientes — ${s.registered} nuevas de ${s.scanned} pedidos revisados en Shopify`,
         );
       }
     } catch (e: any) {
@@ -219,7 +228,7 @@ export default function BiomaFacturacion() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [boletasDaysBack]);
 
   const loadRealizadas = useCallback(async () => {
     setLoading(true);
@@ -518,6 +527,31 @@ export default function BiomaFacturacion() {
         <Tab value="realizadas" label={`Realizadas (${realizadasTotal})`} />
       </Tabs>
 
+      {moduleTab === 'boletas' && (
+        <Stack direction="row" spacing={1} sx={{ mb: 2, flexWrap: 'wrap' }}>
+          {(
+            [
+              ['semana', 'Esta semana (14d)'],
+              ['mes', 'Último mes'],
+              ['historico', 'Histórico'],
+            ] as const
+          ).map(([key, label]) => (
+            <Button
+              key={key}
+              size="small"
+              variant={boletasRango === key ? 'contained' : 'outlined'}
+              onClick={() => {
+                setBoletasRango(key);
+                const d = key === 'semana' ? 14 : key === 'mes' ? 45 : 0;
+                void loadBoletas({ daysBack: d });
+              }}
+            >
+              {label}
+            </Button>
+          ))}
+        </Stack>
+      )}
+
       <Box
         sx={{
           display: 'flex',
@@ -533,7 +567,10 @@ export default function BiomaFacturacion() {
             <>Pedidos con tag <strong>factura</strong> y datos de facturación (toggle o RUT). Pedido manual: agrega tag + atributos RUT en Shopify.</>
           )}
           {moduleTab === 'boletas' && (
-            <>Pedidos B2C sin toggle factura. Usa <strong>Importar desde Shopify</strong> para cargar históricos.</>
+            <>
+              Pedidos B2C sin factura (sin toggle ni RUT). Por defecto solo{' '}
+              <strong>últimos 14 días</strong> — los viejos (#2303…) quedan en Histórico.
+            </>
           )}
           {moduleTab === 'realizadas' && (
             <>Documentos emitidos desde este módulo (facturas y boletas).</>

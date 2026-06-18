@@ -272,8 +272,8 @@ export class BiomaFacturacionService {
     let registered = 0;
     let skipped = 0;
     let after: string | null = null;
-    const maxPages = opts.maxPages ?? 20;
-    const daysBack = opts.daysBack ?? 365;
+    const maxPages = opts.maxPages ?? 15;
+    const daysBack = opts.daysBack ?? 14;
 
     for (let page = 0; page < maxPages; page++) {
       const { orders, pageInfo } = await BiomaShopifyService.listPaidOrders({
@@ -288,6 +288,10 @@ export class BiomaFacturacionService {
         if (orderNeedsFactura(order.customAttributes)) {
           skipped++;
           continue;
+        }
+        const existing = await BiomaFacturacionService.findEmision(order.id);
+        if (existing?.tipoCodigo === 33 && existing.status !== 'emitted') {
+          await BiomaFacturacionService.setTipoCodigo(order.id, 39);
         }
         const result = await BiomaShopifyService.registerBoletaOrder(order);
         if (result.tagged) registered++;
@@ -336,18 +340,22 @@ export class BiomaFacturacionService {
     pageSize?: number;
     sync?: boolean;
     maxSyncPages?: number;
+    /** Solo pedidos desde hace N días (default 14 = «esta semana»). 0 = sin filtro fecha. */
+    daysBack?: number;
   } = {}): Promise<{
     rows: BiomaFacturaEmisionEntity[];
     total: number;
     page: number;
     pageSize: number;
     syncStats?: { scanned: number; registered: number; skipped: number };
+    daysBack?: number;
   }> {
+    const daysBack = opts.daysBack ?? 14;
     let syncStats: { scanned: number; registered: number; skipped: number } | undefined;
     if (opts.sync !== false) {
       syncStats = await this.syncBoletasFromShopify({
-        maxPages: opts.maxSyncPages ?? 25,
-        daysBack: 365,
+        maxPages: opts.maxSyncPages ?? 15,
+        daysBack: daysBack > 0 ? daysBack : 365,
       });
     }
     const pageSize = Math.min(Math.max(opts.pageSize ?? 50, 1), 100);
@@ -360,12 +368,21 @@ export class BiomaFacturacionService {
       .andWhere('e.tipo_codigo IN (:...tipos)', { tipos: [39, 41] })
       .andWhere('e.status IN (:...statuses)', {
         statuses: ['pending', 'error', 'drafting', 'emitting'],
-      })
-      .orderBy('e.created_at', 'DESC');
+      });
+
+    if (daysBack > 0) {
+      const since = new Date();
+      since.setDate(since.getDate() - daysBack);
+      since.setHours(0, 0, 0, 0);
+      qb.andWhere('e.shopify_processed_at >= :since', { since });
+    }
+
+    qb.orderBy('e.shopify_order_number', 'DESC', 'NULLS LAST')
+      .addOrderBy('e.shopify_processed_at', 'DESC', 'NULLS LAST');
 
     const total = await qb.getCount();
     const rows = await qb.skip(skip).take(pageSize).getMany();
-    return { rows, total, page, pageSize, syncStats };
+    return { rows, total, page, pageSize, syncStats, daysBack };
   }
 
   /**
@@ -417,6 +434,7 @@ export class BiomaFacturacionService {
       shopifyOrderId: order.id,
       shopifyOrderName: order.name,
       shopifyOrderNumber: order.orderNumber,
+      shopifyProcessedAt: order.processedAt ? new Date(order.processedAt) : null,
       empresaRut: this.empresaRut,
       rutReceptor:
         attr(order, BIOMA_FACTURA_ATTR.rut) ||

@@ -31,6 +31,10 @@ export class BiomaFacturaEmisionEntity {
   @Column({ name: 'shopify_order_number', type: 'int', nullable: true })
   shopifyOrderNumber: number | null;
 
+  /** Fecha de procesamiento en Shopify (para filtrar «esta semana»). */
+  @Column({ name: 'shopify_processed_at', type: 'timestamp', nullable: true })
+  shopifyProcessedAt: Date | null;
+
   /** Empresa emisora (RUT del emisor en SII) — por defecto el de Bioma */
   @Column({ name: 'empresa_rut', type: 'varchar', length: 50 })
   empresaRut: string;

@@ -66,11 +66,14 @@ export class BiomaFacturacionController {
       const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
       const pageSize = req.query.pageSize ? parseInt(String(req.query.pageSize), 10) : 50;
       const sync = req.query.sync !== '0' && req.query.sync !== 'false';
+      const daysBackRaw = req.query.daysBack != null ? parseInt(String(req.query.daysBack), 10) : 14;
+      const daysBack = Number.isFinite(daysBackRaw) ? daysBackRaw : 14;
       const data = await BiomaFacturacionService.listBoletasPendientes({
         page: Number.isFinite(page) ? page : 1,
         pageSize: Number.isFinite(pageSize) ? pageSize : 50,
         sync,
-        maxSyncPages: 25,
+        maxSyncPages: daysBack > 30 ? 25 : 15,
+        daysBack,
       });
       return res.json({ success: true, ...data });
     } catch (err: any) {

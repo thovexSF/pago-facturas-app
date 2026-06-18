@@ -421,11 +421,15 @@ export class BiomaShopifyService {
   } = {}): Promise<{ orders: ShopifyOrderForBioma[]; pageInfo: PageInfo }> {
     const pageSize = Math.min(Math.max(opts.pageSize ?? 50, 1), 100);
     const after = opts.after ?? null;
-    const daysBack = opts.daysBack ?? 365;
-    const sinceMs = Date.now() - daysBack * 86_400_000;
+    const daysBack = opts.daysBack ?? 14;
+    const since = new Date();
+    since.setDate(since.getDate() - daysBack);
+    since.setHours(0, 0, 0, 0);
+    const sinceIso = since.toISOString().split('T')[0];
+    const sinceMs = since.getTime();
 
-    // Query simple: Shopify a veces falla con processed_at:>= en GraphQL search
-    const queryStr = 'financial_status:paid';
+    // Priorizar ventana reciente en la búsqueda de Shopify
+    const queryStr = `financial_status:paid created_at:>=${sinceIso}`;
     const data = await this.graphql<{ orders: any }>(ORDERS_QUERY, {
       cursor: after,
       query: queryStr,
