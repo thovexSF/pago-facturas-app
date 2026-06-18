@@ -1858,6 +1858,25 @@ async function parallelBatch<T, R>(
   return results;
 }
 
+/** Headed solo en local con pantalla; Railway/producción siempre headless. */
+function playwrightHeadless(): boolean {
+  const wantHeaded = /^(1|true|yes)$/i.test(String(process.env.SII_PLAYWRIGHT_HEADED || '').trim());
+  if (!wantHeaded) return true;
+
+  const onRailway = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_ENVIRONMENT_NAME);
+  const noDisplay =
+    process.platform === 'linux' && !process.env.DISPLAY?.trim();
+  const isProd = process.env.NODE_ENV === 'production';
+
+  if (onRailway || noDisplay || isProd) {
+    console.warn(
+      '[SII] SII_PLAYWRIGHT_HEADED ignorado en este entorno (sin pantalla). Usando headless.',
+    );
+    return true;
+  }
+  return false;
+}
+
 async function launchBrowser(): Promise<Browser> {
   // En Railway/Alpine se usa el chromium del sistema; en local Playwright descarga el suyo.
   const executablePath =
@@ -1866,7 +1885,7 @@ async function launchBrowser(): Promise<Browser> {
     undefined;
 
   return chromium.launch({
-    headless: !/^(1|true|yes)$/i.test(String(process.env.SII_PLAYWRIGHT_HEADED || '').trim()),
+    headless: playwrightHeadless(),
     executablePath,
     args: [
       '--no-sandbox',
