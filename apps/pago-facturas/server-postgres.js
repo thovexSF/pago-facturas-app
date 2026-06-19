@@ -80,6 +80,23 @@ async function setupDb() {
   // Migraciones
   await pool.query(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS categoria VARCHAR(100)`).catch(() => {});
   for (const [col, type] of [
+    ['banco','VARCHAR(100)'],['tipo_cuenta','VARCHAR(50)'],['numero_cuenta','VARCHAR(50)'],
+    ['titular','VARCHAR(255)'],['rut_titular','VARCHAR(20)'],['email_transferencia','VARCHAR(255)'],
+  ]) {
+    await pool.query(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS ${col} ${type}`).catch(() => {});
+  }
+  // Precarga datos bancarios Arabica SPA
+  await pool.query(`
+    UPDATE proveedores SET
+      banco = COALESCE(banco, 'Banco BCI'),
+      tipo_cuenta = COALESCE(tipo_cuenta, 'Cuenta Corriente'),
+      numero_cuenta = COALESCE(numero_cuenta, '46998624'),
+      titular = COALESCE(titular, 'ARABICA SPA'),
+      rut_titular = COALESCE(rut_titular, '77368986-5'),
+      email_transferencia = COALESCE(email_transferencia, 'ventas@sarabicoffee.com')
+    WHERE rut_emisor = '77368986-5'
+  `).catch(() => {});
+  for (const [col, type] of [
     ['monto_neto','BIGINT'],['monto_total','BIGINT'],['estado_sii','VARCHAR(50)'],
     ['vcto_1','DATE'],['monto_1','BIGINT'],['pagado_1','BOOLEAN DEFAULT FALSE'],['pagado_1_at','TIMESTAMP'],
     ['vcto_2','DATE'],['monto_2','BIGINT'],['pagado_2','BOOLEAN DEFAULT FALSE'],['pagado_2_at','TIMESTAMP'],
@@ -1260,7 +1277,8 @@ app.get('/api/proveedores', async (req, res) => {
 });
 
 app.put('/api/proveedores/:rut', async (req, res) => {
-  const { condicion, categoria, dias_1, pct_1, dias_2, pct_2, en_agenda } = req.body;
+  const { condicion, categoria, dias_1, pct_1, dias_2, pct_2, en_agenda,
+          banco, tipo_cuenta, numero_cuenta, titular, rut_titular, email_transferencia } = req.body;
   try {
     await pool.query(
       `UPDATE proveedores SET
@@ -1271,11 +1289,18 @@ app.put('/api/proveedores/:rut', async (req, res) => {
          dias_2     = COALESCE($7, dias_2),
          pct_2      = COALESCE($8, pct_2),
          en_agenda  = COALESCE($9, en_agenda),
+         banco      = COALESCE($10, banco),
+         tipo_cuenta = COALESCE($11, tipo_cuenta),
+         numero_cuenta = COALESCE($12, numero_cuenta),
+         titular    = COALESCE($13, titular),
+         rut_titular = COALESCE($14, rut_titular),
+         email_transferencia = COALESCE($15, email_transferencia),
          updated_at = NOW()
        WHERE rut_emisor = $1`,
       [req.params.rut, condicion??null,
        categoria !== undefined, categoria ?? null,
-       dias_1??null, pct_1??null, dias_2??null, pct_2??null, en_agenda??null]
+       dias_1??null, pct_1??null, dias_2??null, pct_2??null, en_agenda??null,
+       banco??null, tipo_cuenta??null, numero_cuenta??null, titular??null, rut_titular??null, email_transferencia??null]
     );
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
