@@ -21,6 +21,9 @@
   "engines": {
     "node": ">=20"
   },
+  "dependencies": {
+    "typescript": "^5.7.2"
+  },
   "devDependencies": {
     "concurrently": "^9.1.2"
   }
