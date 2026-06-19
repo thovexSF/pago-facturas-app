@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc && cp mount-pago.cjs dist/mount-pago.cjs",
+    "build": "npx tsc && cp mount-pago.cjs dist/mount-pago.cjs",
     "start": "node dist/server.js"
   },
   "dependencies": {
