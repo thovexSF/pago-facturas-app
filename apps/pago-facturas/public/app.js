@@ -577,21 +577,15 @@ function abrirModal(f, lista) {
 
   const btn1 = document.getElementById('btn-pagar-1');
   btn1.textContent = f.pagado_1 ? '✓ Cuota 1 pagada' : 'Pagar cuota 1';
-  btn1.disabled    = !!f.pagado_1;
+  btn1.disabled    = false;
   btn1.className   = `btn btn-sm ${f.pagado_1?'btn-secondary':'btn-pay'}`;
-  btn1.onclick     = () => marcarCuota(1);
-
-  const undoBtn1 = document.getElementById('btn-despagar-1');
-  if (undoBtn1) { undoBtn1.style.display = f.pagado_1 ? '' : 'none'; undoBtn1.onclick = () => desmarcarCuota(1); }
+  btn1.onclick     = () => f.pagado_1 ? desmarcarCuota(1) : marcarCuota(1);
 
   const btn2 = document.getElementById('btn-pagar-2');
   btn2.textContent = f.pagado_2 ? '✓ Cuota 2 pagada' : 'Pagar cuota 2';
-  btn2.disabled    = !!f.pagado_2;
+  btn2.disabled    = false;
   btn2.className   = `btn btn-sm ${f.pagado_2?'btn-secondary':'btn-pay'}`;
-  btn2.onclick     = () => marcarCuota(2);
-
-  const undoBtn2 = document.getElementById('btn-despagar-2');
-  if (undoBtn2) { undoBtn2.style.display = f.pagado_2 ? '' : 'none'; undoBtn2.onclick = () => desmarcarCuota(2); }
+  btn2.onclick     = () => f.pagado_2 ? desmarcarCuota(2) : marcarCuota(2);
 
   document.querySelectorAll('.cuota-row').forEach(r => {
     if (esNC) { r.style.display = 'none'; return; }
