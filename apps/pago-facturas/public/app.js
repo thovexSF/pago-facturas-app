@@ -553,8 +553,15 @@ function abrirModal(f, lista) {
   document.getElementById('modal-fecha-emision').textContent = formatFecha(f.fecha_emision);
   document.getElementById('modal-estado-sii').textContent    = f.estado_sii||'—';
   document.getElementById('modal-monto').textContent         = '$'+formatMonto(f.monto_total);
-  document.getElementById('pago-rut-copy').textContent       = f.rut_emisor||'—';
+  document.getElementById('pago-banco').textContent           = prov?.banco||'—';
+  document.getElementById('pago-tipo-cuenta').textContent    = prov?.tipo_cuenta||'';
+  document.getElementById('pago-numero-cuenta').textContent  = prov?.numero_cuenta||'—';
+  document.getElementById('pago-titular').textContent        = prov?.titular||f.razon_social||'—';
+  document.getElementById('pago-rut-copy').textContent       = prov?.rut_titular||f.rut_emisor||'—';
+  document.getElementById('pago-email').textContent          = prov?.email_transferencia||'—';
   document.getElementById('pago-monto-copy').textContent     = f.monto_total||'—';
+  const pagoSection = document.getElementById('pago-info-section');
+  if (pagoSection) pagoSection.style.display = prov?.banco ? '' : 'none';
 
   // Labels dinámicos según condición del proveedor
   const esContado = !prov || prov.condicion === 'contado';

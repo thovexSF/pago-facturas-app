@@ -242,23 +242,39 @@
             </div>
           </div>
 
-          <div class="pago-info modal-fe-only">
+          <div class="pago-info modal-fe-only" id="pago-info-section">
             <h3>Datos para transferencia</h3>
             <div class="copy-row">
-              <span id="pago-rut-copy">—</span>
-              <button class="btn-copy" onclick="copiarTexto('pago-rut-copy')">Copiar RUT</button>
+              <span class="copy-label">Banco</span>
+              <span id="pago-banco">—</span>
             </div>
             <div class="copy-row">
+              <span class="copy-label">Cuenta</span>
+              <span id="pago-tipo-cuenta">—</span> <span id="pago-numero-cuenta">—</span>
+              <button class="btn-copy" onclick="copiarTexto('pago-numero-cuenta')">Copiar</button>
+            </div>
+            <div class="copy-row">
+              <span class="copy-label">Titular</span>
+              <span id="pago-titular">—</span>
+            </div>
+            <div class="copy-row">
+              <span class="copy-label">RUT</span>
+              <span id="pago-rut-copy">—</span>
+              <button class="btn-copy" onclick="copiarTexto('pago-rut-copy')">Copiar</button>
+            </div>
+            <div class="copy-row">
+              <span class="copy-label">Email</span>
+              <span id="pago-email">—</span>
+              <button class="btn-copy" onclick="copiarTexto('pago-email')">Copiar</button>
+            </div>
+            <div class="copy-row">
+              <span class="copy-label">Monto</span>
               <span id="pago-monto-copy">—</span>
-              <button class="btn-copy" onclick="copiarTexto('pago-monto-copy')">Copiar monto</button>
+              <button class="btn-copy" onclick="copiarTexto('pago-monto-copy')">Copiar</button>
             </div>
           </div>
 
           <div class="mp-section modal-fe-only" id="mp-section" style="display:none">
-            <h3 style="display:flex;align-items:center;gap:8px">
-              <img src="https://http2.mlstatic.com/frontend-assets/mp-web-navigation/ui-navigation/6.6.92/mercadopago/logo__large@2x.png" alt="MercadoPago" style="height:22px">
-              Pagar con MercadoPago
-            </h3>
             <div class="mp-cuotas">
               <div class="mp-cuota-row cuota-row" id="mp-cuota-1-row">
                 <span class="mp-cuota-label">Cuota 1: <strong id="mp-monto-1">—</strong></span>
@@ -302,6 +318,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script src="app.js?v=2"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>
