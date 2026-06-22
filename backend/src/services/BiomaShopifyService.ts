@@ -20,6 +20,7 @@ import {
   getOrderCustomAttribute,
   orderHasEmitidoShopifyTag,
   orderNeedsFactura,
+  parseCustomerNote,
 } from '../utils/biomaOrderAttrs';
 
 const DEFAULT_API_VERSION = '2025-10';
@@ -73,6 +74,7 @@ export interface ShopifyOrderForBioma {
     firstName: string | null;
     lastName: string | null;
     phone: string | null;
+    note: string | null;
   } | null;
   shippingAddress: ShopifyOrderShippingAddress | null;
   totalNet: number;
@@ -119,6 +121,7 @@ const ORDERS_QUERY = `#graphql
             firstName
             lastName
             phone
+            note
           }
           shippingAddress {
             name
@@ -246,6 +249,7 @@ function mapOrderNode(node: any): ShopifyOrderForBioma {
           firstName: node.customer.firstName ?? null,
           lastName: node.customer.lastName ?? null,
           phone: node.customer.phone ?? null,
+          note: node.customer.note ?? null,
         }
       : null,
     shippingAddress: node.shippingAddress
@@ -365,7 +369,7 @@ export class BiomaShopifyService {
     const after = options.after ?? null;
 
     const parts: string[] = [`tag:${tag}`];
-    if (options.paidOnly !== false) {
+    if (options.paidOnly === true) {
       parts.push('financial_status:paid');
     }
     const queryStr = parts.join(' ');
@@ -471,11 +475,12 @@ export class BiomaShopifyService {
       return { tagged: false, orderName: order.name, reason: 'no pagado' };
     }
 
-    if (orderNeedsFactura(order.customAttributes)) {
+    if (orderNeedsFactura(order.customAttributes, order.customer?.note)) {
       if (orderHasEmitidoShopifyTag(order.tags)) {
         return { tagged: false, orderName: order.name, reason: 'ya emitido', kind: 'factura' };
       }
-      const rut = getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.rut);
+      const noteData = parseCustomerNote(order.customer?.note ?? '');
+      const rut = getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.rut) || noteData.rut;
       if (!rut) {
         console.warn(`[bioma] ${order.name}: factura requerida pero sin RUT — no se etiqueta`);
         return { tagged: false, orderName: order.name, reason: 'sin RUT', kind: 'factura' };

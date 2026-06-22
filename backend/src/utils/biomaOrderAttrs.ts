@@ -70,10 +70,15 @@ export function orderHasEmitidoShopifyTag(tags: string[]): boolean {
   return tags.some((tag) => isDteEmitidoShopifyTag(tag));
 }
 
-/** Pedido que requiere factura (toggle checkout o RUT en atributos / manual). */
-export function orderNeedsFactura(attrs: Array<{ key: string; value: string }>): boolean {
+/** Pedido que requiere factura (toggle checkout o RUT en atributos / manual / nota cliente). */
+export function orderNeedsFactura(
+  attrs: Array<{ key: string; value: string }>,
+  customerNote?: string | null,
+): boolean {
   if (orderWantsFactura(attrs)) return true;
-  return !!getOrderCustomAttribute(attrs, BIOMA_FACTURA_ATTR.rut);
+  if (getOrderCustomAttribute(attrs, BIOMA_FACTURA_ATTR.rut)) return true;
+  if (customerNote && parseCustomerNote(customerNote).rut) return true;
+  return false;
 }
 
 export function getOrderCustomAttribute(
@@ -87,4 +92,31 @@ export function getOrderCustomAttribute(
 export function orderWantsFactura(attrs: Array<{ key: string; value: string }>): boolean {
   const v = getOrderCustomAttribute(attrs, BIOMA_FACTURA_ATTR.enabled).toLowerCase();
   return v === 'true' || v === '1' || v === 'yes' || v === 'si';
+}
+
+/**
+ * Parsea las notas del cliente buscando datos de facturación.
+ * Formatos soportados (case-insensitive):
+ *   RUT: 77.515.574-4
+ *   Razón Social: Comercial Universal SPA
+ *   Giro: Venta de café
+ */
+export function parseCustomerNote(note: string): {
+  rut: string;
+  razon: string;
+  giro: string;
+} {
+  const result = { rut: '', razon: '', giro: '' };
+  if (!note) return result;
+  for (const line of note.split(/[\n|;]/)) {
+    const trimmed = line.trim();
+    const match = trimmed.match(/^(rut|raz[oó]n\s*social|giro)\s*[:=]\s*(.+)/i);
+    if (!match) continue;
+    const key = match[1].toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const value = match[2].trim();
+    if (key === 'rut') result.rut = value;
+    else if (key.startsWith('razon')) result.razon = value;
+    else if (key === 'giro') result.giro = value;
+  }
+  return result;
 }
