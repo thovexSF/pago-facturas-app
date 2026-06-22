@@ -22,6 +22,7 @@ import {
   BIOMA_FACTURA_ATTR,
   getOrderCustomAttribute,
   orderNeedsFactura,
+  parseCustomerNote,
   isBoletaTipo,
   boletaReceptorForSii,
   eboletaReceptorForSii,
@@ -234,7 +235,7 @@ export class BiomaFacturacionService {
     const byId = new Map(existing.map((e) => [e.shopifyOrderId, e]));
 
     const rows: PendingOrderRow[] = orders
-      .filter((shopify) => orderNeedsFactura(shopify.customAttributes))
+      .filter((shopify) => orderNeedsFactura(shopify.customAttributes, shopify.customer?.note))
       .map((shopify) => ({
         shopify,
         emision: byId.get(shopify.id) ?? null,
@@ -296,7 +297,7 @@ export class BiomaFacturacionService {
 
       for (const order of orders) {
         scanned++;
-        if (orderNeedsFactura(order.customAttributes)) {
+        if (orderNeedsFactura(order.customAttributes, order.customer?.note)) {
           skipped++;
           continue;
         }
@@ -430,10 +431,11 @@ export class BiomaFacturacionService {
     order: ShopifyOrderForBioma,
   ): Promise<BiomaFacturaEmisionEntity> {
     const existing = await this.findEmision(order.id);
-    const tipoCodigo = orderNeedsFactura(order.customAttributes) ? 33 : 39;
+    const tipoCodigo = orderNeedsFactura(order.customAttributes, order.customer?.note) ? 33 : 39;
     const isBoleta = isBoletaTipo(existing?.tipoCodigo ?? tipoCodigo);
     const cf = isBoleta ? eboletaReceptorForSii() : boletaReceptorForSii();
 
+    const noteData = parseCustomerNote(order.customer?.note ?? '');
     const shippingPhone = order.shippingAddress?.phone ?? null;
     const customerPhone = normalizePhoneForWhatsApp(
       shippingPhone || order.customer?.phone || null,
@@ -449,11 +451,11 @@ export class BiomaFacturacionService {
       shopifyOrderNumber: order.orderNumber,
       shopifyProcessedAt: order.processedAt ? new Date(order.processedAt) : null,
       empresaRut: this.empresaRut,
-      rutReceptor: isBoleta ? cf.rut : attr(order, BIOMA_FACTURA_ATTR.rut) || null,
+      rutReceptor: isBoleta ? cf.rut : attr(order, BIOMA_FACTURA_ATTR.rut) || noteData.rut || null,
       razonSocial: isBoleta
         ? cf.razonSocial
-        : attr(order, BIOMA_FACTURA_ATTR.razon) || null,
-      giroReceptor: isBoleta ? null : attr(order, BIOMA_FACTURA_ATTR.giro) || null,
+        : attr(order, BIOMA_FACTURA_ATTR.razon) || noteData.razon || null,
+      giroReceptor: isBoleta ? null : attr(order, BIOMA_FACTURA_ATTR.giro) || noteData.giro || null,
       comunaReceptor: isBoleta ? null : order.shippingAddress?.city || null,
       ciudadReceptor: isBoleta ? null : order.shippingAddress?.province || null,
       dirReceptor: isBoleta ? null : order.shippingAddress?.address1 || null,
