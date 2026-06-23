@@ -153,6 +153,108 @@ const ORDERS_QUERY = `#graphql
   }
 `;
 
+const DRAFT_ORDERS_QUERY = `#graphql
+  query BiomaDraftPending($cursor: String, $query: String!, $first: Int!) {
+    draftOrders(first: $first, after: $cursor, query: $query, sortKey: UPDATED_AT, reverse: true) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id
+          name
+          createdAt
+          status
+          tags
+          customAttributes { key value }
+          currencyCode
+          customer {
+            id
+            email
+            firstName
+            lastName
+            phone
+            note
+          }
+          shippingAddress {
+            name
+            phone
+            address1
+            city
+            province
+            zip
+            country
+          }
+          subtotalPrice
+          totalTax
+          totalPrice
+          lineItems(first: 50) {
+            edges {
+              node {
+                title
+                variantTitle
+                quantity
+                originalUnitPrice
+                totalDiscount
+                discountedTotal
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+function mapDraftOrderNode(node: any): ShopifyOrderForBioma {
+  const lineItems: ShopifyOrderLineItem[] =
+    node?.lineItems?.edges?.map((edge: any) => ({
+      title: edge.node?.title ?? '',
+      variantTitle: edge.node?.variantTitle ?? null,
+      quantity: num(edge.node?.quantity),
+      originalUnitPriceAmount: num(edge.node?.originalUnitPrice),
+      totalDiscountAmount: num(edge.node?.totalDiscount),
+      netSubtotal: num(edge.node?.discountedTotal),
+    })) ?? [];
+
+  const orderNumberMatch = node?.name?.match(/#?D?(\d+)/);
+  const orderNumber = orderNumberMatch ? parseInt(orderNumberMatch[1], 10) : null;
+
+  return {
+    id: node.id,
+    name: node.name,
+    orderNumber,
+    processedAt: node.createdAt,
+    displayFinancialStatus: node.status === 'COMPLETED' ? 'PAID' : 'PENDING',
+    tags: node.tags ?? [],
+    customAttributes: node.customAttributes ?? [],
+    customer: node.customer
+      ? {
+          id: node.customer.id ?? null,
+          email: node.customer.email ?? null,
+          firstName: node.customer.firstName ?? null,
+          lastName: node.customer.lastName ?? null,
+          phone: node.customer.phone ?? null,
+          note: node.customer.note ?? null,
+        }
+      : null,
+    shippingAddress: node.shippingAddress
+      ? {
+          name: node.shippingAddress.name ?? null,
+          phone: node.shippingAddress.phone ?? null,
+          address1: node.shippingAddress.address1 ?? null,
+          city: node.shippingAddress.city ?? null,
+          province: node.shippingAddress.province ?? null,
+          zip: node.shippingAddress.zip ?? null,
+          country: node.shippingAddress.country ?? null,
+        }
+      : null,
+    totalNet: num(node?.subtotalPrice),
+    totalTax: num(node?.totalTax),
+    total: num(node?.totalPrice),
+    currencyCode: node?.currencyCode ?? 'CLP',
+    lineItems,
+  };
+}
+
 const TAGS_ADD_MUTATION = `#graphql
   mutation TagsAdd($id: ID!, $tags: [String!]!) {
     tagsAdd(id: $id, tags: $tags) {
@@ -374,21 +476,44 @@ export class BiomaShopifyService {
     }
     const queryStr = parts.join(' ');
 
-    const data = await this.graphql<{ orders: any }>(ORDERS_QUERY, {
-      cursor: after,
-      query: queryStr,
-      first: pageSize,
+    const [ordersData, draftsData] = await Promise.all([
+      this.graphql<{ orders: any }>(ORDERS_QUERY, {
+        cursor: after,
+        query: queryStr,
+        first: pageSize,
+      }),
+      this.graphql<{ draftOrders: any }>(DRAFT_ORDERS_QUERY, {
+        cursor: null,
+        query: `tag:${tag}`,
+        first: pageSize,
+      }).catch((err) => {
+        console.warn('[bioma] draftOrders query failed (non-fatal):', err?.message);
+        return { draftOrders: { edges: [], pageInfo: { hasNextPage: false, endCursor: null } } };
+      }),
+    ]);
+
+    const orderEdges = ordersData.orders?.edges ?? [];
+    const draftEdges = draftsData.draftOrders?.edges ?? [];
+
+    const orders = [
+      ...orderEdges.map((edge: any) => mapOrderNode(edge.node)),
+      ...draftEdges
+        .filter((edge: any) => edge.node?.status !== 'COMPLETED')
+        .map((edge: any) => mapDraftOrderNode(edge.node)),
+    ].filter((o: ShopifyOrderForBioma) => !orderHasEmitidoShopifyTag(o.tags));
+
+    const seenIds = new Set<string>();
+    const dedupedOrders = orders.filter((o) => {
+      if (seenIds.has(o.id)) return false;
+      seenIds.add(o.id);
+      return true;
     });
 
-    const edges = data.orders?.edges ?? [];
-    const orders = edges
-      .map((edge: any) => mapOrderNode(edge.node))
-      .filter((o: ShopifyOrderForBioma) => !orderHasEmitidoShopifyTag(o.tags));
     return {
-      orders,
+      orders: dedupedOrders,
       pageInfo: {
-        hasNextPage: data.orders?.pageInfo?.hasNextPage ?? false,
-        endCursor: data.orders?.pageInfo?.endCursor ?? null,
+        hasNextPage: ordersData.orders?.pageInfo?.hasNextPage ?? false,
+        endCursor: ordersData.orders?.pageInfo?.endCursor ?? null,
       },
     };
   }
