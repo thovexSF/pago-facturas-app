@@ -432,7 +432,8 @@ export class BiomaFacturacionService {
   ): Promise<BiomaFacturaEmisionEntity> {
     const existing = await this.findEmision(order.id);
     const tipoCodigo = orderNeedsFactura(order.customAttributes, order.note || order.customer?.note) ? 33 : 39;
-    const isBoleta = isBoletaTipo(existing?.tipoCodigo ?? tipoCodigo);
+    const effectiveTipo = existing?.status === 'emitted' ? existing.tipoCodigo : tipoCodigo;
+    const isBoleta = isBoletaTipo(effectiveTipo);
     const cf = isBoleta ? eboletaReceptorForSii() : boletaReceptorForSii();
 
     const noteData = parseCustomerNote(order.note || order.customer?.note || '');
@@ -462,13 +463,13 @@ export class BiomaFacturacionService {
       customerPhone,
       customerName,
       customerEmail: order.customer?.email || null,
-      items: this.buildItemsFromOrder(order, existing?.tipoCodigo ?? tipoCodigo).map((it) => ({
+      items: this.buildItemsFromOrder(order, effectiveTipo).map((it) => ({
         descripcion: it.descripcion,
         cantidad: it.cantidad,
         precioUnitario: it.precioUnitario,
         subtotal: it.subtotal,
       })),
-      tipoCodigo: existing?.status === 'emitted' ? existing.tipoCodigo : tipoCodigo,
+      tipoCodigo: effectiveTipo,
     };
 
     if (existing) {
