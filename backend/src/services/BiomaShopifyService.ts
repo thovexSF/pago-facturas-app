@@ -63,6 +63,7 @@ export interface ShopifyOrderShippingAddress {
 export interface ShopifyOrderForBioma {
   id: string; // gid://shopify/Order/...
   name: string; // "#3549"
+  note: string | null;
   orderNumber: number | null;
   processedAt: string;
   displayFinancialStatus: string;
@@ -110,6 +111,7 @@ const ORDERS_QUERY = `#graphql
         node {
           id
           name
+          note
           processedAt
           displayFinancialStatus
           tags
@@ -161,6 +163,7 @@ const DRAFT_ORDERS_QUERY = `#graphql
         node {
           id
           name
+          note
           createdAt
           status
           tags
@@ -221,6 +224,7 @@ function mapDraftOrderNode(node: any): ShopifyOrderForBioma {
   return {
     id: node.id,
     name: node.name,
+    note: node.note ?? null,
     orderNumber,
     processedAt: node.createdAt,
     displayFinancialStatus: node.status === 'COMPLETED' ? 'PAID' : 'PENDING',
@@ -276,6 +280,7 @@ const ORDER_FETCH_QUERY = `#graphql
     order(id: $id) {
       id
       name
+      note
       processedAt
       displayFinancialStatus
       tags
@@ -339,6 +344,7 @@ function mapOrderNode(node: any): ShopifyOrderForBioma {
   return {
     id: node.id,
     name: node.name,
+    note: node.note ?? null,
     orderNumber,
     processedAt: node.processedAt,
     displayFinancialStatus: node.displayFinancialStatus,
@@ -600,11 +606,11 @@ export class BiomaShopifyService {
       return { tagged: false, orderName: order.name, reason: 'no pagado' };
     }
 
-    if (orderNeedsFactura(order.customAttributes, order.customer?.note)) {
+    if (orderNeedsFactura(order.customAttributes, order.note || order.customer?.note)) {
       if (orderHasEmitidoShopifyTag(order.tags)) {
         return { tagged: false, orderName: order.name, reason: 'ya emitido', kind: 'factura' };
       }
-      const noteData = parseCustomerNote(order.customer?.note ?? '');
+      const noteData = parseCustomerNote(order.note || order.customer?.note || '');
       const rut = getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.rut) || noteData.rut;
       if (!rut) {
         console.warn(`[bioma] ${order.name}: factura requerida pero sin RUT — no se etiqueta`);
