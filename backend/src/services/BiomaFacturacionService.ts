@@ -235,7 +235,7 @@ export class BiomaFacturacionService {
     const byId = new Map(existing.map((e) => [e.shopifyOrderId, e]));
 
     const rows: PendingOrderRow[] = orders
-      .filter((shopify) => orderNeedsFactura(shopify.customAttributes, shopify.customer?.note))
+      .filter((shopify) => orderNeedsFactura(shopify.customAttributes, shopify.note || shopify.customer?.note))
       .map((shopify) => ({
         shopify,
         emision: byId.get(shopify.id) ?? null,
@@ -297,7 +297,7 @@ export class BiomaFacturacionService {
 
       for (const order of orders) {
         scanned++;
-        if (orderNeedsFactura(order.customAttributes, order.customer?.note)) {
+        if (orderNeedsFactura(order.customAttributes, order.note || order.customer?.note)) {
           skipped++;
           continue;
         }
@@ -431,11 +431,11 @@ export class BiomaFacturacionService {
     order: ShopifyOrderForBioma,
   ): Promise<BiomaFacturaEmisionEntity> {
     const existing = await this.findEmision(order.id);
-    const tipoCodigo = orderNeedsFactura(order.customAttributes, order.customer?.note) ? 33 : 39;
+    const tipoCodigo = orderNeedsFactura(order.customAttributes, order.note || order.customer?.note) ? 33 : 39;
     const isBoleta = isBoletaTipo(existing?.tipoCodigo ?? tipoCodigo);
     const cf = isBoleta ? eboletaReceptorForSii() : boletaReceptorForSii();
 
-    const noteData = parseCustomerNote(order.customer?.note ?? '');
+    const noteData = parseCustomerNote(order.note || order.customer?.note || '');
     const shippingPhone = order.shippingAddress?.phone ?? null;
     const customerPhone = normalizePhoneForWhatsApp(
       shippingPhone || order.customer?.phone || null,
