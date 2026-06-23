@@ -1948,6 +1948,7 @@ function wireSafeDialogs(
 }
 
 const SII_EFXP_NMB_DEFAULT_MAX = 40;
+const SII_EFXP_DSC_DEFAULT_MAX = 80;
 
 /** El formulario EFXP del SII solo acepta ASCII básico; omite tildes, em-dash, etc. */
 export function sanitizeDescripcionParaSii(texto: string): string {
@@ -2034,7 +2035,8 @@ async function fillEmitirItemDescripcion(page: Page, num: string, descripcion: s
     if (!el) continue;
     const maxAttr = await el.getAttribute('maxlength').catch(() => null);
     const maxExt = maxAttr ? parseInt(maxAttr, 10) : 0;
-    const val = maxExt > 0 ? descripcionExt.slice(0, maxExt) : descripcionExt;
+    const effectiveMax = maxExt > 0 ? maxExt : SII_EFXP_DSC_DEFAULT_MAX;
+    const val = descripcionExt.slice(0, effectiveMax);
     await page.$eval(
       sel,
       (node: any, v: string) => {

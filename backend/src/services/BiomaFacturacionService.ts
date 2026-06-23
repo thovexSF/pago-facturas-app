@@ -413,7 +413,7 @@ export class BiomaFacturacionService {
         descripcionParts.push(li.variantTitle);
       }
       return {
-        descripcion: sanitizeDescripcionParaSii(descripcionParts.join(' - ')),
+        descripcion: sanitizeDescripcionParaSii(descripcionParts.join(' - ')).slice(0, 120),
         cantidad,
         unidad: this.defaultUnidad,
         precioUnitario,
