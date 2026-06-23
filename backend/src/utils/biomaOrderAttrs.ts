@@ -108,13 +108,13 @@ export function parseCustomerNote(note: string): {
 } {
   const result = { rut: '', razon: '', giro: '' };
   if (!note) return result;
-  for (const line of note.split(/[\n|;]/)) {
+  for (const line of note.split(/[\n|;/]/)) {
     const trimmed = line.trim();
     const match = trimmed.match(/^(rut|raz[oó]n\s*social|giro)\s*[:=]\s*(.+)/i);
     if (!match) continue;
     const key = match[1].toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
     const value = match[2].trim();
-    if (key === 'rut') result.rut = value;
+    if (key === 'rut') result.rut = value.replace(/\./g, '').replace(/\s*-\s*/, '-');
     else if (key.startsWith('razon')) result.razon = value;
     else if (key === 'giro') result.giro = value;
   }
