@@ -1,6 +1,6 @@
 {
   "name": "bioma-facturacion",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Bioma Facturación — facturas por pagar + emisión SII Shopify (monorepo Railway).",
   "workspaces": [
