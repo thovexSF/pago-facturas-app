@@ -1948,7 +1948,7 @@ function wireSafeDialogs(
 }
 
 const SII_EFXP_NMB_DEFAULT_MAX = 40;
-const SII_EFXP_DSC_DEFAULT_MAX = 80;
+const SII_EFXP_DSC_DEFAULT_MAX = 40;
 
 /** El formulario EFXP del SII solo acepta ASCII básico; omite tildes, em-dash, etc. */
 export function sanitizeDescripcionParaSii(texto: string): string {
