@@ -398,6 +398,27 @@ export class BiomaFacturacionService {
   }
 
   /**
+   * Simplifica la descripción del producto para el SII.
+   * "Cafe de Especialidad Colombia - chocolate dulce..." + "250gr / Grano" → "CAFE GRANO COLOMBIA 250GR"
+   */
+  static simplificarDescripcionSii(title: string, variantTitle: string): string {
+    const t = sanitizeDescripcionParaSii(title).toUpperCase();
+    const v = sanitizeDescripcionParaSii(variantTitle).toUpperCase();
+
+    const pesoMatch = v.match(/(\d+\s*(?:GR|KG|ML|LT|UN))/i);
+    const peso = pesoMatch ? pesoMatch[1].replace(/\s+/g, '') : '';
+
+    const formatoMatch = v.match(/\b(GRANO|MOLIDO|CAPSULAS?|DRIP|COLD\s*BREW)\b/i);
+    const formato = formatoMatch ? formatoMatch[1] : '';
+
+    const parts = t.split(/\s*-\s*/);
+    const nombre = parts[0]?.trim() || t.trim();
+
+    const desc = [nombre, formato, peso].filter(Boolean).join(' ');
+    return desc.slice(0, 40);
+  }
+
+  /**
    * Maps a Shopify order's line items into the SII items shape.
    * Each line collapses discount into the unit price so subtotal matches.
    * Para factura afecta (33), convierte precios Shopify (IVA incluido) a neto SII.
@@ -408,12 +429,9 @@ export class BiomaFacturacionService {
       const subtotalBruto = Math.round(li.netSubtotal);
       const subtotal = shopifyMontoANetoSii(subtotalBruto, tipoCodigo);
       const precioUnitario = cantidad ? Math.round(subtotal / cantidad) : subtotal;
-      const descripcionParts = [li.title?.trim()].filter(Boolean) as string[];
-      if (li.variantTitle && li.variantTitle !== 'Default Title') {
-        descripcionParts.push(li.variantTitle);
-      }
+      const descripcion = BiomaFacturacionService.simplificarDescripcionSii(li.title || '', li.variantTitle || '');
       return {
-        descripcion: sanitizeDescripcionParaSii(descripcionParts.join(' - ')).slice(0, 80),
+        descripcion,
         cantidad,
         unidad: this.defaultUnidad,
         precioUnitario,
