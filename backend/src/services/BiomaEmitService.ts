@@ -182,6 +182,12 @@ export class BiomaEmitService {
       console.error('[bioma emit] tag swap failed:', tagErr?.message || tagErr);
     }
 
+    if (siiCodigo && session?.context) {
+      SiiFacturacionService.downloadPdf(session.context, siiCodigo).catch((e: any) =>
+        console.warn('[bioma emit] PDF download after emit failed (will retry in background):', e?.message),
+      );
+    }
+
     return {
       success: true,
       step: 'emitir',
