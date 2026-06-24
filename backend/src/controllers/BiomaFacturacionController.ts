@@ -340,7 +340,23 @@ export class BiomaFacturacionController {
       }
       if (!codigo) return res.status(404).json({ error: 'Sin código SII — emite primero o revisa en sii.cl' });
 
-      await SiiFacturacionService.downloadPdf(session.context, codigo);
+      const ctx = session.context ?? (await SiiFacturacionService.ensureBrowserForSession(session));
+      await SiiFacturacionService.ensureFacturaRowStub(session.empresaRut, codigo);
+      await SiiFacturacionService.downloadPdf(ctx, codigo, session.empresaRut);
+
+      const resolved = await SiiFacturacionService.resolveFolioForCodigo(
+        session.axiosClient,
+        codigo,
+        row.tipoCodigo || 33,
+      );
+      if (resolved && resolved > 0 && resolved !== row.siiFolio) {
+        await BiomaFacturacionService.setStatus(orderId, row.status, {
+          siiFolio: resolved,
+          siiCodigo: codigo,
+        });
+        await BiomaShopifyService.markDteEmitted(orderId, row.tipoCodigo || 33, resolved);
+      }
+
       return res.json({
         success: true,
         pdfUrl: `/api/bioma/pdf/${encodeURIComponent(orderId)}`,

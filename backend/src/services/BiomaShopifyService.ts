@@ -69,6 +69,8 @@ export interface ShopifyOrderForBioma {
   displayFinancialStatus: string;
   tags: string[];
   customAttributes: ShopifyOrderAttribute[];
+  note: string | null;
+  customerNote: string | null;
   customer: {
     id: string | null;
     email: string | null;
@@ -115,6 +117,7 @@ const ORDERS_QUERY = `#graphql
           processedAt
           displayFinancialStatus
           tags
+          note
           customAttributes { key value }
           currencyCode
           customer {
@@ -284,6 +287,7 @@ const ORDER_FETCH_QUERY = `#graphql
       processedAt
       displayFinancialStatus
       tags
+      note
       customAttributes { key value }
       currencyCode
       customer {
@@ -292,6 +296,7 @@ const ORDER_FETCH_QUERY = `#graphql
         firstName
         lastName
         phone
+        note
       }
       shippingAddress {
         name
@@ -350,6 +355,8 @@ function mapOrderNode(node: any): ShopifyOrderForBioma {
     displayFinancialStatus: node.displayFinancialStatus,
     tags: node.tags ?? [],
     customAttributes: node.customAttributes ?? [],
+    note: node.note ?? null,
+    customerNote: node.customer?.note ?? null,
     customer: node.customer
       ? {
           id: node.customer.id ?? null,

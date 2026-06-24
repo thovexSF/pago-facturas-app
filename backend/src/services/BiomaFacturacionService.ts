@@ -20,14 +20,14 @@ import {
 } from './BiomaShopifyService';
 import {
   BIOMA_FACTURA_ATTR,
+  extractFacturaFieldsFromOrder,
   getOrderCustomAttribute,
   orderNeedsFactura,
-  parseCustomerNote,
+  orderWantsFacturaEmit,
   isBoletaTipo,
-  boletaReceptorForSii,
   eboletaReceptorForSii,
 } from '../utils/biomaOrderAttrs';
-import { sanitizeDescripcionParaSii } from './SiiFacturacionService';
+import { sanitizeDescripcionParaSii, SiiFacturacionService } from './SiiFacturacionService';
 
 export interface PendingOrderRow {
   shopify: ShopifyOrderForBioma;
@@ -225,22 +225,13 @@ export class BiomaFacturacionService {
       after: opts.after,
     });
 
-    const ids = orders.map((o) => o.id);
-    const existing = ids.length
-      ? await this.repo
-          .createQueryBuilder('e')
-          .where('e.shopify_order_id IN (:...ids)', { ids })
-          .getMany()
-      : [];
-    const byId = new Map(existing.map((e) => [e.shopifyOrderId, e]));
-
-    const rows: PendingOrderRow[] = orders
-      .filter((shopify) => orderNeedsFactura(shopify.customAttributes, shopify.note || shopify.customer?.note))
-      .map((shopify) => ({
-        shopify,
-        emision: byId.get(shopify.id) ?? null,
-      }))
-      .filter((row) => row.emision?.status !== 'emitted');
+    const rows: PendingOrderRow[] = [];
+    for (const shopify of orders) {
+      if (!orderWantsFacturaEmit(shopify)) continue;
+      const emision = await this.upsertFromShopify(shopify);
+      if (emision.status === 'emitted') continue;
+      rows.push({ shopify, emision });
+    }
 
     return { rows, pageInfo };
   }
@@ -256,15 +247,35 @@ export class BiomaFacturacionService {
     if (!order) throw new Error('Pedido no encontrado en Shopify');
     const row = await this.upsertFromShopify(order);
     const tipo = data.tipoCodigo ?? row.tipoCodigo ?? 33;
+    let folio = data.siiFolio;
+
+    if (data.siiCodigo) {
+      try {
+        const rut = this.getEmpresaRutConfig();
+        const sessionId = await SiiFacturacionService.createSession(rut);
+        const session = SiiFacturacionService.getSession(sessionId);
+        if (session?.axiosClient) {
+          const resolved = await SiiFacturacionService.resolveFolioForCodigo(
+            session.axiosClient,
+            String(data.siiCodigo),
+            tipo,
+          );
+          if (resolved && resolved > 0) folio = resolved;
+        }
+      } catch (e: any) {
+        console.warn('[bioma] registerEmittedHistorica resolve folio:', e?.message || e);
+      }
+    }
+
     const updated = await this.setStatus(shopifyOrderId, 'emitted', {
-      siiFolio: data.siiFolio,
+      siiFolio: folio,
       siiCodigo: data.siiCodigo ?? row.siiCodigo,
       tipoCodigo: tipo,
       emittedAt: row.emittedAt ?? new Date(),
       lastError: null,
     });
     if (!updated) throw new Error('No se pudo actualizar el registro');
-    await BiomaShopifyService.markDteEmitted(shopifyOrderId, tipo, data.siiFolio);
+    await BiomaShopifyService.markDteEmitted(shopifyOrderId, tipo, folio);
     return updated;
   }
 
@@ -449,12 +460,21 @@ export class BiomaFacturacionService {
     order: ShopifyOrderForBioma,
   ): Promise<BiomaFacturaEmisionEntity> {
     const existing = await this.findEmision(order.id);
-    const tipoCodigo = orderNeedsFactura(order.customAttributes, order.note || order.customer?.note) ? 33 : 39;
-    const effectiveTipo = existing?.status === 'emitted' ? existing.tipoCodigo : tipoCodigo;
-    const isBoleta = isBoletaTipo(effectiveTipo);
-    const cf = isBoleta ? eboletaReceptorForSii() : boletaReceptorForSii();
+    const wantsFactura = orderWantsFacturaEmit(order);
+    const facturaFields = extractFacturaFieldsFromOrder(order);
 
-    const noteData = parseCustomerNote(order.note || order.customer?.note || '');
+    let tipoCodigo: number;
+    if (existing?.status === 'emitted') {
+      tipoCodigo = existing.tipoCodigo ?? 33;
+    } else if (wantsFactura) {
+      tipoCodigo = 33;
+    } else {
+      tipoCodigo = existing?.tipoCodigo ?? 39;
+    }
+
+    const isBoleta = isBoletaTipo(tipoCodigo);
+    const cf = isBoleta ? eboletaReceptorForSii() : null;
+
     const shippingPhone = order.shippingAddress?.phone ?? null;
     const customerPhone = normalizePhoneForWhatsApp(
       shippingPhone || order.customer?.phone || null,
@@ -470,24 +490,22 @@ export class BiomaFacturacionService {
       shopifyOrderNumber: order.orderNumber,
       shopifyProcessedAt: order.processedAt ? new Date(order.processedAt) : null,
       empresaRut: this.empresaRut,
-      rutReceptor: isBoleta ? cf.rut : attr(order, BIOMA_FACTURA_ATTR.rut) || noteData.rut || null,
-      razonSocial: isBoleta
-        ? cf.razonSocial
-        : attr(order, BIOMA_FACTURA_ATTR.razon) || noteData.razon || null,
-      giroReceptor: isBoleta ? null : attr(order, BIOMA_FACTURA_ATTR.giro) || noteData.giro || null,
+      rutReceptor: isBoleta ? cf!.rut : facturaFields.rut,
+      razonSocial: isBoleta ? cf!.razonSocial : facturaFields.razon,
+      giroReceptor: isBoleta ? null : facturaFields.giro,
       comunaReceptor: isBoleta ? null : order.shippingAddress?.city || null,
       ciudadReceptor: isBoleta ? null : order.shippingAddress?.province || null,
       dirReceptor: isBoleta ? null : order.shippingAddress?.address1 || null,
       customerPhone,
       customerName,
       customerEmail: order.customer?.email || null,
-      items: this.buildItemsFromOrder(order, effectiveTipo).map((it) => ({
+      items: this.buildItemsFromOrder(order, tipoCodigo).map((it) => ({
         descripcion: it.descripcion,
         cantidad: it.cantidad,
         precioUnitario: it.precioUnitario,
         subtotal: it.subtotal,
       })),
-      tipoCodigo: effectiveTipo,
+      tipoCodigo,
     };
 
     if (existing) {

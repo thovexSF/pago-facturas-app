@@ -165,7 +165,35 @@ export class BiomaEmitService {
     }
 
     const siiCodigo = result.siiCodigo || codigoTemplate;
-    const siiFolio = result.folio ?? null;
+    let siiFolio = result.folio ?? null;
+
+    if (siiCodigo && session.axiosClient) {
+      const resolved = await SiiFacturacionService.resolveFolioForCodigo(
+        session.axiosClient,
+        String(siiCodigo),
+        tipoCodigo,
+      );
+      if (resolved && resolved > 0 && resolved !== siiFolio) {
+        console.log(
+          `[bioma emit] folio corregido ${siiFolio ?? '—'} → ${resolved} (CODIGO ${siiCodigo})`,
+        );
+        siiFolio = resolved;
+      }
+      await SiiFacturacionService.ensureFacturaRowStub(session.empresaRut, String(siiCodigo), {
+        tipoCodigo,
+        folio: siiFolio ?? undefined,
+      });
+      SiiFacturacionService.refreshDetalleEnDb(
+        session.empresaRut,
+        String(siiCodigo),
+        session.axiosClient,
+        tipoCodigo,
+      ).catch((e) => console.warn('[bioma emit] refreshDetalle:', e?.message || e));
+      if (session.context) {
+        SiiFacturacionService.downloadPdf(session.context, String(siiCodigo), session.empresaRut)
+          .catch((e) => console.warn('[bioma emit] PDF post-emit:', e?.message || e));
+      }
+    }
 
     const updated = await BiomaFacturacionService.setStatus(orderId, 'emitted', {
       siiFolio,

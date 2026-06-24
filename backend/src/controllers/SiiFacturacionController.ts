@@ -165,7 +165,14 @@ export class SiiFacturacionController {
   static async servePdf(req: Request, res: Response) {
     const { codigo } = req.params;
     try {
-      const buffer = await SiiFacturacionService.getPdfData(codigo);
+      let buffer = await SiiFacturacionService.getPdfData(codigo);
+      if (!buffer) {
+        try {
+          buffer = await SiiFacturacionService.fetchPdfToDb(codigo);
+        } catch (fetchErr: any) {
+          console.warn(`[SII] servePdf lazy fetch CODIGO=${codigo}:`, fetchErr?.message || fetchErr);
+        }
+      }
       if (!buffer) return res.status(404).json({ error: 'PDF no disponible aún.' });
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `inline; filename="${codigo}.pdf"`);

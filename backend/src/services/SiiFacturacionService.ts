@@ -3052,7 +3052,10 @@ export class SiiFacturacionService {
     });
     if (det.fecha) patch.fecha = det.fecha;
     if (det.folio > 0) patch.folio = det.folio;
-    await repo.update({ empresaRut, codigo }, patch as any);
+    await repo.upsert(
+      { empresaRut, codigo, ...patch },
+      { conflictPaths: ['empresaRut', 'codigo'] },
+    );
     return det;
   }
 
@@ -3808,12 +3811,14 @@ export class SiiFacturacionService {
       }
 
       const sendXmlOk = ctx2.pages().some((p) => !p.isClosed() && /mipeSendXML/i.test(p.url()));
-      const folioFinalMatch = pageTextFinal.match(/[Ff]olio[:\s#N°°]*(\d+)/);
-      let folioFinal = folioFinalMatch ? parseInt(folioFinalMatch[1], 10) : folio;
       const siiCodigo = (await SiiFacturacionService.extractSiiCodigoFromContext(ctx2)) ?? undefined;
-      if (!folioFinal && siiCodigo) {
-        const folioFromHtml = await SiiFacturacionService.extractFolioFromContext(ctx2).catch(() => null);
-        if (folioFromHtml) folioFinal = folioFromHtml;
+      // No usar `folio` de la vista previa: suele ser el folio de la plantilla copiada, no el asignado.
+      let folioFinal = (await SiiFacturacionService.extractFolioFromContext(ctx2).catch(() => null)) ?? undefined;
+      if (!folioFinal) {
+        const foliosEnTexto = [...pageTextFinal.matchAll(/[Ff]olio[:\s#N°°]*(\d+)/g)]
+          .map((m) => parseInt(m[1], 10))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        if (foliosEnTexto.length) folioFinal = Math.max(...foliosEnTexto);
       }
 
       const esEmitidoOk =
@@ -4217,17 +4222,94 @@ export class SiiFacturacionService {
     return null;
   }
 
-  static async extractFolioFromContext(ctx: BrowserContext): Promise<number | null> {
-    for (const p of ctx.pages()) {
-      if (p.isClosed()) continue;
-      const txt = await p.$eval('body', (el: any) => el.innerText || '').catch(() => '');
-      const m = txt.match(/[Ff]olio[:\s#N°°]*(\d+)/);
-      if (m?.[1]) return parseInt(m[1], 10);
-      const html = await p.content().catch(() => '');
-      const hm = html.match(/[Ff]olio[^0-9]*(\d{1,8})/i);
-      if (hm?.[1]) return parseInt(hm[1], 10);
+  private static extractFolioFromHtml(html: string): number | null {
+    if (!html) return null;
+    const fieldPatterns = [
+      /name=["']EFXP_FOLIO["'][^>]*value=["'](\d+)["']/i,
+      /name=["']EFXP_NUM_FOLIO["'][^>]*value=["'](\d+)["']/i,
+      /name=["']EFXP_NRO_FOLIO["'][^>]*value=["'](\d+)["']/i,
+      /value=["'](\d+)["'][^>]*name=["']EFXP_FOLIO["']/i,
+    ];
+    for (const re of fieldPatterns) {
+      const m = html.match(re);
+      if (m?.[1]) {
+        const n = parseInt(m[1], 10);
+        if (n > 0) return n;
+      }
     }
     return null;
+  }
+
+  static async extractFolioFromContext(ctx: BrowserContext): Promise<number | null> {
+    const candidates: number[] = [];
+    const pages = ctx.pages().filter((p) => !p.isClosed());
+    const ordered = [
+      ...pages.filter((p) => /mipeSendXML/i.test(p.url())),
+      ...pages.filter((p) => !/mipeSendXML/i.test(p.url())),
+    ];
+    for (const p of ordered) {
+      const html = await p.content().catch(() => '');
+      const fromField = this.extractFolioFromHtml(html);
+      if (fromField) candidates.push(fromField);
+      const txt = await p.$eval('body', (el: any) => el.innerText || '').catch(() => '');
+      for (const m of txt.matchAll(/[Ff]olio[:\s#N°°]*(\d+)/g)) {
+        const n = parseInt(m[1], 10);
+        if (n > 0) candidates.push(n);
+      }
+    }
+    if (!candidates.length) return null;
+    return Math.max(...candidates);
+  }
+
+  /** Folio real desde detalle o listado SII (más fiable que regex en HTML de plantilla). */
+  static async resolveFolioForCodigo(
+    axiosClient: AxiosInstance,
+    codigo: string,
+    tipoCodigo = 33,
+  ): Promise<number | null> {
+    try {
+      const det = await this.getDetalleFactura(axiosClient, codigo, tipoCodigo);
+      if (det?.folio && det.folio > 0) return det.folio;
+    } catch {
+      /* detalle puede fallar si el doc es muy reciente */
+    }
+    try {
+      const list = await this.getFacturasEmitidas(axiosClient, { tipoCodigo, maxPaginas: 5 });
+      const hit = list.find((f) => String(f.codigo) === String(codigo));
+      if (hit?.folio && hit.folio > 0) return hit.folio;
+    } catch {
+      /* listado */
+    }
+    return null;
+  }
+
+  static async ensureFacturaRowStub(
+    empresaRut: string,
+    codigo: string,
+    partial: Partial<SiiFacturaEntity> = {},
+  ): Promise<void> {
+    const repo = AppDataSource.getRepository(SiiFacturaEntity);
+    const rut = normalizarRutEmpresaValor(empresaRut) ?? empresaRut;
+    await repo.upsert(
+      { empresaRut: rut, codigo: String(codigo), ...partial },
+      { conflictPaths: ['empresaRut', 'codigo'] },
+    );
+  }
+
+  /** Descarga PDF del SII y lo guarda en sii_facturas (crea fila si no existe). */
+  static async fetchPdfToDb(codigo: string, empresaRut?: string): Promise<Buffer | null> {
+    const rut =
+      normalizarRutEmpresaValor(empresaRut ?? '') ??
+      normalizarRutEmpresaValor(process.env.BIOMA_EMPRESA_RUT ?? '') ??
+      normalizarRutEmpresaValor(process.env.SII_EMPRESA_RUT ?? '');
+    if (!rut) throw new Error('empresaRut no configurado');
+    await this.ensureFacturaRowStub(rut, codigo);
+    const sessionId = await this.createSession(rut);
+    const session = this.getSession(sessionId);
+    if (!session) throw new Error('Sesión SII no disponible');
+    const ctx = session.context ?? (await this.ensureBrowserForSession(session));
+    await this.downloadPdf(ctx, codigo);
+    return this.getPdfData(codigo);
   }
 
   /** Última factura emitida en el listado SII para un RUT receptor (pág. reciente). */
@@ -4324,6 +4406,7 @@ export class SiiFacturacionService {
   static async downloadPdf(
     context: BrowserContext,
     codigo: string,
+    empresaRut?: string,
   ): Promise<void> {
     const pdfUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeDisplayPDF.cgi?DHDR_CODIGO=${codigo}`;
 
@@ -4343,13 +4426,28 @@ export class SiiFacturacionService {
 
     const pdfBuffer = Buffer.from(await response.body());
     const repo = AppDataSource.getRepository(SiiFacturaEntity);
-    await repo
+    const rut =
+      normalizarRutEmpresaValor(empresaRut ?? '') ??
+      normalizarRutEmpresaValor(process.env.BIOMA_EMPRESA_RUT ?? '') ??
+      normalizarRutEmpresaValor(process.env.SII_EMPRESA_RUT ?? '');
+    if (rut) await this.ensureFacturaRowStub(rut, codigo);
+
+    const updated = await repo
       .createQueryBuilder()
       .update(SiiFacturaEntity)
       .set({ hasPdf: true, pdfData: () => ':data' } as any)
       .setParameter('data', pdfBuffer)
       .where('codigo = :codigo', { codigo })
       .execute();
+
+    if (!updated.affected && rut) {
+      await repo.save({
+        empresaRut: rut,
+        codigo: String(codigo),
+        hasPdf: true,
+        pdfData: pdfBuffer,
+      });
+    }
 
     console.log(`[SII] PDF guardado: CODIGO=${codigo} (${pdfBuffer.length} bytes)`);
   }

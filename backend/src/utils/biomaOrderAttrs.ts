@@ -112,11 +112,85 @@ export function parseCustomerNote(note: string): {
     const trimmed = line.trim();
     const match = trimmed.match(/^(rut|raz[oó]n\s*social|giro)\s*[:=]\s*(.+)/i);
     if (!match) continue;
-    const key = match[1].toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const key = match[1].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const value = match[2].trim();
     if (key === 'rut') result.rut = value.replace(/\./g, '').replace(/\s*-\s*/, '-');
     else if (key.startsWith('razon')) result.razon = value;
     else if (key === 'giro') result.giro = value;
   }
   return result;
+}
+
+/** Tag `factura` pendiente (no confundir con `factura #123` ya emitida). */
+export function orderHasFacturaPendienteTag(tags: string[]): boolean {
+  return tags.some((tag) => tag.trim().toLowerCase() === 'factura');
+}
+
+/** Factura: checkout, atributos de pedido, notas o tag `factura` en Shopify. */
+export function orderWantsFacturaEmit(order: {
+  customAttributes: Array<{ key: string; value: string }>;
+  tags: string[];
+  note?: string | null;
+  customer?: { note?: string | null } | null;
+}): boolean {
+  return (
+    orderNeedsFactura(order.customAttributes, order.note || order.customer?.note) ||
+    orderHasFacturaPendienteTag(order.tags)
+  );
+}
+
+/** Extrae RUT / razón social / giro desde texto libre (notas de pedido o cliente). */
+export function parseFacturaFieldsFromText(text: string | null | undefined): {
+  rut: string | null;
+  razon: string | null;
+  giro: string | null;
+} {
+  if (!text?.trim()) return { rut: null, razon: null, giro: null };
+
+  let rut: string | null = null;
+  let razon: string | null = null;
+  let giro: string | null = null;
+
+  for (const line of text.split(/\r?\n/)) {
+    const rutM = line.match(
+      /(?:rut|r\.?u\.?t\.?)\s*[:\-]?\s*(\d{1,2}\.?\d{3}\.?\d{3}\s*-\s*[\dkK])/i,
+    );
+    if (rutM) rut = rutM[1].replace(/\s/g, '');
+
+    const razonM = line.match(
+      /(?:raz[oó]n\s*social|nombre\s*(?:empresa|factura)?|empresa|cliente)\s*[:\-]\s*(.+)/i,
+    );
+    if (razonM) razon = razonM[1].trim();
+
+    const giroM = line.match(/(?:giro|actividad(?:\s*econ[oó]mica)?)\s*[:\-]\s*(.+)/i);
+    if (giroM) giro = giroM[1].trim();
+  }
+
+  if (!rut) {
+    const alone = text.match(/\b(\d{1,2}\.?\d{3}\.?\d{3}-[\dkK])\b/);
+    if (alone) rut = alone[1];
+  }
+
+  return { rut, razon, giro };
+}
+
+export function extractFacturaFieldsFromOrder(order: {
+  customAttributes: Array<{ key: string; value: string }>;
+  note?: string | null;
+  customer?: { note?: string | null } | null;
+}): { rut: string | null; razon: string | null; giro: string | null } {
+  const fromAttrs = {
+    rut: getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.rut) || null,
+    razon: getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.razon) || null,
+    giro: getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.giro) || null,
+  };
+  const fromOrderNote = parseFacturaFieldsFromText(order.note);
+  const fromCustomerNote = parseFacturaFieldsFromText(order.customer?.note);
+  const legacyNote = parseCustomerNote(order.note || order.customer?.note || '');
+
+  return {
+    rut: fromAttrs.rut || fromOrderNote.rut || fromCustomerNote.rut || legacyNote.rut || null,
+    razon: fromAttrs.razon || fromOrderNote.razon || fromCustomerNote.razon || legacyNote.razon || null,
+    giro: fromAttrs.giro || fromOrderNote.giro || fromCustomerNote.giro || legacyNote.giro || null,
+  };
 }

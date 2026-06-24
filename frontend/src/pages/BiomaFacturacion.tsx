@@ -31,6 +31,10 @@ interface BiomaEmision {
   lastError: string | null;
   siiFolio: number | null;
   siiCodigo?: string | null;
+  rutReceptor?: string | null;
+  razonSocial?: string | null;
+  customerName?: string | null;
+  tipoCodigo?: number;
 }
 
 interface PendingRow {
@@ -419,7 +423,7 @@ export default function BiomaFacturacion() {
   }, [loadBlockStatus]);
 
   const emitirDte = useCallback(async (orderId: string, opts?: { isBoleta?: boolean }) => {
-    const isBoleta = opts?.isBoleta ?? payload?.tipoCodigo === 39;
+    const isBoleta = opts?.isBoleta ?? moduleTab === 'boletas';
     if (!isBoleta && siiBlocked.blocked) {
       setError(`SII en pausa ~${siiBlocked.retryAfterMinutes} min.`);
       return;
@@ -446,7 +450,10 @@ export default function BiomaFacturacion() {
       const res = await fetch(`${BIOMA_API}/emitir/${encodeURIComponent(orderId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: activeSessionId }),
+        body: JSON.stringify({
+          sessionId: activeSessionId,
+          tipoCodigo: isBoleta ? 39 : 33,
+        }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -465,7 +472,7 @@ export default function BiomaFacturacion() {
     } finally {
       setBusyOrderId(null);
     }
-  }, [sessionReady, activeSessionId, payload, loadPending, loadBoletas, loadRealizadas, loadPayload, selectedId, siiBlocked, loadBlockStatus]);
+  }, [sessionReady, activeSessionId, payload, moduleTab, loadPending, loadBoletas, loadRealizadas, loadPayload, selectedId, siiBlocked, loadBlockStatus]);
 
   const descargarPdf = useCallback(async (orderId: string) => {
     setBusyOrderId(orderId);
@@ -533,6 +540,14 @@ export default function BiomaFacturacion() {
   const boletasCount = boletasRows.length;
   const pendingMonto = pendingRows.reduce((sum, r) => sum + (r.shopify.total || 0), 0);
   const selectedRow = rows.find((r) => r.shopify.id === selectedId) ?? null;
+  const previewRut =
+    moduleTab === 'pendientes'
+      ? selectedRow?.emision?.rutReceptor || payload?.rutReceptor
+      : payload?.rutReceptor;
+  const previewRazon =
+    moduleTab === 'pendientes'
+      ? selectedRow?.emision?.razonSocial || payload?.razonSocial
+      : payload?.razonSocial;
   const selectedBoleta = boletasRows.find((r) => r.shopifyOrderId === selectedId) ?? null;
   const isBusy = busyOrderId === selectedId;
 
@@ -833,8 +848,13 @@ export default function BiomaFacturacion() {
                   const attrs = Object.fromEntries(
                     row.shopify.customAttributes.map((a) => [a.key, a.value]),
                   );
-                  const rut = attrs._rut_empresa || '';
-                  const razon = attrs._razon_social || '';
+                  const rut = row.emision?.rutReceptor || attrs._rut_empresa || '';
+                  const razon =
+                    row.emision?.razonSocial ||
+                    attrs._razon_social ||
+                    row.shopify.shippingAddress?.name ||
+                    row.emision?.customerName ||
+                    '';
                   return (
                     <TableRow
                       key={row.shopify.id}
@@ -846,7 +866,7 @@ export default function BiomaFacturacion() {
                       <TableCell><Typography fontWeight={600} fontSize={13}>{row.shopify.name}</Typography></TableCell>
                       <TableCell>{new Date(row.shopify.processedAt).toLocaleDateString('es-CL')}</TableCell>
                       <TableCell>
-                        <Typography fontSize={13}>{razon || row.shopify.shippingAddress?.name || '—'}</Typography>
+                        <Typography fontSize={13}>{razon || '—'}</Typography>
                         {rut && <Typography variant="caption">{formatRut(rut)}</Typography>}
                       </TableCell>
                       <TableCell align="right"><Typography fontWeight={600} fontSize={13}>{fmt(row.shopify.total)}</Typography></TableCell>
@@ -889,7 +909,9 @@ export default function BiomaFacturacion() {
                     {selectedRow?.shopify.name || selectedBoleta?.shopifyOrderName}
                   </Typography>
                   <Typography variant="caption">
-                    {dteLabel(payload?.tipoCodigo ?? (moduleTab === 'boletas' ? 39 : 33))}
+                    {moduleTab === 'boletas'
+                      ? dteLabel(39)
+                      : dteLabel(payload?.tipoCodigo === 61 ? 61 : 33)}
                   </Typography>
                 </Box>
                 <Chip
@@ -918,28 +940,42 @@ export default function BiomaFacturacion() {
                   <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
                     Preview — datos para el SII
                   </Typography>
-                  {(payload.tipoCodigo === 39 || payload.tipoCodigo === 41) && (
+                  {moduleTab === 'boletas' && (
                     <Alert severity="info" sx={{ mb: 1.5 }}>
                       e-Boleta: receptor <strong>66.666.666-6 · SII Boleta</strong> (consumidor final).
                       El nombre del cliente en Shopify es solo referencia interna.
                     </Alert>
                   )}
-                  {payload.rutReceptor && !validateRut(payload.rutReceptor) && (
+                  {moduleTab === 'pendientes' && (
+                    <Alert severity="info" sx={{ mb: 1.5 }}>
+                      Factura electrónica vía <strong>MiPyme (SII)</strong>. Los datos del receptor vienen del
+                      checkout, atributos del pedido o notas de cliente en Shopify.
+                    </Alert>
+                  )}
+                  {previewRut && !validateRut(previewRut) && (
                     <Alert severity="warning" sx={{ mb: 1.5 }}>
-                      RUT receptor inválido ({formatRut(payload.rutReceptor)}).
+                      RUT receptor inválido ({formatRut(previewRut)}).
                     </Alert>
                   )}
                   <Box sx={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 0.75, fontSize: 13, mb: 1.5 }}>
-                    {payload.rutReceptor && (
+                    {previewRut && (
                       <>
                         <Typography color="text.secondary">RUT receptor</Typography>
-                        <Typography>{formatRut(payload.rutReceptor)}</Typography>
+                        <Typography>{formatRut(previewRut)}</Typography>
                       </>
                     )}
-                    {payload.razonSocial && (
+                    {previewRazon && (
                       <>
                         <Typography color="text.secondary">Razón social</Typography>
-                        <Typography>{payload.razonSocial}</Typography>
+                        <Typography>{previewRazon}</Typography>
+                      </>
+                    )}
+                    {moduleTab === 'pendientes' &&
+                      selectedRow?.emision?.customerName &&
+                      !previewRazon && (
+                      <>
+                        <Typography color="text.secondary">Cliente Shopify</Typography>
+                        <Typography>{selectedRow.emision.customerName}</Typography>
                       </>
                     )}
                     {(selectedBoleta?.customerName || selectedRow?.shopify.shippingAddress?.name) &&
@@ -953,7 +989,11 @@ export default function BiomaFacturacion() {
                       </>
                     )}
                     <Typography color="text.secondary">Modo SII</Typography>
-                    <Typography>{templateLabel(payload.template, payload.tipoCodigo)}</Typography>
+                    <Typography>
+                      {moduleTab === 'boletas'
+                        ? 'Boleta e-Boleta (eboleta.sii.cl)'
+                        : `Factura electrónica (MiPyme) — ${templateLabel(payload.template, 33)}`}
+                    </Typography>
                   </Box>
                   <Divider sx={{ my: 1.5 }} />
                   <Stack spacing={0.75}>
