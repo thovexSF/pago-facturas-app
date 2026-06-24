@@ -472,13 +472,17 @@ export default function BiomaFacturacion() {
     setError(null);
     try {
       if (moduleTab !== 'boletas' && sessionReady && sessionId) {
-        const res = await fetch(`${BIOMA_API}/pdf/${encodeURIComponent(orderId)}/fetch`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionId }),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+        try {
+          const res = await fetch(`${BIOMA_API}/pdf/${encodeURIComponent(orderId)}/fetch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId }),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.success) console.warn('PDF fetch failed, trying direct:', data.error);
+        } catch (fetchErr: any) {
+          console.warn('PDF fetch error, trying direct:', fetchErr?.message);
+        }
       }
       window.open(`${BIOMA_API}/pdf/${encodeURIComponent(orderId)}`, '_blank');
     } catch (e: any) {
