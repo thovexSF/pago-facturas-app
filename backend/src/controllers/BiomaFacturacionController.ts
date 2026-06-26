@@ -229,7 +229,7 @@ export class BiomaFacturacionController {
       const items = builtItems.map((it, i) => ({
         numero: i + 1,
         descripcion: it.descripcion,
-        descripcionExtendida: it.descripcionExtendida,
+        tituloExtendido: it.tituloExtendido,
         cantidad: it.cantidad,
         precioUnitario: it.precioUnitario,
         subtotal: it.subtotal,
@@ -257,6 +257,7 @@ export class BiomaFacturacionController {
           fechaEmision: new Date().toISOString().split('T')[0],
           items,
           descuentoGlobal,
+          useDescripcionExtendida: false,
           template,
           montosValidacion,
         },
@@ -318,6 +319,7 @@ export class BiomaFacturacionController {
       dirReceptor,
       skipMontosValidation,
       descuentoGlobal,
+      useDescripcionExtendida,
     } = req.body || {};
     if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
     if (!sessionId) return res.status(400).json({ error: 'sessionId requerido' });
@@ -355,6 +357,7 @@ export class BiomaFacturacionController {
         skipMontosValidation: !!skipMontosValidation,
         descuentoGlobal:
           descuentoGlobal && typeof descuentoGlobal === 'object' ? descuentoGlobal : undefined,
+        useDescripcionExtendida: !!useDescripcionExtendida,
       });
 
       if (!out.success) {

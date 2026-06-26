@@ -11,9 +11,10 @@ import { boletaReceptorForSii, boletaViaEBoleta } from '../utils/biomaOrderAttrs
 
 export interface BiomaEmitItemOverride {
   numero: number;
-  descripcion: string;
+  descripcion?: string;
+  descripcionExtendida?: string;
   cantidad: number;
-  precioUnitario: number;
+  precioUnitario?: number;
 }
 
 export interface BiomaEmitDescuentoGlobalOverride {
@@ -40,6 +41,8 @@ export interface BiomaEmitOrderOpts {
   dirReceptor?: string;
   skipMontosValidation?: boolean;
   descuentoGlobal?: BiomaEmitDescuentoGlobalOverride | null;
+  /** Si true, rellena EFXP_DSC_ITEM_* con el título Shopify completo por línea. */
+  useDescripcionExtendida?: boolean;
 }
 
 export interface BiomaEmitResult {
@@ -102,10 +105,10 @@ export class BiomaEmitService {
         ? shopifyItems.map((si, i) => {
             const ov = opts.items![i];
             const cantidad = Math.max(1, Math.round(Number(ov?.cantidad) || si.cantidad));
+            const descripcion = (ov?.descripcion?.trim() || si.descripcion).slice(0, 80);
             return {
               ...si,
-              // Glosas siempre desde Shopify (formatGlosaFacturaSii); no usar borrador/localStorage.
-              descripcion: si.descripcion,
+              descripcion,
               cantidad,
               precioUnitario: si.precioUnitario,
               subtotal: si.precioUnitario * cantidad,
@@ -122,10 +125,13 @@ export class BiomaEmitService {
         descuentoGlobal = { ...descuentoGlobal, porcentaje: built.porcentaje };
       }
     }
+    const useExt = !!opts.useDescripcionExtendida;
     const items = builtItems.map((it, i) => ({
       numero: opts.items?.[i]?.numero ?? i + 1,
       descripcion: it.descripcion,
-      descripcionExtendida: it.descripcionExtendida,
+      descripcionExtendida: useExt
+        ? (opts.items?.[i]?.descripcionExtendida?.trim() || it.tituloExtendido || undefined)
+        : undefined,
       cantidad: it.cantidad,
       precioUnitario: it.precioUnitario,
     }));

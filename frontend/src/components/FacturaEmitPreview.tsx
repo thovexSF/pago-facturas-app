@@ -15,6 +15,9 @@ import {
   TableRow,
   TextField,
   Typography,
+  FormControlLabel,
+  Checkbox,
+  Alert,
 } from '@mui/material';
 import CheckCircleOutlineIcon from '@mui/icons-material/esm/CheckCircleOutline.js';
 import ErrorOutlineIcon from '@mui/icons-material/esm/ErrorOutline.js';
@@ -23,7 +26,14 @@ import AddIcon from '@mui/icons-material/esm/Add.js';
 import { formatRut } from '../utils/rutUtils';
 import { normalizeDraftItems, computeTotalesFacturaPreview } from '../utils/facturaPreview';
 import type { SiiEmitFormSnapshot } from '../utils/siiFormSnapshot';
-import SiiFormReadback from './SiiFormReadback';
+import { compareSiiSnapshotWithPayload, fmtClp } from '../utils/siiFormSnapshot';
+import {
+  SII_EFXP_DSC_ITEM_MAX,
+  SII_EFXP_NMB_MAX,
+  SII_MIPYME_FIELDS,
+  previewNombreEnSii,
+  siiCharMeta,
+} from '../utils/siiFormFields';
 
 export interface FacturaEmitPreviewData {
   rutReceptor: string | null;
@@ -42,11 +52,14 @@ export interface FacturaEmitPreviewData {
   items: Array<{
     numero: number;
     descripcion: string;
+    tituloExtendido?: string;
     descripcionExtendida?: string;
     cantidad: number;
     precioUnitario: number;
     subtotal: number;
   }>;
+  /** Activar checkbox «Descripción» extendida en MiPyme al rellenar/emitir. */
+  useDescripcionExtendida?: boolean;
 }
 
 export interface MontosValidacionPreview {
@@ -136,15 +149,26 @@ export default function FacturaEmitPreview({
   const receptorNombre = payload.razonSocial || customerName || '—';
   const receptorRut = payload.rutReceptor ? formatRut(payload.rutReceptor) : '—';
 
+  const lineasNombreLargo = payload.items.filter(
+    (it) => siiCharMeta(it.descripcion, SII_EFXP_NMB_MAX).over,
+  );
+
   const patch = (partial: Partial<FacturaEmitPreviewData>) => {
     onPayloadChange?.({ ...payload, ...partial });
   };
 
-  const patchItem = (idx: number, field: 'descripcion' | 'cantidad' | 'precioUnitario', value: string) => {
+  const patchItem = (
+    idx: number,
+    field: 'descripcion' | 'descripcionExtendida' | 'cantidad' | 'precioUnitario',
+    value: string,
+  ) => {
     const next = payload.items.map((it, i) => {
       if (i !== idx) return it;
       if (field === 'descripcion') {
         return { ...it, descripcion: value };
+      }
+      if (field === 'descripcionExtendida') {
+        return { ...it, descripcionExtendida: value };
       }
       const n = Math.max(field === 'cantidad' ? 1 : 1, Math.round(Number(value) || 0));
       const precio = field === 'precioUnitario' ? n : it.precioUnitario;
@@ -211,8 +235,8 @@ export default function FacturaEmitPreview({
           }}
         >
           {editable
-            ? 'VISTA PREVIA EDITABLE — Los cambios se envían al SII al emitir'
-            : 'VISTA PREVIA — Documento no emitido en el SII'}
+            ? 'FORMULARIO MIPYME — Vista previa editable (campos EFXP_*)'
+            : 'FORMULARIO MIPYME — Vista previa antes de emitir'}
         </Typography>
         <Stack direction="row" spacing={1} alignItems="center">
           {draftDirty && editable && (
@@ -370,165 +394,282 @@ export default function FacturaEmitPreview({
           </Grid>
         </Paper>
 
-        <TableContainer sx={{ mb: 1, border: '1px solid #e0e0e0' }}>
-          <Table size="small">
-            <TableHead>
-              <TableRow sx={{ bgcolor: '#f5f5f5' }}>
-                <TableCell sx={{ fontWeight: 700, width: 40 }}>#</TableCell>
-                <TableCell sx={{ fontWeight: 700 }}>Descripción</TableCell>
-                <TableCell sx={{ fontWeight: 700 }} align="center" width={editable ? 88 : 72}>
-                  Cant.
-                </TableCell>
-                <TableCell sx={{ fontWeight: 700 }} align="right" width={editable ? 120 : 100}>
-                  P. unit.{esAfecta ? ' neto' : ''}
-                </TableCell>
-                <TableCell sx={{ fontWeight: 700 }} align="right" width={110}>
-                  Total{esAfecta ? ' neto' : ''}
-                </TableCell>
-                {editable && <TableCell width={44} />}
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {payload.items.map((it, idx) => {
-                const lineSub = (it.cantidad || 0) * (it.precioUnitario || 0);
-                return (
-                  <TableRow key={it.numero} hover>
-                    <TableCell>{it.numero}</TableCell>
-                    <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>
-                      {editable ? (
-                        <TextField
-                          fullWidth
-                          size="small"
-                          multiline
-                          minRows={1}
-                          value={it.descripcion}
-                          onChange={(e) => patchItem(idx, 'descripcion', e.target.value)}
-                        />
-                      ) : (
-                        <Box>
-                          <Typography variant="body2">{it.descripcion}</Typography>
-                          {it.descripcionExtendida && (
-                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                              + detalle SII: {it.descripcionExtendida.slice(0, 120)}
-                              {it.descripcionExtendida.length > 120 ? '…' : ''}
+        <Paper variant="outlined" sx={{ p: 1.5, mb: 2, bgcolor: '#fafafa', borderColor: '#bdbdbd' }}>
+          <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={1} sx={{ mb: 1 }}>
+            <Typography variant="subtitle2" fontWeight={700}>
+              Detalle de productos / servicios
+            </Typography>
+            {editable && (
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={!!payload.useDescripcionExtendida}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      const items = payload.items.map((it) => ({
+                        ...it,
+                        descripcionExtendida: checked
+                          ? (it.descripcionExtendida || it.tituloExtendido || '')
+                          : undefined,
+                      }));
+                      patch({ useDescripcionExtendida: checked, items });
+                    }}
+                  />
+                }
+                label={
+                  <Typography variant="body2">
+                    Activar columna «Descripción extendida» ({SII_MIPYME_FIELDS.descripcionExtendida})
+                  </Typography>
+                }
+              />
+            )}
+          </Stack>
+
+          {lineasNombreLargo.length > 0 && (
+            <Alert severity="warning" sx={{ mb: 1.5, py: 0.5 }}>
+              {lineasNombreLargo.length === 1
+                ? `La línea ${lineasNombreLargo[0].numero} supera ${SII_EFXP_NMB_MAX} caracteres en ${SII_MIPYME_FIELDS.nombre}.`
+                : `${lineasNombreLargo.length} líneas superan ${SII_EFXP_NMB_MAX} caracteres en ${SII_MIPYME_FIELDS.nombre}.`}{' '}
+              El SII guardará solo el nombre corto truncado; activa «Descripción extendida» para el detalle completo.
+            </Alert>
+          )}
+
+          <TableContainer sx={{ border: '1px solid #e0e0e0', bgcolor: '#fff' }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow sx={{ bgcolor: '#eceff1' }}>
+                  <TableCell sx={{ fontWeight: 700, width: 36 }}>#</TableCell>
+                  <TableCell sx={{ fontWeight: 700, minWidth: 200 }}>
+                    Nombre
+                    <Typography variant="caption" display="block" color="text.secondary">
+                      {SII_MIPYME_FIELDS.nombre} · máx. {SII_EFXP_NMB_MAX} car.
+                    </Typography>
+                  </TableCell>
+                  {payload.useDescripcionExtendida && (
+                    <TableCell sx={{ fontWeight: 700, minWidth: 220 }}>
+                      Descripción extendida
+                      <Typography variant="caption" display="block" color="text.secondary">
+                        {SII_MIPYME_FIELDS.descripcionExtendida} · opcional
+                      </Typography>
+                    </TableCell>
+                  )}
+                  <TableCell sx={{ fontWeight: 700 }} align="center" width={72}>
+                    Cant.
+                    <Typography variant="caption" display="block" color="text.secondary">
+                      {SII_MIPYME_FIELDS.cantidad}
+                    </Typography>
+                  </TableCell>
+                  <TableCell sx={{ fontWeight: 700 }} align="right" width={100}>
+                    P. unit.{esAfecta ? ' neto' : ''}
+                    <Typography variant="caption" display="block" color="text.secondary">
+                      {SII_MIPYME_FIELDS.precioUnitario}
+                    </Typography>
+                  </TableCell>
+                  <TableCell sx={{ fontWeight: 700 }} align="right" width={100}>
+                    Subtotal
+                    <Typography variant="caption" display="block" color="text.secondary">
+                      {SII_MIPYME_FIELDS.subtotalLinea}
+                    </Typography>
+                  </TableCell>
+                  {editable && <TableCell width={44} />}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {payload.items.map((it, idx) => {
+                  const lineSub = (it.cantidad || 0) * (it.precioUnitario || 0);
+                  const nombreMeta = siiCharMeta(it.descripcion, SII_EFXP_NMB_MAX);
+                  const nombreEnSii = previewNombreEnSii(it.descripcion);
+                  const extText = it.descripcionExtendida ?? it.tituloExtendido ?? '';
+                  const extMeta = siiCharMeta(extText, SII_EFXP_DSC_ITEM_MAX);
+                  const snapLine = siiFormSnapshot?.lineas.find((l) => l.numero === it.numero);
+
+                  return (
+                    <TableRow key={it.numero} hover sx={{ verticalAlign: 'top' }}>
+                      <TableCell>{it.numero}</TableCell>
+                      <TableCell>
+                        {editable ? (
+                          <TextField
+                            fullWidth
+                            size="small"
+                            multiline
+                            minRows={2}
+                            value={it.descripcion}
+                            onChange={(e) => patchItem(idx, 'descripcion', e.target.value)}
+                            error={nombreMeta.over}
+                            helperText={
+                              nombreMeta.over
+                                ? `${nombreMeta.helper} → en SII: «${nombreEnSii}»`
+                                : nombreMeta.helper
+                            }
+                            FormHelperTextProps={{ sx: { fontSize: 11 } }}
+                          />
+                        ) : (
+                          <Box>
+                            <Typography variant="body2" fontFamily="monospace" fontSize="0.85rem">
+                              {nombreEnSii}
+                            </Typography>
+                            {nombreMeta.over && (
+                              <Typography variant="caption" color="warning.main">
+                                Original ({nombreMeta.length} car.): {it.descripcion}
+                              </Typography>
+                            )}
+                          </Box>
+                        )}
+                        {snapLine && snapLine.nombre.toUpperCase() !== nombreEnSii.toUpperCase() && (
+                          <Chip
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                            sx={{ mt: 0.5, fontSize: 10 }}
+                            label={`SII tiene: ${snapLine.nombre}`}
+                          />
+                        )}
+                      </TableCell>
+                      {payload.useDescripcionExtendida && (
+                        <TableCell>
+                          {editable ? (
+                            <TextField
+                              fullWidth
+                              size="small"
+                              multiline
+                              minRows={2}
+                              value={extText}
+                              onChange={(e) => patchItem(idx, 'descripcionExtendida', e.target.value)}
+                              error={extMeta.over}
+                              helperText={extMeta.helper}
+                              FormHelperTextProps={{ sx: { fontSize: 11 } }}
+                              placeholder="Detalle largo (checkbox Descripción en MiPyme)"
+                            />
+                          ) : (
+                            <Typography variant="body2" fontSize="0.8rem" color="text.secondary">
+                              {extText || '—'}
                             </Typography>
                           )}
-                        </Box>
+                          {snapLine?.descripcionExtendida && (
+                            <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.5 }}>
+                              SII: {snapLine.descripcionExtendida.slice(0, 80)}
+                              {snapLine.descripcionExtendida.length > 80 ? '…' : ''}
+                            </Typography>
+                          )}
+                        </TableCell>
                       )}
-                    </TableCell>
-                    <TableCell align="center">
-                      {editable ? (
-                        <TextField
-                          size="small"
-                          type="number"
-                          inputProps={{ min: 1, style: { textAlign: 'center' } }}
-                          value={it.cantidad}
-                          onChange={(e) => patchItem(idx, 'cantidad', e.target.value)}
-                          sx={{ width: 72 }}
-                        />
-                      ) : (
-                        it.cantidad
-                      )}
-                    </TableCell>
-                    <TableCell align="right">
-                      {fmt(it.precioUnitario)}
-                    </TableCell>
-                    <TableCell align="right" sx={{ fontWeight: 600 }}>
-                      {fmt(lineSub)}
-                    </TableCell>
-                    {editable && (
-                      <TableCell padding="checkbox">
-                        <IconButton
-                          size="small"
-                          color="error"
-                          disabled={payload.items.length <= 1}
-                          onClick={() => removeItem(idx)}
-                          aria-label="Quitar línea"
-                        >
-                          <DeleteOutlineIcon fontSize="small" />
-                        </IconButton>
+                      <TableCell align="center">
+                        {editable ? (
+                          <TextField
+                            size="small"
+                            type="number"
+                            inputProps={{ min: 1, style: { textAlign: 'center' } }}
+                            value={it.cantidad}
+                            onChange={(e) => patchItem(idx, 'cantidad', e.target.value)}
+                            sx={{ width: 64 }}
+                          />
+                        ) : (
+                          it.cantidad
+                        )}
                       </TableCell>
-                    )}
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </TableContainer>
+                      <TableCell align="right">{fmt(it.precioUnitario)}</TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 600 }}>{fmt(lineSub)}</TableCell>
+                      {editable && (
+                        <TableCell padding="checkbox">
+                          <IconButton
+                            size="small"
+                            color="error"
+                            disabled={payload.items.length <= 1}
+                            onClick={() => removeItem(idx)}
+                            aria-label="Quitar línea"
+                          >
+                            <DeleteOutlineIcon fontSize="small" />
+                          </IconButton>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </TableContainer>
 
-        {editable && (
-          <Button size="small" startIcon={<AddIcon />} onClick={addItem} sx={{ mb: 2 }}>
-            Agregar línea
-          </Button>
-        )}
+          {editable && (
+            <Button size="small" startIcon={<AddIcon />} onClick={addItem} sx={{ mt: 1 }}>
+              Agregar línea
+            </Button>
+          )}
+        </Paper>
 
         <Grid container spacing={2} alignItems="flex-start">
-          <Grid item xs={12} md={6}>
-            <Typography variant="caption" color="text.secondary" display="block">Forma de pago</Typography>
-            <Typography variant="body2" fontWeight={500}>Contado</Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ mt: 1.5, display: 'block' }}>
-              Pedido Shopify: <strong>{orderName}</strong>
-            </Typography>
-            {montosValidacion && montosValidacion.shopify.totalDiscounts > 0 && (
-              <Typography variant="caption" color="warning.dark" sx={{ mt: 0.5, display: 'block' }}>
-                Descuento Shopify: {fmt(montosValidacion.shopify.totalDiscounts)}
+          <Grid item xs={12} md={5}>
+            <Paper variant="outlined" sx={{ p: 1.5, bgcolor: '#fafafa' }}>
+              <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+                Otros campos MiPyme
               </Typography>
-            )}
+              <MipymeField label={SII_MIPYME_FIELDS.formaPago} value="Contado" />
+              <MipymeField label="Pedido Shopify" value={orderName} />
+              {showDescuentoGlobal && (
+                <MipymeField
+                  label="Glosa descuento global"
+                  value={payload.descuentoGlobal?.glosa || 'Descuento pedido'}
+                />
+              )}
+            </Paper>
           </Grid>
-          <Grid item xs={12} md={6}>
-            <Paper variant="outlined" sx={{ p: 1.75, borderWidth: 2, maxWidth: 320, ml: { md: 'auto' }, bgcolor: '#fafafa' }}>
-              <Typography variant="subtitle2" fontWeight={700} gutterBottom>Totales</Typography>
+          <Grid item xs={12} md={7}>
+            <Paper variant="outlined" sx={{ p: 1.5, borderWidth: 2, borderColor: '#90a4ae', bgcolor: '#fff' }}>
+              <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+                Totales (como en el formulario SII)
+              </Typography>
+              <MipymeField label={SII_MIPYME_FIELDS.subtotal} value={fmt(montoNeto)} mono />
+              <MipymeField
+                label={SII_MIPYME_FIELDS.descuentoGlobalPct}
+                value={
+                  showDescuentoGlobal
+                    ? `${descuentoGlobalPct}%  (−${fmt(descuentoGlobalNeto)} neto)`
+                    : '0 %'
+                }
+                highlight={showDescuentoGlobal}
+                siiValue={
+                  siiFormSnapshot
+                    ? siiFormSnapshot.totales.descuentoGlobalPct > 0
+                      ? `${siiFormSnapshot.totales.descuentoGlobalPct}%`
+                      : siiFormSnapshot.totales.descuentoGlobalMonto > 0
+                        ? fmtClp(siiFormSnapshot.totales.descuentoGlobalMonto)
+                        : '0'
+                    : undefined
+                }
+              />
               {esAfecta ? (
                 <>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                    <Typography variant="body2">Monto neto</Typography>
-                    <Typography variant="body2">{fmt(montoNeto)}</Typography>
-                  </Box>
-                  {showDescuentoGlobal && (
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                      <Typography variant="body2" color="success.dark">
-                        Descuento global{descuentoGlobalPct > 0 ? ` (${descuentoGlobalPct}%)` : ''}
-                      </Typography>
-                      <Typography variant="body2" color="success.dark">
-                        −{fmt(descuentoGlobalNeto)}
-                      </Typography>
-                    </Box>
-                  )}
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                    <Typography variant="body2">I.V.A. 19%</Typography>
-                    <Typography variant="body2">{fmt(iva)}</Typography>
-                  </Box>
+                  <MipymeField
+                    label={SII_MIPYME_FIELDS.montoNeto}
+                    value={fmt(totales.netoImponible)}
+                    mono
+                    siiValue={siiFormSnapshot ? fmtClp(siiFormSnapshot.totales.neto) : undefined}
+                  />
+                  <MipymeField
+                    label={SII_MIPYME_FIELDS.iva}
+                    value={fmt(iva)}
+                    mono
+                    siiValue={siiFormSnapshot ? fmtClp(siiFormSnapshot.totales.iva) : undefined}
+                  />
                 </>
               ) : (
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                  <Typography variant="body2">Monto exento</Typography>
-                  <Typography variant="body2">{fmt(totales.netoImponible)}</Typography>
-                </Box>
+                <MipymeField label="Monto exento" value={fmt(totales.netoImponible)} mono />
               )}
               <Divider sx={{ my: 1 }} />
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                <Typography variant="subtitle1" fontWeight={800}>Total factura</Typography>
-                <Typography variant="subtitle1" fontWeight={800}>{fmt(total)}</Typography>
-              </Box>
+              <MipymeField
+                label={SII_MIPYME_FIELDS.total}
+                value={fmt(total)}
+                bold
+                mono
+                siiValue={siiFormSnapshot ? fmtClp(siiFormSnapshot.totales.total) : undefined}
+              />
               {shopifyTotal != null && shopifyTotal > 0 && (
-                <Box
-                  sx={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    mt: 1,
-                    pt: 1,
-                    borderTop: '1px dashed #ccc',
-                  }}
-                >
-                  <Typography variant="body2" color="text.secondary">Total Shopify</Typography>
-                  <Typography
-                    variant="body2"
-                    fontWeight={700}
-                    color={montosValidacion?.ok ? 'success.main' : 'error.main'}
-                  >
-                    {fmt(shopifyTotal)}
-                  </Typography>
+                <Box sx={{ mt: 1, pt: 1, borderTop: '1px dashed #ccc' }}>
+                  <MipymeField
+                    label="Total Shopify (referencia)"
+                    value={fmt(shopifyTotal)}
+                    warn={!montosValidacion?.ok}
+                  />
                 </Box>
               )}
             </Paper>
@@ -537,20 +678,125 @@ export default function FacturaEmitPreview({
       </Box>
 
       {siiFormSnapshot && (
-        <SiiFormReadback
+        <SiiSnapshotDiff
           snapshot={siiFormSnapshot}
-          expectedItems={payload.items.map((it) => ({
-            descripcion: it.descripcion,
-            descripcionExtendida: it.descripcionExtendida,
-            cantidad: it.cantidad,
-            precioUnitario: it.precioUnitario,
-          }))}
+          payload={payload}
           shopifyTotal={montosValidacion?.shopify.total ?? shopifyTotal ?? 0}
           descuentoGlobalPct={descuentoGlobalPct}
-          capturedLabel={new Date(siiFormSnapshot.capturedAt).toLocaleTimeString('es-CL')}
         />
       )}
     </Paper>
+  );
+}
+
+function MipymeField({
+  label,
+  value,
+  mono,
+  bold,
+  highlight,
+  warn,
+  siiValue,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  bold?: boolean;
+  highlight?: boolean;
+  warn?: boolean;
+  siiValue?: string;
+}) {
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'baseline',
+        gap: 2,
+        py: 0.4,
+        color: highlight ? 'success.dark' : warn ? 'error.main' : 'inherit',
+      }}
+    >
+      <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem' }}>
+        {label}
+      </Typography>
+      <Box sx={{ textAlign: 'right' }}>
+        <Typography
+          variant="body2"
+          fontWeight={bold ? 800 : 600}
+          fontFamily={mono ? 'monospace' : undefined}
+        >
+          {value}
+        </Typography>
+        {siiValue != null && siiValue !== value && (
+          <Typography variant="caption" color="warning.main">
+            SII: {siiValue}
+          </Typography>
+        )}
+      </Box>
+    </Box>
+  );
+}
+
+function SiiSnapshotDiff({
+  snapshot,
+  payload,
+  shopifyTotal,
+  descuentoGlobalPct,
+}: {
+  snapshot: SiiEmitFormSnapshot;
+  payload: FacturaEmitPreviewData;
+  shopifyTotal: number;
+  descuentoGlobalPct: number;
+}) {
+  const issues = compareSiiSnapshotWithPayload(snapshot, {
+    items: payload.items.map((it) => ({
+      descripcion: previewNombreEnSii(it.descripcion),
+      descripcionExtendida: payload.useDescripcionExtendida
+        ? (it.descripcionExtendida || it.tituloExtendido)
+        : undefined,
+      cantidad: it.cantidad,
+      precioUnitario: it.precioUnitario,
+    })),
+    shopifyTotal,
+    descuentoGlobalPct,
+    useDescripcionExtendida: payload.useDescripcionExtendida,
+  });
+  const allWarnings = [...snapshot.warnings, ...issues];
+  const ok = allWarnings.length === 0;
+
+  return (
+    <Box sx={{ px: 2, pb: 2 }}>
+      <Paper variant="outlined" sx={{ p: 1.5, bgcolor: ok ? '#f1f8e9' : '#fff8e1' }}>
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+          {ok ? (
+            <CheckCircleOutlineIcon color="success" fontSize="small" />
+          ) : (
+            <ErrorOutlineIcon color="warning" fontSize="small" />
+          )}
+          <Typography variant="subtitle2" fontWeight={700}>
+            Lectura del formulario SII tras «Rellenar en MiPyme»
+          </Typography>
+          <Chip
+            size="small"
+            label={new Date(snapshot.capturedAt).toLocaleTimeString('es-CL')}
+            variant="outlined"
+            sx={{ ml: 'auto' }}
+          />
+        </Stack>
+        {allWarnings.length > 0 ? (
+          <Alert severity="warning" sx={{ mb: 0 }}>
+            {allWarnings.map((w) => (
+              <Box key={w} component="div">
+                {w}
+              </Box>
+            ))}
+          </Alert>
+        ) : (
+          <Alert severity="success">El formulario SII coincide con esta vista previa.</Alert>
+        )}
+      </Paper>
+    </Box>
   );
 }
 

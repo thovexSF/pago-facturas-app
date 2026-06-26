@@ -10,6 +10,7 @@ export type FacturaDraftMeta = Pick<
   | 'ciudadReceptor'
   | 'dirReceptor'
   | 'fechaEmision'
+  | 'useDescripcionExtendida'
 >;
 
 export function mergeDraftMeta(base: FacturaEditDraft, saved: Partial<FacturaEditDraft>): FacturaEditDraft {
@@ -19,7 +20,8 @@ export function mergeDraftMeta(base: FacturaEditDraft, saved: Partial<FacturaEdi
     const cantidad = Math.max(1, Math.round(Number(si.cantidad) || bi.cantidad));
     return {
       ...bi,
-      descripcion: bi.descripcion,
+      descripcion: si.descripcion?.trim() ? si.descripcion : bi.descripcion,
+      descripcionExtendida: si.descripcionExtendida ?? bi.descripcionExtendida,
       cantidad,
       precioUnitario: bi.precioUnitario,
       subtotal: bi.precioUnitario * cantidad,
@@ -35,6 +37,7 @@ export function mergeDraftMeta(base: FacturaEditDraft, saved: Partial<FacturaEdi
     ciudadReceptor: saved.ciudadReceptor?.trim() || base.ciudadReceptor,
     dirReceptor: saved.dirReceptor?.trim() || base.dirReceptor,
     fechaEmision: saved.fechaEmision || base.fechaEmision,
+    useDescripcionExtendida: saved.useDescripcionExtendida ?? base.useDescripcionExtendida,
     items,
     descuentoGlobal: base.descuentoGlobal,
   };
@@ -46,7 +49,8 @@ export function draftMetaForStorage(draft: FacturaEditDraft): FacturaEditDraft {
     items: draft.items.map((it) => ({
       numero: it.numero,
       cantidad: it.cantidad,
-      descripcion: '',
+      descripcion: it.descripcion,
+      descripcionExtendida: it.descripcionExtendida,
       precioUnitario: 0,
       subtotal: 0,
     })),

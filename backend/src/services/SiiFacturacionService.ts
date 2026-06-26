@@ -2190,9 +2190,6 @@ async function fillEmitirItemDescripcion(
     const sp = head.lastIndexOf(' ');
     if (sp >= Math.floor(maxNombre * 0.45)) cut = sp;
     nombre = texto.slice(0, cut).trim();
-    if (!useExt && texto.length > nombre.length) {
-      await fillEmitFormLineExtended(page, num, texto);
-    }
   }
 
   const loc = page.locator(nmbSel);

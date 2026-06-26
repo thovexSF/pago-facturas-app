@@ -45,7 +45,7 @@ function extractOrigenEspecialidad(title: string): string {
 }
 
 function buildEspecialidadGlosa(origen: string, weight: string): string {
-  const base = 'CAFE ESPECIALIDAD';
+  const base = 'CAFE ESPEC.';
   const words = origen.split(/\s+/).filter(Boolean);
 
   for (let n = words.length; n >= 1; n--) {
@@ -62,7 +62,7 @@ function buildEspecialidadGlosa(origen: string, weight: string): string {
 
 /**
  * Convierte título + variante Shopify en glosa factura SII.
- * Prioriza café de especialidad: CAFE ESPECIALIDAD {ORIGEN} {PESO}
+ * Prioriza café de especialidad: CAFE ESPEC. {ORIGEN} {PESO}
  */
 /** Título Shopify completo para descripción extendida MiPyme (EFXP_DSC_ITEM_*). */
 export function buildTituloCompletoLineaShopify(

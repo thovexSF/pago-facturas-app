@@ -46,8 +46,10 @@ export interface PendingOrderRow {
 
 export interface FacturaItemForSii {
   descripcion: string;
-  /** Texto largo para checkbox «Descripción» del SII (EFXP_DSC_ITEM_*). */
+  /** Texto largo para checkbox «Descripción» del SII (EFXP_DSC_ITEM_*), solo si se activa en emisión. */
   descripcionExtendida?: string;
+  /** Título Shopify completo (fuente para descripción extendida opcional). */
+  tituloExtendido?: string;
   cantidad: number;
   unidad?: string;
   precioUnitario: number;
@@ -478,17 +480,12 @@ export class BiomaFacturacionService {
       const descripcion = sanitizeDescripcionParaSii(
         formatGlosaFacturaSii(li.title, li.variantTitle),
       );
-      const tituloCompleto = sanitizeDescripcionParaSii(
+      const tituloExtendido = sanitizeDescripcionParaSii(
         buildTituloCompletoLineaShopify(li.title, li.variantTitle),
       );
-      const descripcionExtendida =
-        tituloCompleto.length > descripcion.length &&
-        tituloCompleto.toUpperCase() !== descripcion.toUpperCase()
-          ? tituloCompleto
-          : undefined;
       return {
         descripcion,
-        descripcionExtendida,
+        tituloExtendido: tituloExtendido || undefined,
         cantidad,
         unidad: this.defaultUnidad,
         precioUnitario,

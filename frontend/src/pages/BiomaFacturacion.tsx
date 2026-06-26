@@ -443,16 +443,23 @@ export default function BiomaFacturacion() {
       ...next,
       items: normalizeDraftItems(next.items),
     };
-    setEditDraft(normalized);
+    const descuentoGlobal = computeDescuentoGlobalPreview(
+      normalized.items,
+      shopifyTotalRef,
+      normalized.tipoCodigo ?? 33,
+      { totalDiscounts: payload?.montosValidacion?.shopify.totalDiscounts },
+    );
+    const withTotals = { ...normalized, descuentoGlobal };
+    setEditDraft(withTotals);
     setDraftDirty(true);
     if (selectedId) {
       try {
-        localStorage.setItem(FACTURA_DRAFT_KEY(selectedId), JSON.stringify(draftMetaForStorage(normalized)));
+        localStorage.setItem(FACTURA_DRAFT_KEY(selectedId), JSON.stringify(draftMetaForStorage(withTotals)));
       } catch {
         /* quota */
       }
     }
-  }, [selectedId]);
+  }, [selectedId, shopifyTotalRef, payload?.montosValidacion?.shopify.totalDiscounts]);
 
   const resetDraftFromShopify = useCallback(() => {
     if (!payload || !selectedId) return;
@@ -609,8 +616,13 @@ export default function BiomaFacturacion() {
         dirReceptor: editDraft.dirReceptor || undefined,
         items: editDraft.items.map((it) => ({
           numero: it.numero,
+          descripcion: it.descripcion,
           cantidad: it.cantidad,
+          descripcionExtendida: editDraft.useDescripcionExtendida
+            ? (it.descripcionExtendida || it.tituloExtendido || undefined)
+            : undefined,
         })),
+        useDescripcionExtendida: !!editDraft.useDescripcionExtendida,
         skipMontosValidation: !!draftDirty,
       };
       if (dg) body.descuentoGlobal = dg;
@@ -708,8 +720,13 @@ export default function BiomaFacturacion() {
         body.dirReceptor = editDraft.dirReceptor || undefined;
         body.items = editDraft.items.map((it) => ({
           numero: it.numero,
+          descripcion: it.descripcion,
           cantidad: it.cantidad,
+          descripcionExtendida: editDraft.useDescripcionExtendida
+            ? (it.descripcionExtendida || it.tituloExtendido || undefined)
+            : undefined,
         }));
+        body.useDescripcionExtendida = !!editDraft.useDescripcionExtendida;
         const dg =
           payload?.descuentoGlobal ??
           computeDescuentoGlobalPreview(editDraft.items, shopifyTotalRef, editDraft.tipoCodigo ?? 33, {

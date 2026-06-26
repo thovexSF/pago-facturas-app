@@ -36,6 +36,7 @@ export function compareSiiSnapshotWithPayload(
     items: Array<{ descripcion: string; descripcionExtendida?: string; cantidad: number; precioUnitario: number }>;
     shopifyTotal: number;
     descuentoGlobalPct?: number;
+    useDescripcionExtendida?: boolean;
   },
 ): string[] {
   const issues: string[] = [];
@@ -48,7 +49,7 @@ export function compareSiiSnapshotWithPayload(
         `Línea ${i + 1}: nombre SII "${s.nombre}" ≠ esperado "${e.descripcion}"`,
       );
     }
-    if (e.descripcionExtendida && !s.descripcionExtendida) {
+    if (expected.useDescripcionExtendida && e.descripcionExtendida && !s.descripcionExtendida) {
       issues.push(`Línea ${i + 1}: falta descripción extendida en el SII`);
     }
     if (Math.abs(s.cantidad - e.cantidad) > 0.001) {

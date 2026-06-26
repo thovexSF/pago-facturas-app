@@ -77,6 +77,7 @@ export function payloadToDraft(payload: FacturaEmitPreviewData): FacturaEditDraf
       ...it,
       subtotal: Math.round((it.cantidad || 1) * (it.precioUnitario || 0)),
     })),
+    useDescripcionExtendida: payload.useDescripcionExtendida ?? false,
   };
 }
 
@@ -89,6 +90,8 @@ export function normalizeDraftItems(
     return {
       numero: i + 1,
       descripcion: String(it.descripcion || '').trim() || `Ítem ${i + 1}`,
+      tituloExtendido: it.tituloExtendido,
+      descripcionExtendida: it.descripcionExtendida,
       cantidad,
       precioUnitario,
       subtotal: cantidad * precioUnitario,

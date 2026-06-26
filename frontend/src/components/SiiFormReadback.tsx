@@ -28,6 +28,7 @@ type Props = {
   shopifyTotal: number;
   descuentoGlobalPct?: number;
   capturedLabel?: string;
+  useDescripcionExtendida?: boolean;
 };
 
 export default function SiiFormReadback({
@@ -36,11 +37,13 @@ export default function SiiFormReadback({
   shopifyTotal,
   descuentoGlobalPct,
   capturedLabel,
+  useDescripcionExtendida,
 }: Props) {
   const compareIssues = compareSiiSnapshotWithPayload(snapshot, {
     items: expectedItems,
     shopifyTotal,
     descuentoGlobalPct,
+    useDescripcionExtendida,
   });
   const allWarnings = [...snapshot.warnings, ...compareIssues];
   const ok = allWarnings.length === 0;
