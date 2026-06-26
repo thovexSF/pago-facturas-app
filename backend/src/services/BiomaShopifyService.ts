@@ -70,7 +70,6 @@ export interface ShopifyOrderForBioma {
   displayFinancialStatus: string;
   tags: string[];
   customAttributes: ShopifyOrderAttribute[];
-  note: string | null;
   customerNote: string | null;
   customer: {
     id: string | null;
@@ -120,7 +119,6 @@ const ORDERS_QUERY = `#graphql
           processedAt
           displayFinancialStatus
           tags
-          note
           customAttributes { key value }
           currencyCode
           customer {
@@ -238,6 +236,7 @@ function mapDraftOrderNode(node: any): ShopifyOrderForBioma {
     displayFinancialStatus: node.status === 'COMPLETED' ? 'PAID' : 'PENDING',
     tags: node.tags ?? [],
     customAttributes: node.customAttributes ?? [],
+    customerNote: node.customer?.note ?? null,
     customer: node.customer
       ? {
           id: node.customer.id ?? null,
@@ -262,6 +261,11 @@ function mapDraftOrderNode(node: any): ShopifyOrderForBioma {
     totalNet: num(node?.subtotalPrice),
     totalTax: num(node?.totalTax),
     total: num(node?.totalPrice),
+    shippingTotal: Math.max(
+      0,
+      num(node?.totalPrice) - num(node?.subtotalPrice) - num(node?.totalTax),
+    ),
+    totalDiscounts: lineItems.reduce((sum, li) => sum + li.totalDiscountAmount, 0),
     currencyCode: node?.currencyCode ?? 'CLP',
     lineItems,
   };
@@ -292,7 +296,6 @@ const ORDER_FETCH_QUERY = `#graphql
       processedAt
       displayFinancialStatus
       tags
-      note
       customAttributes { key value }
       currencyCode
       customer {
@@ -362,7 +365,6 @@ function mapOrderNode(node: any): ShopifyOrderForBioma {
     displayFinancialStatus: node.displayFinancialStatus,
     tags: node.tags ?? [],
     customAttributes: node.customAttributes ?? [],
-    note: node.note ?? null,
     customerNote: node.customer?.note ?? null,
     customer: node.customer
       ? {
