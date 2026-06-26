@@ -405,55 +405,26 @@ export class BiomaFacturacionController {
     }
   }
 
-  // POST /api/bioma/pdf/:orderId/fetch — busca PDF en SII y lo guarda
+  // POST /api/bioma/pdf/:orderId/fetch — busca CODIGO SII por folio y descarga PDF
   static async fetchPdf(req: Request, res: Response) {
     const orderId = req.params.orderId;
     const { sessionId } = req.body || {};
-    if (!sessionId) return res.status(400).json({ error: 'sessionId requerido' });
     try {
-      const row = await BiomaFacturacionService.findEmision(orderId);
-      if (!row) return res.status(404).json({ error: 'Sin registro de emisión' });
-      const session = SiiFacturacionService.getSession(sessionId);
-      if (!session?.context) return res.status(401).json({ error: 'Sesión SII no válida' });
-
-      let codigo = row.siiCodigo;
-      if (!codigo && row.rutReceptor) {
-        const ultima = await SiiFacturacionService.findUltimaFacturaParaReceptor(
-          session.axiosClient,
-          row.rutReceptor,
-          row.tipoCodigo || 33,
-        );
-        if (ultima) {
-          codigo = ultima.codigo;
-          await BiomaFacturacionService.setStatus(orderId, row.status, {
-            siiCodigo: ultima.codigo,
-            siiFolio: ultima.folio,
-          });
-        }
-      }
-      if (!codigo) return res.status(404).json({ error: 'Sin código SII — emite primero o revisa en sii.cl' });
-
-      const ctx = session.context ?? (await SiiFacturacionService.ensureBrowserForSession(session));
-      await SiiFacturacionService.ensureFacturaRowStub(session.empresaRut, codigo);
-      await SiiFacturacionService.downloadPdf(ctx, codigo, session.empresaRut);
-
-      const resolved = await SiiFacturacionService.resolveFolioForCodigo(
-        session.axiosClient,
-        codigo,
-        row.tipoCodigo || 33,
-      );
-      if (resolved && resolved > 0 && resolved !== row.siiFolio) {
-        await BiomaFacturacionService.setStatus(orderId, row.status, {
-          siiFolio: resolved,
-          siiCodigo: codigo,
+      const out = await BiomaFacturacionService.trySyncPdfForEmision(orderId, {
+        sessionId: sessionId ? String(sessionId) : undefined,
+      });
+      if (!out.codigo) {
+        return res.status(404).json({
+          error:
+            'No se encontró el documento en el SII con ese folio. Verifica el folio, abre sesión MiPyme y reintenta.',
         });
-        await BiomaShopifyService.markDteEmitted(orderId, row.tipoCodigo || 33, resolved);
       }
-
       return res.json({
         success: true,
         pdfUrl: `/api/bioma/pdf/${encodeURIComponent(orderId)}`,
-        siiCodigo: codigo,
+        siiCodigo: out.codigo,
+        pdfCached: out.pdfCached,
+        row: out.row,
       });
     } catch (err: any) {
       return res.status(500).json({ error: err?.message || String(err) });
@@ -465,17 +436,32 @@ export class BiomaFacturacionController {
   // via the existing SiiFacturacionService PDF cache/fetch.
   static async pdf(req: Request, res: Response) {
     try {
-      const row = await BiomaFacturacionService.findEmision(req.params.orderId);
+      const orderId = req.params.orderId;
+      const row = await BiomaFacturacionService.findEmision(orderId);
       if (!row) {
         return res.status(404).json({ error: 'Factura aún no emitida o sin código SII' });
       }
       if (row.pdfPublicUrl) {
         return res.redirect(307, row.pdfPublicUrl);
       }
-      if (!row.siiCodigo) {
-        return res.status(404).json({ error: 'Sin PDF disponible (e-Boleta sin URL o sin código MiPyme)' });
+      let codigo = row.siiCodigo;
+      if (!codigo) {
+        const resolved = await BiomaFacturacionService.resolveSiiCodigoForEmision(row);
+        if (resolved?.codigo) {
+          codigo = resolved.codigo;
+          await BiomaFacturacionService.setStatus(orderId, row.status, {
+            siiCodigo: codigo,
+            siiFolio: resolved.folio ?? row.siiFolio,
+          });
+        }
       }
-      const target = `/api/sii-facturacion/pdf/${encodeURIComponent(row.siiCodigo)}`;
+      if (!codigo) {
+        return res.status(404).json({
+          error:
+            'Sin PDF todavía. En Realizadas pulsa PDF (busca por folio en el SII) o verifica el folio en sii.cl.',
+        });
+      }
+      const target = `/api/sii-facturacion/pdf/${encodeURIComponent(codigo)}`;
       return res.redirect(307, target);
     } catch (err: any) {
       return res.status(500).json({ error: err?.message || String(err) });

@@ -4405,13 +4405,25 @@ export class SiiFacturacionService {
       'input[type="password"]',  // cualquier password input visible
     ];
 
-    /** Busca input de clave en TODAS las páginas abiertas del contexto */
-    const buscarInputClaveEnContexto = async (): Promise<{ page: Page; sel: string } | null> => {
+    /** Busca input de clave en páginas y frames del contexto Playwright. */
+    const buscarInputClaveEnContexto = async (): Promise<{ target: Page | Frame; sel: string } | null> => {
+      const htmlFirmaInputSelsExtended = [
+        ...htmlFirmaInputSels,
+        'input[name*="CLAVE"]',
+        'input[name*="clave"]',
+        'input[id*="clave"]',
+        'input[id*="CLAVE"]',
+        'input[name="txt_clave"]',
+        'input[name="txtClave"]',
+      ];
       for (const p of ctx2.pages()) {
         if (p.isClosed()) continue;
-        for (const sel of htmlFirmaInputSels) {
-          const el = await p.$(sel).catch(() => null);
-          if (el && await el.isVisible().catch(() => false)) return { page: p, sel };
+        const scanTargets: Array<Page | Frame> = [p, ...p.frames()];
+        for (const target of scanTargets) {
+          for (const sel of htmlFirmaInputSelsExtended) {
+            const el = await target.$(sel).catch(() => null);
+            if (el && (await el.isVisible().catch(() => false))) return { target, sel };
+          }
         }
       }
       return null;
@@ -4469,7 +4481,7 @@ export class SiiFacturacionService {
           while (Date.now() - t0 < 28000) {
             const found = await buscarInputClaveEnContexto();
             if (found) {
-              console.log(`[SII] emitir — input clave HTML detectado en página: ${found.page.url()} sel=${found.sel}`);
+              console.log(`[SII] emitir — input clave HTML detectado sel=${found.sel}`);
               return 'html-input' as const;
             }
             // Log periódico de páginas abiertas
@@ -4487,13 +4499,20 @@ export class SiiFacturacionService {
       console.log(`[SII] emitir — firmaResult=${firmaResult} dialogoFirma=${dialogoFirmaRespondido}`);
 
       if (firmaResult === 'html-input') {
-        // Llenar el input de clave en la página donde lo encontramos
         const found = await buscarInputClaveEnContexto();
-        const targetPage = found?.page ?? workPage;
-        console.log(`[SII] emitir — llenando clave en página: ${targetPage.url()}`);
-        for (const sel of htmlFirmaInputSels) {
+        const targetPage = found?.target ?? workPage;
+        const targetUrl = 'url' in targetPage ? targetPage.url() : workPage.url();
+        console.log(`[SII] emitir — llenando clave en: ${targetUrl}`);
+        const fillSels = [
+          ...(found ? [found.sel] : []),
+          ...htmlFirmaInputSels,
+          'input[name*="CLAVE"]',
+          'input[name*="clave"]',
+          'input[id*="clave"]',
+        ];
+        for (const sel of fillSels) {
           const el = await targetPage.$(sel).catch(() => null);
-          if (el && await el.isVisible().catch(() => false)) {
+          if (el && (await el.isVisible().catch(() => false))) {
             await el.fill(firmaClave);
             dialogoFirmaRespondido = true;
             console.log(`[SII] emitir — clave llenada en ${sel}`);
@@ -4513,14 +4532,15 @@ export class SiiFacturacionService {
         ];
         for (const sel of confirmSels) {
           const btn = await targetPage.$(sel).catch(() => null);
-          if (btn && await btn.isVisible().catch(() => false)) {
+          if (btn && (await btn.isVisible().catch(() => false))) {
             await btn.click();
             console.log(`[SII] emitir — confirmado clave con botón: ${sel}`);
             break;
           }
         }
-        // Esperar navegación tras confirmar
-        await targetPage.waitForNavigation({ waitUntil: 'load', timeout: 25000 }).catch(() => {});
+        if ('waitForNavigation' in targetPage) {
+          await (targetPage as Page).waitForNavigation({ waitUntil: 'load', timeout: 25000 }).catch(() => {});
+        }
       }
 
       // Dar tiempo a que lleguen dialogs/alertas post-firma
@@ -4586,7 +4606,9 @@ export class SiiFacturacionService {
           folio,
           detenidoEnPreview: true,
           previewUrl: previewPage.url(),
-          error: `Firma SII no completada automáticamente. ${dialogoFirmaRespondido ? 'Clave enviada pero sin confirmación' : 'En Chrome (SII_PLAYWRIGHT_HEADED=1) pulsa Firmar e ingresa la clave manualmente, o revisa SII_FIRMA_CLAVE en .env'}`,
+          error: dialogoFirmaRespondido
+            ? 'Firma SII: clave enviada pero el SII no confirmó la emisión. Revisa que SII_FIRMA_CLAVE en Railway sea la clave del certificado digital (no siempre es igual a SII_PASSWORD).'
+            : 'Firma SII: no apareció el diálogo de clave. Configura SII_FIRMA_CLAVE en Railway (clave del certificado) y reintenta; si persiste, usa «Rellenar en SII» y firma manual en sii.cl.',
         };
       }
 
@@ -5241,6 +5263,34 @@ export class SiiFacturacionService {
       if (fk === key && f.codigo && f.folio > 0) {
         return { codigo: f.codigo, folio: f.folio };
       }
+    }
+    return null;
+  }
+
+  /** Busca en el listado SII una factura por folio (y opcionalmente RUT receptor). */
+  static async findFacturaEmitidaPorFolio(
+    axiosClient: AxiosInstance,
+    folio: number,
+    opts?: { rutReceptor?: string | null; tipoCodigo?: number; maxPaginas?: number },
+  ): Promise<{ codigo: string; folio: number } | null> {
+    if (!folio || folio <= 0) return null;
+    const tipoCodigo = opts?.tipoCodigo ?? 33;
+    const rutKey = (opts?.rutReceptor || '')
+      .replace(/\./g, '')
+      .replace(/-/g, '')
+      .replace(/\s/g, '')
+      .toLowerCase();
+    const list = await this.getFacturasEmitidas(axiosClient, {
+      tipoCodigo,
+      maxPaginas: opts?.maxPaginas ?? 4,
+    });
+    for (const f of list) {
+      if (f.folio !== folio || !f.codigo) continue;
+      if (rutKey) {
+        const fk = (f.rutReceptor || '').replace(/\./g, '').replace(/-/g, '').replace(/\s/g, '').toLowerCase();
+        if (fk && fk !== rutKey) continue;
+      }
+      return { codigo: f.codigo, folio: f.folio };
     }
     return null;
   }

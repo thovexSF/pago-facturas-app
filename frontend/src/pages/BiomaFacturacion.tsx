@@ -843,26 +843,27 @@ export default function BiomaFacturacion() {
     setBusyOrderId(orderId);
     setError(null);
     try {
-      if (moduleTab !== 'boletas' && sessionReady && sessionId) {
-        try {
-          const res = await fetch(`${BIOMA_API}/pdf/${encodeURIComponent(orderId)}/fetch`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId }),
-          });
-          const data = await res.json();
-          if (!res.ok || !data.success) console.warn('PDF fetch failed, trying direct:', data.error);
-        } catch (fetchErr: any) {
-          console.warn('PDF fetch error, trying direct:', fetchErr?.message);
-        }
+      const res = await fetch(`${BIOMA_API}/pdf/${encodeURIComponent(orderId)}/fetch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sessionId ? { sessionId } : {}),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'No se pudo obtener el PDF del SII');
       }
+      await loadRealizadas();
       window.open(`${BIOMA_API}/pdf/${encodeURIComponent(orderId)}`, '_blank');
-    } catch (e: any) {
-      setError(`PDF: ${e?.message || e}`);
+      if (data.pdfCached) {
+        setSnack(`PDF sincronizado (folio ${data.row?.siiFolio ?? '—'})`);
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`PDF: ${msg}`);
     } finally {
       setBusyOrderId(null);
     }
-  }, [moduleTab, sessionReady, sessionId]);
+  }, [sessionId, loadRealizadas]);
 
   const enviarWhatsApp = useCallback(async (orderId: string) => {
     setBusyOrderId(orderId);
@@ -958,7 +959,11 @@ export default function BiomaFacturacion() {
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
-      setSnack(data.message || `Asociado a factura #${folio}`);
+      setSnack(
+        data.row?.siiCodigo
+          ? `${data.message || `Asociado a factura #${folio}`} — PDF sincronizado.`
+          : `${data.message || `Asociado a factura #${folio}`} — pulsa PDF en Realizadas para sincronizar.`,
+      );
       closeFacturaModal();
       await loadPending();
       await loadRealizadas();
@@ -1386,14 +1391,26 @@ export default function BiomaFacturacion() {
                     {row.emittedAt ? new Date(row.emittedAt).toLocaleString('es-CL') : '—'}
                   </TableCell>
                   <TableCell>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      disabled={!row.siiCodigo || busyOrderId === row.shopifyOrderId}
-                      onClick={() => descargarPdf(row.shopifyOrderId)}
+                    <Tooltip
+                      title={
+                        !row.siiFolio && !row.siiCodigo
+                          ? 'Sin folio SII'
+                          : !row.siiCodigo
+                            ? 'Buscar PDF en el SII por folio'
+                            : 'Descargar PDF'
+                      }
                     >
-                      PDF
-                    </Button>
+                      <span>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          disabled={(!row.siiFolio && !row.siiCodigo) || busyOrderId === row.shopifyOrderId}
+                          onClick={() => descargarPdf(row.shopifyOrderId)}
+                        >
+                          PDF
+                        </Button>
+                      </span>
+                    </Tooltip>
                   </TableCell>
                   <TableCell align="center">
                     <Stack direction="row" spacing={0.5} justifyContent="center">

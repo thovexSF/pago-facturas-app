@@ -326,7 +326,14 @@ export class BiomaFacturacionService {
     });
     if (!updated) throw new Error('No se pudo actualizar el registro');
     await BiomaShopifyService.markDteEmitted(shopifyOrderId, tipo, folio);
-    return updated;
+
+    try {
+      await BiomaFacturacionService.trySyncPdfForEmision(shopifyOrderId);
+    } catch (e: any) {
+      console.warn('[bioma] registerEmittedHistorica sync PDF:', e?.message || e);
+    }
+
+    return (await this.findEmision(shopifyOrderId)) ?? updated;
   }
 
   /**
@@ -717,8 +724,102 @@ export class BiomaFacturacionService {
   static pdfLinkForRow(row: BiomaFacturaEmisionEntity): string | null {
     if (row.pdfPublicUrl) return row.pdfPublicUrl;
     const base = BiomaFacturacionService.publicBaseUrl();
-    if (!base || !row.siiCodigo) return null;
+    if (!base || (!row.siiCodigo && !row.siiFolio)) return null;
     return `${base}/api/bioma/pdf/${encodeURIComponent(row.shopifyOrderId)}`;
+  }
+
+  /** Resuelve CODIGO SII por folio/RUT (DB local o listado emitidos). */
+  static async resolveSiiCodigoForEmision(
+    row: BiomaFacturaEmisionEntity,
+    axiosClient?: import('axios').AxiosInstance,
+  ): Promise<{ codigo: string; folio?: number } | null> {
+    if (row.siiCodigo) {
+      return { codigo: row.siiCodigo, folio: row.siiFolio ?? undefined };
+    }
+    const empresaRut = BiomaFacturacionService.getEmpresaRutConfig();
+    const tipo = row.tipoCodigo ?? 33;
+    if (row.siiFolio) {
+      const siiRepo = AppDataSource.getRepository(SiiFacturaEntity);
+      const dbRows = await siiRepo.find({
+        where: { empresaRut, folio: row.siiFolio, tipoCodigo: tipo },
+        take: 8,
+      });
+      const rutKey = BiomaFacturacionService.normalizeRutKey(row.rutReceptor);
+      const dbHit =
+        dbRows.find(
+          (f) => !rutKey || BiomaFacturacionService.normalizeRutKey(f.rutReceptor) === rutKey,
+        ) ?? dbRows[0];
+      if (dbHit?.codigo) {
+        return { codigo: dbHit.codigo, folio: dbHit.folio ?? row.siiFolio };
+      }
+    }
+    if (axiosClient && row.siiFolio) {
+      const hit = await SiiFacturacionService.findFacturaEmitidaPorFolio(axiosClient, row.siiFolio, {
+        rutReceptor: row.rutReceptor,
+        tipoCodigo: tipo,
+      });
+      if (hit) return hit;
+    }
+    if (axiosClient && row.rutReceptor) {
+      const ultima = await SiiFacturacionService.findUltimaFacturaParaReceptor(
+        axiosClient,
+        row.rutReceptor,
+        tipo,
+      );
+      if (ultima) return ultima;
+    }
+    return null;
+  }
+
+  /** Busca CODIGO SII por folio y descarga el PDF al cache local. */
+  static async trySyncPdfForEmision(
+    shopifyOrderId: string,
+    opts?: { sessionId?: string },
+  ): Promise<{ codigo: string | null; pdfCached: boolean; row?: BiomaFacturaEmisionEntity | null }> {
+    const row = await BiomaFacturacionService.findEmision(shopifyOrderId);
+    if (!row) return { codigo: null, pdfCached: false, row: null };
+    const empresaRut = BiomaFacturacionService.getEmpresaRutConfig();
+    let session = opts?.sessionId ? SiiFacturacionService.getSession(opts.sessionId) : null;
+    if (!session?.axiosClient) {
+      try {
+        const sid = await SiiFacturacionService.createSession(empresaRut);
+        session = SiiFacturacionService.getSession(sid) ?? null;
+      } catch (e: any) {
+        console.warn('[bioma] trySyncPdfForEmision session:', e?.message || e);
+      }
+    }
+    const resolved = await BiomaFacturacionService.resolveSiiCodigoForEmision(
+      row,
+      session?.axiosClient,
+    );
+    if (!resolved?.codigo) return { codigo: null, pdfCached: false, row };
+    const codigo = resolved.codigo;
+    const status = row.status === 'pending' || row.status === 'error' ? 'emitted' : row.status;
+    await BiomaFacturacionService.setStatus(shopifyOrderId, status, {
+      siiCodigo: codigo,
+      siiFolio: resolved.folio ?? row.siiFolio,
+      lastError: null,
+      emittedAt: row.emittedAt ?? new Date(),
+    });
+    let pdfCached = false;
+    try {
+      const ctx =
+        session?.context ??
+        (session ? await SiiFacturacionService.ensureBrowserForSession(session) : null);
+      if (ctx) {
+        await SiiFacturacionService.ensureFacturaRowStub(empresaRut, codigo, {
+          folio: resolved.folio ?? row.siiFolio ?? undefined,
+          rutReceptor: row.rutReceptor ?? undefined,
+          tipoCodigo: row.tipoCodigo ?? 33,
+        });
+        await SiiFacturacionService.downloadPdf(ctx, codigo, empresaRut);
+        pdfCached = !!(await SiiFacturacionService.getPdfData(codigo));
+      }
+    } catch (e: any) {
+      console.warn('[bioma] trySyncPdfForEmision PDF:', e?.message || e);
+    }
+    const fresh = await BiomaFacturacionService.findEmision(shopifyOrderId);
+    return { codigo, pdfCached, row: fresh };
   }
 
   private static publicBaseUrl(): string | null {
@@ -805,7 +906,7 @@ export class BiomaFacturacionService {
       text,
       phone,
       pdfFilename: BiomaFacturacionService.pdfFilenameForRow(row),
-      hasPdf: !!(row.siiCodigo || row.pdfPublicUrl),
+      hasPdf: !!(row.siiCodigo || row.pdfPublicUrl || row.siiFolio),
     };
   }
 
