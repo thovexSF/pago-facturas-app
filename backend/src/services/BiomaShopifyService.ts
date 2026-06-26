@@ -19,8 +19,9 @@ import {
   facturaEmitidaTag,
   getOrderCustomAttribute,
   orderHasEmitidoShopifyTag,
-  orderNeedsFactura,
-  parseCustomerNote,
+  orderHasFacturaPendienteTag,
+  orderWantsFacturaEmit,
+  extractFacturaFieldsFromOrder,
 } from '../utils/biomaOrderAttrs';
 
 const DEFAULT_API_VERSION = '2025-10';
@@ -83,6 +84,8 @@ export interface ShopifyOrderForBioma {
   totalNet: number;
   totalTax: number;
   total: number;
+  shippingTotal: number;
+  totalDiscounts: number;
   currencyCode: string;
   lineItems: ShopifyOrderLineItem[];
 }
@@ -139,6 +142,8 @@ const ORDERS_QUERY = `#graphql
           }
           currentSubtotalPriceSet { shopMoney { amount } }
           currentTotalTaxSet { shopMoney { amount } }
+          currentTotalDiscountsSet { shopMoney { amount } }
+          currentShippingPriceSet { shopMoney { amount } }
           currentTotalPriceSet { shopMoney { amount } }
           lineItems(first: 50) {
             edges {
@@ -309,6 +314,8 @@ const ORDER_FETCH_QUERY = `#graphql
       }
       currentSubtotalPriceSet { shopMoney { amount } }
       currentTotalTaxSet { shopMoney { amount } }
+      currentTotalDiscountsSet { shopMoney { amount } }
+      currentShippingPriceSet { shopMoney { amount } }
       currentTotalPriceSet { shopMoney { amount } }
       lineItems(first: 50) {
         edges {
@@ -381,6 +388,8 @@ function mapOrderNode(node: any): ShopifyOrderForBioma {
     totalNet: num(node?.currentSubtotalPriceSet?.shopMoney?.amount),
     totalTax: num(node?.currentTotalTaxSet?.shopMoney?.amount),
     total: num(node?.currentTotalPriceSet?.shopMoney?.amount),
+    shippingTotal: num(node?.currentShippingPriceSet?.shopMoney?.amount),
+    totalDiscounts: num(node?.currentTotalDiscountsSet?.shopMoney?.amount),
     currencyCode: node?.currencyCode ?? 'CLP',
     lineItems,
   };
@@ -513,7 +522,10 @@ export class BiomaShopifyService {
       ...draftEdges
         .filter((edge: any) => edge.node?.status !== 'COMPLETED')
         .map((edge: any) => mapDraftOrderNode(edge.node)),
-    ].filter((o: ShopifyOrderForBioma) => !orderHasEmitidoShopifyTag(o.tags));
+    ].filter((o: ShopifyOrderForBioma) => {
+      if (orderHasFacturaPendienteTag(o.tags)) return true;
+      return !orderHasEmitidoShopifyTag(o.tags);
+    });
 
     const seenIds = new Set<string>();
     const dedupedOrders = orders.filter((o) => {
@@ -613,13 +625,14 @@ export class BiomaShopifyService {
       return { tagged: false, orderName: order.name, reason: 'no pagado' };
     }
 
-    if (orderNeedsFactura(order.customAttributes, order.note || order.customer?.note)) {
+    if (orderWantsFacturaEmit(order)) {
       if (orderHasEmitidoShopifyTag(order.tags)) {
         return { tagged: false, orderName: order.name, reason: 'ya emitido', kind: 'factura' };
       }
-      const noteData = parseCustomerNote(order.note || order.customer?.note || '');
-      const rut = getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.rut) || noteData.rut;
-      if (!rut) {
+      const fields = extractFacturaFieldsFromOrder(order);
+      const rut =
+        getOrderCustomAttribute(order.customAttributes, BIOMA_FACTURA_ATTR.rut) || fields.rut;
+      if (!rut && !orderHasFacturaPendienteTag(order.tags)) {
         console.warn(`[bioma] ${order.name}: factura requerida pero sin RUT — no se etiqueta`);
         return { tagged: false, orderName: order.name, reason: 'sin RUT', kind: 'factura' };
       }
@@ -659,8 +672,8 @@ export class BiomaShopifyService {
       return { tagged: false, orderName: order.name, reason: 'ya emitida en DB', kind: 'boleta' };
     }
 
-    if (order.tags.includes(this.facturaTag)) {
-      await this.removeTags(orderGid, [this.facturaTag]);
+    if (orderWantsFacturaEmit(order)) {
+      return { tagged: false, orderName: order.name, reason: 'requiere factura', kind: 'boleta' };
     }
     if (!order.tags.includes(DEFAULT_BOLETA_TAG)) {
       await this.addTags(orderGid, [DEFAULT_BOLETA_TAG]).catch(() => {});
@@ -690,6 +703,28 @@ export class BiomaShopifyService {
     const emitTag = boletaEmitidaTag(folio);
     await this.addTags(orderId, [emitTag]);
     await this.removeTags(orderId, [DEFAULT_BOLETA_TAG, BOLETA_EMITIDA_TAG, this.facturaTag]);
+  }
+
+  /** Restaura tag `factura` tras anular en SII (NC manual) para re-emitir. */
+  static async revertFacturaForNotaCredito(
+    orderId: string,
+    folioAnterior: number | null,
+  ): Promise<void> {
+    const order = await this.getOrder(orderId);
+    const tagsToRemove = new Set<string>(['facturado', FACTURA_EMITIDA_TAG]);
+    if (folioAnterior && folioAnterior > 0) {
+      tagsToRemove.add(facturaEmitidaTag(folioAnterior));
+    }
+    for (const tag of order?.tags ?? []) {
+      const t = tag.trim();
+      if (/^factura #\d+$/i.test(t) || /^boleta #\d+$/i.test(t)) tagsToRemove.add(t);
+    }
+    if (tagsToRemove.size) {
+      await this.removeTags(orderId, [...tagsToRemove]).catch(() => {});
+    }
+    if (!order?.tags.includes(this.facturaTag)) {
+      await this.addTags(orderId, [this.facturaTag]).catch(() => {});
+    }
   }
 
   /** Marca pedido según tipo DTE emitido. */

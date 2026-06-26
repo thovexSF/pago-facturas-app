@@ -117,7 +117,10 @@ interface SiiSession {
   axiosClient: AxiosInstance;
   cookieHeader: string;
   empresaRut: string;
+  /** Última actividad (touch). */
   ts: number;
+  /** Inicio de sesión SII — caducidad ~55 min desde aquí. */
+  startedAt: number;
   /** Credenciales guardadas para re-login Playwright bajo demanda */
   credentials?: { rut: string; password: string };
   /** true si el browser ya hizo login completo (ptrTkn disponible) */
@@ -125,6 +128,9 @@ interface SiiSession {
   /** Pestaña Playwright reutilizable entre pasos abrir/rellenar/emitir (mismo tab = ptrTkn válido). */
   scraperPage?: Page;
 }
+
+/** Tiempo máximo de sesión SII (el portal expira ~60 min). */
+export const SII_SESSION_MAX_AGE_MS = 55 * 60 * 1000;
 
 const sessions = new Map<string, SiiSession>();
 
@@ -879,27 +885,24 @@ async function setEmitidoPlaywrightCookies(
   page: Page,
   cookieHeader: string | undefined
 ): Promise<void> {
-  // Inyectar cookies en el contexto Playwright (equivalente al setCookie de Puppeteer)
-  if (cookieHeader) {
-    const parsed = cookieHeader.split(';')
-      .map(c => {
-        const eqIdx = c.indexOf('=');
-        if (eqIdx === -1) return null;
-        return {
-          name: c.substring(0, eqIdx).trim(),
-          value: c.substring(eqIdx + 1).trim(),
-        };
-      })
-      .filter((c): c is { name: string; value: string } => c !== null && c.name.length > 0);
-    const cookies = parsed.map((c) => ({ ...c, domain: '.sii.cl', path: '/' }));
-    if (cookies.length > 0) await page.context().addCookies(cookies);
+  if (!cookieHeader?.trim()) return;
+  const parsed = cookieHeader.split(';')
+    .map(c => {
+      const eqIdx = c.indexOf('=');
+      if (eqIdx === -1) return null;
+      return {
+        name: c.substring(0, eqIdx).trim(),
+        value: c.substring(eqIdx + 1).trim(),
+      };
+    })
+    .filter((c): c is { name: string; value: string } => c !== null && c.name.length > 0);
+  if (parsed.length === 0) return;
+
+  const domains = ['.sii.cl', 'www1.sii.cl', 'www4.sii.cl', 'zeusr.sii.cl'];
+  for (const domain of domains) {
+    const cookies = parsed.map((c) => ({ ...c, domain, path: '/' }));
+    await page.context().addCookies(cookies).catch(() => {});
   }
-  // IMPORTANTE: NO usar setExtraHTTPHeaders para el Referer.
-  // setExtraHTTPHeaders persiste para TODAS las requests siguientes de la página,
-  // entonces si ponemos Referer=mipeSelEmpresa.cgi, TODAS las navegaciones llevan
-  // ese Referer incorrecto. El SII valida el flujo de navegación vía Referer para
-  // inicializar ptrTkn — un Referer estático y erróneo hace que ptrTkn quede NULL.
-  // Dejamos que el browser lo maneje naturalmente (cada navegación setea Referer correcto).
 }
 
 function isLoginLikeHtml(html: string): boolean {
@@ -909,22 +912,65 @@ function isLoginLikeHtml(html: string): boolean {
   return html.includes('id="rutcntr"') || html.includes("id='rutcntr'");
 }
 
-/** Página de error SII (datacenter/navegador automático, etc.) */
-function isSiiRejectionOrBlockHtml(html: string): boolean {
-  // Normalizar &nbsp; y \u00a0 (non-breaking space) que usa el SII en sus CGI
-  // para evitar falsos negativos al buscar "ptr null" o "error : 501"
+/** Bloqueo duro del SII (anti-bot / navegador dañado) — distinto de Error 501 por sesión sin ptrTkn. */
+function isSiiHardBlockHtml(html: string): boolean {
   const h = html.toLowerCase().replace(/&nbsp;/gi, ' ').replace(/\u00a0/g, ' ');
   return (
     h.includes('no ha sido bien recepcionado') ||
     /\b02\.35\.\d/.test(html) ||
-    h.includes('mesa de ayuda telef') ||
-    h.includes('proveedor de internet') ||
-    h.includes('está dañado') ||
-    h.includes('ptr null') ||
-    h.includes('ptrnull') ||
-    h.includes('error : 501') ||
-    h.includes('error: 501')
+    (h.includes('mesa de ayuda telef') && h.includes('está dañado')) ||
+    (h.includes('proveedor de internet') && h.includes('está dañado'))
   );
+}
+
+/** Página de error SII (datacenter/navegador automático, sesión sin ptrTkn, etc.) */
+function isSiiRejectionOrBlockHtml(html: string): boolean {
+  return isSiiHardBlockHtml(html) || SiiFacturacionService.isSiiPtrTknErrorHtml(html);
+}
+
+/** Listado de emitidos cargado y usable (ptrTkn / empresa OK). Acepta listado vacío sin filas CODIGO. */
+function htmlListadoEmitidosOperativo(html: string): boolean {
+  if (!html?.trim() || isLoginLikeHtml(html)) return false;
+  if (SiiFacturacionService.isSiiPtrTknErrorHtml(html) || isSiiHardBlockHtml(html)) return false;
+  if (/ingresorutclave\.cgi/i.test(html)) return false;
+
+  const h = html.toLowerCase();
+
+  if (h.includes('mipeadmindocsemi')) return true;
+  if (h.includes('docs emitidos') || h.includes('documentos emitidos')) return true;
+  if (/codigo=\d{4,}/i.test(html)) return true;
+
+  // Formulario de consulta del listado (con o sin resultados)
+  const hasListadoForm =
+    (h.includes('fec_desde') || h.includes('fec_hasta')) &&
+    (h.includes('num_pag') || h.includes('tpo_doc') || h.includes('rut_recp'));
+  if (hasListadoForm && h.includes('mipe')) return true;
+
+  if (h.includes('rut_recp') && h.includes('rzn_soc') && h.includes('portal001')) return true;
+  if (h.includes('mipegesdocemi') || h.includes('mipegenfacex')) return true;
+
+  if (h.includes('portal001') && h.includes('mipe') && html.length > 1800) {
+    if (
+      h.includes('folio') ||
+      h.includes('estado') ||
+      h.includes('emitid') ||
+      h.includes('consulta') ||
+      h.includes('buscar')
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function listadoEmitidosUrlPagina1(): string {
+  return listadoEmitidosRefererPage1();
+}
+
+function dialogIndicaEmpresaNoSeleccionada(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return m.includes('no ha seleccionado una empresa') || m.includes('no ha seleccionado empresa');
 }
 
 function normalizeEmitidoHtml(html: string): string {
@@ -1948,7 +1994,147 @@ function wireSafeDialogs(
 }
 
 const SII_EFXP_NMB_DEFAULT_MAX = 40;
-const SII_EFXP_DSC_DEFAULT_MAX = 40;
+/** Máximo de líneas de detalle al emitir (plantilla copiada puede traer más). */
+const SII_EMIT_MAX_LINEAS = parseInt(process.env.SII_EMIT_MAX_LINEAS || '20', 10) || 20;
+
+async function clearEmitFormLineExtended(page: Page, num: string): Promise<void> {
+  const descripCheckbox = `input[name="DESCRIP_${num}"], input[name="DESCRIP${num}"]`;
+  const chk = await page.$(descripCheckbox);
+  if (chk) {
+    const checked = await chk.isChecked().catch(() => false);
+    if (checked) await chk.click().catch(() => {});
+    await page.waitForTimeout(150);
+  }
+  const extSelectors = [
+    `input[name="EFXP_DSC_ITEM_${num}"]`,
+    `textarea[name="EFXP_DSC_ITEM_${num}"]`,
+    `input[name="EFXP_DSC_LIN_${num}"]`,
+    `textarea[name="EFXP_DSC_LIN_${num}"]`,
+    `input[name="EFXP_DSC_DET_${num}"]`,
+    `textarea[name="EFXP_DSC_DET_${num}"]`,
+  ];
+  for (const sel of extSelectors) {
+    await page
+      .$eval(
+        sel,
+        (node: any) => {
+          node.value = '';
+          node.dispatchEvent(new Event('change', { bubbles: true }));
+        },
+      )
+      .catch(() => {});
+  }
+}
+
+async function fillEmitFormLineExtended(
+  page: Page,
+  num: string,
+  texto: string,
+): Promise<boolean> {
+  const extRaw = sanitizeDescripcionParaSii(texto);
+  if (!extRaw) return false;
+
+  const descripCheckbox = `input[name="DESCRIP_${num}"], input[name="DESCRIP${num}"]`;
+  const chk = await page.$(descripCheckbox);
+  if (chk) {
+    const checked = await chk.isChecked().catch(() => false);
+    if (!checked) await chk.click().catch(() => {});
+    await page.waitForTimeout(250);
+  }
+
+  const extSelectors = [
+    `textarea[name="EFXP_DSC_ITEM_${num}"]`,
+    `input[name="EFXP_DSC_ITEM_${num}"]`,
+    `textarea[name="EFXP_DSC_LIN_${num}"]`,
+    `input[name="EFXP_DSC_LIN_${num}"]`,
+    `textarea[name="EFXP_DSC_DET_${num}"]`,
+    `input[name="EFXP_DSC_DET_${num}"]`,
+  ];
+  for (const sel of extSelectors) {
+    if (!(await page.$(sel))) continue;
+    const loc = page.locator(sel);
+    await loc.click({ timeout: 3000 }).catch(() => {});
+    const maxLen = await page
+      .$eval(sel, (el: any) => {
+        const m = parseInt(el.getAttribute('maxlength') || '', 10);
+        return Number.isFinite(m) && m > 0 ? m : 500;
+      })
+      .catch(() => 500);
+    const val = extRaw.slice(0, maxLen);
+    await loc.fill(val).catch(() => {});
+    await page
+      .$eval(sel, (el: any) => {
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+      })
+      .catch(() => {});
+    await loc.press('Tab').catch(() => {});
+    console.log(`[SII] emitir — ítem ${num}: descripción extendida (${val.length}ch)`);
+    return true;
+  }
+  return false;
+}
+
+async function clearEmitFormLine(page: Page, num: string): Promise<void> {
+  await clearEmitFormLineExtended(page, num);
+  const fields = ['EFXP_NMB', 'EFXP_PRC', 'EFXP_QTY', 'EFXP_SUBT', 'EFXP_PCTD', 'EFXP_UNMD', 'EFXP_CDG'];
+  for (const base of fields) {
+    const sel = `input[name="${base}_${num}"], textarea[name="${base}_${num}"]`;
+    await page
+      .$eval(
+        sel,
+        (node: any) => {
+          node.value = '';
+          node.dispatchEvent(new Event('change', { bubbles: true }));
+        },
+      )
+      .catch(() => {});
+  }
+}
+
+/** Tras copiar documento, borra filas sobrantes de la plantilla (evita exceso de chars/líneas en el SII). */
+async function clearUnusedEmitFormLines(page: Page, usedLineCount: number): Promise<void> {
+  const cantDetRaw = await page
+    .$eval('input[name="CANT_DET"]', (el: any) => String(el.value || '').trim())
+    .catch(() => '');
+  const cantDet = parseInt(cantDetRaw, 10) || 0;
+
+  let maxIdx = Math.max(usedLineCount, cantDet);
+  for (let i = 1; i <= Math.min(SII_EMIT_MAX_LINEAS + 10, 80); i++) {
+    const num = String(i).padStart(2, '0');
+    if (!(await page.$(`input[name="EFXP_NMB_${num}"]`))) {
+      if (i > maxIdx) break;
+      continue;
+    }
+    maxIdx = Math.max(maxIdx, i);
+  }
+
+  let cleared = 0;
+  for (let i = usedLineCount + 1; i <= maxIdx; i++) {
+    const num = String(i).padStart(2, '0');
+    if (!(await page.$(`input[name="EFXP_NMB_${num}"]`))) continue;
+    await clearEmitFormLine(page, num);
+    cleared++;
+  }
+
+  if (cantDet > usedLineCount) {
+    await page
+      .$eval(
+        'input[name="CANT_DET"]',
+        (el: any, v: string) => {
+          el.value = v;
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        },
+        String(usedLineCount),
+      )
+      .catch(() => {});
+  }
+
+  if (cleared > 0) {
+    console.log(`[SII] emitir — ${cleared} fila(s) de plantilla limpiadas (usando ${usedLineCount} líneas)`);
+  }
+}
 
 /** El formulario EFXP del SII solo acepta ASCII básico; omite tildes, em-dash, etc. */
 export function sanitizeDescripcionParaSii(texto: string): string {
@@ -1965,29 +2151,28 @@ export function sanitizeDescripcionParaSii(texto: string): string {
     .trim();
 }
 
-/** Parte nombre corto (EFXP_NMB) y resto para descripción extendida (sin repetir el prefijo). */
-function splitNombreDescripcionSii(texto: string, maxNombre: number): { nombre: string; descripcionExt: string } {
-  const t = texto.trim();
-  if (!t) return { nombre: '', descripcionExt: '' };
-  if (t.length <= maxNombre) return { nombre: t, descripcionExt: '' };
-  let cut = maxNombre;
-  const head = t.slice(0, maxNombre);
-  const sp = head.lastIndexOf(' ');
-  if (sp >= Math.floor(maxNombre * 0.45)) cut = sp;
-  const nombre = t.slice(0, cut).trim();
-  const resto = t.slice(cut).trim().replace(/^[-/]\s*/, '');
-  return {
-    nombre,
-    descripcionExt: resto.length > 0 ? resto : '',
-  };
-}
-
-/** Rellena EFXP_NMB y, si hace falta, activa DESCRIP + campo extendido (EFXP_DSC_ITEM, etc.). */
-async function fillEmitirItemDescripcion(page: Page, num: string, descripcion: string): Promise<void> {
+/** Rellena EFXP_NMB (glosa corta) y opcionalmente EFXP_DSC_ITEM_* (descripción extendida). */
+async function fillEmitirItemDescripcion(
+  page: Page,
+  num: string,
+  descripcion: string,
+  descripcionExtendida?: string,
+): Promise<void> {
   const nmbSel = `input[name="EFXP_NMB_${num}"]`;
   if (!(await page.$(nmbSel))) return;
 
   const texto = sanitizeDescripcionParaSii(descripcion);
+  const extRaw = sanitizeDescripcionParaSii(descripcionExtendida || '');
+  const useExt =
+    extRaw.length > 0 &&
+    extRaw.toUpperCase() !== texto.toUpperCase() &&
+    (extRaw.length > texto.length || !extRaw.toUpperCase().includes(texto.toUpperCase()));
+
+  if (useExt) {
+    await fillEmitFormLineExtended(page, num, extRaw);
+  } else {
+    await clearEmitFormLineExtended(page, num);
+  }
 
   const maxNombre = await page
     .$eval(nmbSel, (el: any) => {
@@ -1996,65 +2181,476 @@ async function fillEmitirItemDescripcion(page: Page, num: string, descripcion: s
     })
     .catch(() => SII_EFXP_NMB_DEFAULT_MAX);
 
-  const { nombre, descripcionExt } = splitNombreDescripcionSii(texto, maxNombre);
+  let nombre = texto;
+  if (nombre.length > maxNombre) {
+    let cut = maxNombre;
+    const head = texto.slice(0, maxNombre);
+    const sp = head.lastIndexOf(' ');
+    if (sp >= Math.floor(maxNombre * 0.45)) cut = sp;
+    nombre = texto.slice(0, cut).trim();
+    if (!useExt && texto.length > nombre.length) {
+      await fillEmitFormLineExtended(page, num, texto);
+    }
+  }
 
-  await page.$eval(
-    nmbSel,
-    (el: any, v: string) => {
-      el.value = v;
+  const loc = page.locator(nmbSel);
+  await loc.click({ timeout: 3000 }).catch(() => {});
+  await loc.fill('').catch(() => {});
+  await loc.fill(nombre).catch(async () => {
+    await page.$eval(
+      nmbSel,
+      (el: any, v: string) => {
+        el.value = v;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      },
+      nombre,
+    );
+  });
+  await page
+    .$eval(nmbSel, (el: any) => {
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
-    },
-    nombre,
-  );
+      el.dispatchEvent(new Event('blur', { bubbles: true }));
+    })
+    .catch(() => {});
+  await loc.press('Tab').catch(() => {});
 
-  if (!descripcionExt) return;
-
-  // Si el resto es muy corto, no activar línea extendida (evita segunda línea casi vacía)
-  if (descripcionExt.length < 4) return;
-
-  const descripCheckbox = `input[name="DESCRIP_${num}"], input[name="DESCRIP${num}"]`;
-  const chk = await page.$(descripCheckbox);
-  if (chk) {
-    const checked = await chk.isChecked().catch(() => false);
-    if (!checked) await chk.click().catch(() => {});
-    await page.waitForTimeout(250);
+  const applied = await page
+    .$eval(nmbSel, (el: any) => String(el.value || '').trim())
+    .catch(() => '');
+  if (applied && applied !== nombre) {
+    console.warn(`[SII] emitir — ítem ${num}: glosa esperada "${nombre}" pero formulario tiene "${applied}"`);
+  } else {
+    console.log(`[SII] emitir — ítem ${num}: glosa "${nombre}"${useExt ? ' + extendida' : ''}`);
   }
+}
 
-  const extSelectors = [
-    `input[name="EFXP_DSC_ITEM_${num}"]`,
-    `textarea[name="EFXP_DSC_ITEM_${num}"]`,
-    `input[name="EFXP_DSC_LIN_${num}"]`,
-    `textarea[name="EFXP_DSC_LIN_${num}"]`,
-    `input[name="EFXP_DSC_DET_${num}"]`,
-    `textarea[name="EFXP_DSC_DET_${num}"]`,
-  ];
+export interface SiiEmitFormLineSnapshot {
+  numero: number;
+  nombre: string;
+  descripcionExtendida: string;
+  cantidad: number;
+  precioUnitario: number;
+  subtotal: number;
+}
 
-  for (const sel of extSelectors) {
-    const el = await page.$(sel);
-    if (!el) continue;
-    const maxAttr = await el.getAttribute('maxlength').catch(() => null);
-    const maxExt = maxAttr ? parseInt(maxAttr, 10) : 0;
-    const effectiveMax = maxExt > 0 ? maxExt : SII_EFXP_DSC_DEFAULT_MAX;
-    const val = descripcionExt.slice(0, effectiveMax);
-    await page.$eval(
-      sel,
-      (node: any, v: string) => {
-        node.value = v;
-        node.dispatchEvent(new Event('input', { bubbles: true }));
-        node.dispatchEvent(new Event('change', { bubbles: true }));
+export interface SiiEmitFormTotalesSnapshot {
+  subtotal: number;
+  descuentoGlobalPct: number;
+  descuentoGlobalMonto: number;
+  neto: number;
+  iva: number;
+  total: number;
+}
+
+/** Lectura del formulario MiPyme tras rellenar (retroalimentación real del SII). */
+export interface SiiEmitFormSnapshot {
+  capturedAt: string;
+  lineas: SiiEmitFormLineSnapshot[];
+  totales: SiiEmitFormTotalesSnapshot;
+  descuentoGlobalPctField: string;
+  warnings: string[];
+}
+
+async function snapshotEmitFormFromPage(
+  page: Page,
+  usedLineCount: number,
+): Promise<SiiEmitFormSnapshot> {
+  const raw = await page
+    .evaluate((lineCount) => {
+      const doc = (globalThis as any).document;
+      if (!doc) return null;
+      const read = (name: string) => {
+        const el = doc.querySelector(`input[name="${name}"], textarea[name="${name}"]`) as any;
+        return el ? String(el.value || '').trim() : '';
+      };
+      const parseMonto = (s: string) => parseInt(String(s || '').replace(/\D/g, ''), 10) || 0;
+      const parseNum = (s: string) => parseFloat(String(s || '').replace(',', '.')) || 0;
+      const norm = (s: string) =>
+        String(s || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '');
+
+      const lineas: Array<{
+        numero: number;
+        nombre: string;
+        descripcionExtendida: string;
+        cantidad: number;
+        precioUnitario: number;
+        subtotal: number;
+      }> = [];
+      for (let i = 1; i <= lineCount; i++) {
+        const num = String(i).padStart(2, '0');
+        const nombre = read(`EFXP_NMB_${num}`);
+        if (!nombre && i > lineCount) continue;
+        const descripcionExtendida =
+          read(`EFXP_DSC_ITEM_${num}`) ||
+          read(`EFXP_DSC_LIN_${num}`) ||
+          read(`EFXP_DSC_DET_${num}`);
+        lineas.push({
+          numero: i,
+          nombre,
+          descripcionExtendida,
+          cantidad: parseNum(read(`EFXP_QTY_${num}`)) || 1,
+          precioUnitario: parseMonto(read(`EFXP_PRC_${num}`)),
+          subtotal: parseMonto(read(`EFXP_SUBT_${num}`)),
+        });
+      }
+
+      let descuentoGlobalPctField = '';
+      let descuentoGlobalPct = 0;
+      for (const tr of doc.querySelectorAll('tr')) {
+        const cells = [...tr.querySelectorAll('td, th')];
+        const labelIdx = cells.findIndex((c: any) =>
+          norm(c.textContent || '').includes('descuento global'),
+        );
+        if (labelIdx < 0) continue;
+        for (let i = labelIdx + 1; i < cells.length; i++) {
+          const cellText = norm(cells[i].textContent || '');
+          if (cellText.includes('monto') && !cellText.includes('%')) continue;
+          const input = cells[i].querySelector('input:not([type="hidden"])') as any;
+          if (!input?.name) continue;
+          descuentoGlobalPctField = input.name;
+          descuentoGlobalPct = parseNum(input.value);
+          break;
+        }
+        if (descuentoGlobalPctField) break;
+      }
+
+      const pctCandidates = [
+        'EFXP_PCT_DESCUENTO_GLOBAL',
+        'EFXP_PCTD_GLOB',
+        'EFXP_PCTD_GLOBAL',
+        'EFXP_PCTD',
+      ];
+      if (!descuentoGlobalPctField) {
+        for (const name of pctCandidates) {
+          const v = read(name);
+          if (v) {
+            descuentoGlobalPctField = name;
+            descuentoGlobalPct = parseNum(v);
+            break;
+          }
+        }
+      }
+
+      const subtotal = parseMonto(read('EFXP_SUBTOTAL'));
+      const neto = parseMonto(read('EFXP_MNT_NETO'));
+      const iva = parseMonto(read('EFXP_IVA'));
+      const total = parseMonto(read('EFXP_MNT_TOTAL'));
+      let descuentoGlobalMonto = 0;
+      if (subtotal > 0 && neto > 0 && neto < subtotal) {
+        descuentoGlobalMonto = subtotal - neto;
+      }
+
+      return {
+        lineas,
+        totales: {
+          subtotal,
+          descuentoGlobalPct,
+          descuentoGlobalMonto,
+          neto,
+          iva,
+          total,
+        },
+        descuentoGlobalPctField,
+      };
+    }, usedLineCount)
+    .catch(() => null);
+
+  const warnings: string[] = [];
+  if (!raw) {
+    return {
+      capturedAt: new Date().toISOString(),
+      lineas: [],
+      totales: {
+        subtotal: 0,
+        descuentoGlobalPct: 0,
+        descuentoGlobalMonto: 0,
+        neto: 0,
+        iva: 0,
+        total: 0,
       },
-      val,
-    );
-    console.log(
-      `[SII] emitir — ítem ${num}: nombre=${nombre.length}ch, extendida=${val.length}ch (${sel.split('name=')[1]?.replace(/[\]"]/g, '') || 'ext'})`,
-    );
-    return;
+      descuentoGlobalPctField: '',
+      warnings: ['No se pudo leer el formulario SII'],
+    };
   }
 
-  console.warn(
-    `[SII] emitir — ítem ${num}: sin campo extendido; solo nombre (${nombre.length}ch) de ${descripcion.length}ch totales`,
+  for (const ln of raw.lineas) {
+    if (!ln.nombre) warnings.push(`Línea ${ln.numero}: nombre vacío en el SII`);
+  }
+  if (raw.totales.subtotal > 0 && raw.totales.descuentoGlobalMonto <= 0 && raw.totales.descuentoGlobalPct <= 0) {
+    warnings.push('Descuento global en 0 en el formulario SII');
+  }
+
+  return {
+    capturedAt: new Date().toISOString(),
+    lineas: raw.lineas,
+    totales: raw.totales,
+    descuentoGlobalPctField: raw.descuentoGlobalPctField,
+    warnings,
+  };
+}
+
+export interface DescuentoGlobalEmitParams {
+  montoNeto: number;
+  porcentaje: number;
+  glosa: string;
+}
+
+async function readEmitInputValue(page: Page, fieldName: string): Promise<string> {
+  const sel = `input[name="${fieldName}"]`;
+  return page
+    .$eval(sel, (el: any) => String(el.value || '').trim())
+    .catch(() => '');
+}
+
+/** Localiza el input % de la fila «Descuento Global» del resumen MiPyme. */
+async function discoverDescuentoGlobalPctField(page: Page): Promise<string | null> {
+  return page
+    .evaluate(() => {
+      const doc = (globalThis as any).document;
+      if (!doc) return null as string | null;
+      const norm = (s: string) =>
+        String(s || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '');
+
+      for (const tr of doc.querySelectorAll('tr')) {
+        const cells = [...tr.querySelectorAll('td, th')];
+        const labelIdx = cells.findIndex((c) => norm(c.textContent || '').includes('descuento global'));
+        if (labelIdx < 0) continue;
+
+        for (let i = labelIdx + 1; i < cells.length; i++) {
+          const cellText = norm(cells[i].textContent || '');
+          if (cellText.includes('monto') && !cellText.includes('%')) continue;
+          const input = cells[i].querySelector(
+            'input:not([type="hidden"]):not([type="button"]):not([type="submit"])',
+          ) as any;
+          if (!input?.name || input.disabled || input.readOnly) continue;
+          return input.name as string;
+        }
+      }
+
+      for (const node of doc.querySelectorAll('td, th, label, span')) {
+        const t = norm(node.textContent || '');
+        if (!t.includes('descuento global') || t.length > 60) continue;
+        const row = (node as any).closest?.('tr');
+        if (!row) continue;
+        for (const input of row.querySelectorAll('input:not([type="hidden"])') as any[]) {
+          if (!input?.name || input.disabled || input.readOnly) continue;
+          const cell = norm(input.closest?.('td, th')?.textContent || '');
+          if (cell.includes('monto') && !cell.includes('%')) continue;
+          return input.name as string;
+        }
+      }
+      return null;
+    })
+    .catch(() => null);
+}
+
+async function verifyDescuentoGlobalEnFormulario(
+  page: Page,
+  dr: DescuentoGlobalEmitParams,
+): Promise<boolean> {
+  const subtotalRaw = await readEmitInputValue(page, 'EFXP_SUBTOTAL');
+  const netoRaw = await readEmitInputValue(page, 'EFXP_MNT_NETO');
+  const subtotal = parseInt(subtotalRaw.replace(/\D/g, ''), 10) || 0;
+  const neto = parseInt(netoRaw.replace(/\D/g, ''), 10) || 0;
+  if (subtotal > 0 && neto > 0 && neto < subtotal) {
+    const descAplicado = subtotal - neto;
+    if (Math.abs(descAplicado - Math.round(dr.montoNeto)) <= 10) return true;
+  }
+
+  const pctField = await discoverDescuentoGlobalPctField(page);
+  if (pctField) {
+    const v = await readEmitInputValue(page, pctField);
+    const n = parseFloat(v.replace(',', '.'));
+    if (n > 0) return true;
+  }
+  return false;
+}
+
+/** Rellena el descuento global del formulario MiPyme (fila Sub Total → Descuento Global %). */
+async function fillDescuentoGlobalSii(
+  page: Page,
+  dr: DescuentoGlobalEmitParams,
+  helpers: {
+    setFieldSafe: (fieldName: string, value: string) => Promise<void>;
+    allInputNames: { name: string; value: string; type: string }[];
+  },
+): Promise<boolean> {
+  if (!dr || dr.montoNeto <= 0) return false;
+
+  const { setFieldSafe } = helpers;
+  let allInputNames = helpers.allInputNames;
+  const montoStr = String(Math.round(dr.montoNeto));
+  const glosa = (dr.glosa || 'Descuento pedido').slice(0, 45);
+
+  const subtotalForm = parseInt(
+    (await readEmitInputValue(page, 'EFXP_SUBTOTAL')).replace(/\D/g, ''),
+    10,
   );
+  let pct = dr.porcentaje > 0 ? dr.porcentaje : 0;
+  if (pct <= 0 && subtotalForm > 0) {
+    pct = Math.round((dr.montoNeto / subtotalForm) * 10000) / 100;
+  }
+  if (pct <= 0) {
+    console.warn('[SII] emitir — descuento global sin porcentaje calculable');
+  }
+  const pctStr = String(pct > 0 ? pct : dr.porcentaje).replace('.', ',');
+
+  const fillPctField = async (fieldName: string, via: string): Promise<boolean> => {
+    if (!fieldName || pct <= 0) return false;
+    const sel = `input[name="${fieldName}"]`;
+    if (!(await page.$(sel))) return false;
+    await page.click(sel, { timeout: 3000 }).catch(() => {});
+    await page.fill(sel, pctStr).catch(() => setFieldSafe(fieldName, pctStr));
+    await page
+      .$eval(sel, (el: any) => {
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+      })
+      .catch(() => {});
+    await page.locator(sel).press('Tab').catch(() => {});
+    await page.waitForTimeout(700);
+    console.log(`[SII] emitir — descuento global ${pctStr}% (${via}: ${fieldName})`);
+    return verifyDescuentoGlobalEnFormulario(page, dr);
+  };
+
+  const fillDrRowMonto = async (suffix: string, via: string): Promise<boolean> => {
+    const mov = `EFXP_TPO_MOV_DR_${suffix}`;
+    const tpoValor = `EFXP_TPO_VALOR_DR_${suffix}`;
+    const valor = `EFXP_VALOR_DR_${suffix}`;
+    const glosaField = `EFXP_GLOSA_DR_${suffix}`;
+    if (!allInputNames.some((i) => i.name === valor || i.name === mov)) return false;
+
+    for (const chk of allInputNames) {
+      if (chk.type !== 'checkbox') continue;
+      if (!/CHK.*(?:DR|DESC|REC)|(?:DR|DESC|REC).*CHK/i.test(chk.name)) continue;
+      await page
+        .$eval(`input[name="${chk.name}"]`, (el: any) => {
+          if (!el.checked) {
+            el.checked = true;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.click?.();
+          }
+        })
+        .catch(() => {});
+      break;
+    }
+
+    await setFieldSafe(mov, 'D');
+    await setFieldSafe(tpoValor, '$');
+    await setFieldSafe(valor, montoStr);
+    await setFieldSafe(glosaField, glosa);
+    await page.waitForTimeout(700);
+    console.log(`[SII] emitir — descuento global $${montoStr} neto (${via}: ${valor})`);
+    return verifyDescuentoGlobalEnFormulario(page, dr);
+  };
+
+  const fillDrRowPct = async (suffix: string): Promise<boolean> => {
+    if (pct <= 0) return false;
+    const mov = `EFXP_TPO_MOV_DR_${suffix}`;
+    const tpoValor = `EFXP_TPO_VALOR_DR_${suffix}`;
+    const valor = `EFXP_VALOR_DR_${suffix}`;
+    const glosaField = `EFXP_GLOSA_DR_${suffix}`;
+    if (!allInputNames.some((i) => i.name === valor)) return false;
+    await setFieldSafe(mov, 'D');
+    await setFieldSafe(tpoValor, '%');
+    await setFieldSafe(valor, pctStr);
+    await setFieldSafe(glosaField, glosa);
+    await page.locator(`input[name="${valor}"]`).press('Tab').catch(() => {});
+    await page.waitForTimeout(700);
+    console.log(`[SII] emitir — descuento global ${pctStr}% (DR fila ${suffix})`);
+    return verifyDescuentoGlobalEnFormulario(page, dr);
+  };
+
+  // Refrescar inputs tras recalcular subtotal de líneas
+  allInputNames = await page
+    .evaluate(() => {
+      const d = (globalThis as any).document;
+      if (!d) return [];
+      return Array.from(d.querySelectorAll('input, select, textarea'))
+        .map((e: any) => ({
+          name: e.name || '',
+          value: e.value || '',
+          type: e.type || e.tagName.toLowerCase(),
+        }))
+        .filter((e: any) => e.name);
+    })
+    .catch(() => allInputNames);
+
+  const drFieldNames = allInputNames
+    .filter((i) => /DESC|DCTO|GLOB|PCTD|_DR_/i.test(i.name))
+    .map((i) => i.name);
+  if (drFieldNames.length) {
+    console.log('[SII] emitir — campos descuento en formulario:', drFieldNames.join(', '));
+  }
+
+  const pctFieldDom = await discoverDescuentoGlobalPctField(page);
+  if (pctFieldDom && (await fillPctField(pctFieldDom, 'fila Descuento Global'))) return true;
+
+  const pctCandidates = [
+    'EFXP_PCT_DESCUENTO_GLOBAL',
+    'EFXP_PCTD_GLOB',
+    'EFXP_PCTD_GLOBAL',
+    'EFXP_PCTD',
+    'EFXP_PCT_DESC',
+    'EFXP_PCT_DCTO',
+    'EFXP_DCTO_PCT',
+    'EFXP_PCT_DESCUENTO',
+    'EFXP_DCTO_GLOB',
+    'EFXP_DESCUENTO_GLOBAL',
+    'EFXP_PCTD_GLO',
+    'EFXP_DCTO_GLO',
+  ];
+  for (const name of pctCandidates) {
+    if (!allInputNames.some((i) => i.name === name)) continue;
+    if (await fillPctField(name, 'campo')) return true;
+  }
+
+  const pctField = allInputNames.find(
+    (i) =>
+      /GLOB.*PCT|PCT.*GLOB|DCTO.*GLOB|DESC.*GLOB|PCTD_G/i.test(i.name) && !/_\d{2}$/.test(i.name),
+  );
+  if (pctField && (await fillPctField(pctField.name, 'patrón'))) return true;
+
+  for (const suffix of ['01', '1']) {
+    if (await fillDrRowMonto(suffix, 'DscRcgGlobal $')) return true;
+  }
+
+  for (const suffix of ['01', '1']) {
+    if (await fillDrRowPct(suffix)) return true;
+  }
+
+  const montoCandidates = [
+    'EFXP_MNT_DESCUENTO_GLOBAL',
+    'EFXP_MNT_DCTO_GLOB',
+    'EFXP_DCTO_GLOB_MNT',
+    'EFXP_MNT_DCTO',
+  ];
+  for (const name of montoCandidates) {
+    if (!allInputNames.some((i) => i.name === name)) continue;
+    await setFieldSafe(name, montoStr);
+    await page.locator(`input[name="${name}"]`).press('Tab').catch(() => {});
+    await page.waitForTimeout(700);
+    if (await verifyDescuentoGlobalEnFormulario(page, dr)) {
+      console.log(`[SII] emitir — descuento global monto $${montoStr} (${name})`);
+      return true;
+    }
+  }
+
+  if (drFieldNames.length) {
+    console.warn('[SII] emitir — campos descuento detectados pero no rellenados:', drFieldNames.join(', '));
+  } else {
+    console.warn('[SII] emitir — no se encontró campo de descuento global en el formulario');
+  }
+  return false;
 }
 
 async function safeClosePage(page: Page): Promise<void> {
@@ -2181,6 +2777,9 @@ export class SiiFacturacionService {
 
   static async selectEmpresa(page: Page, empresaRut: string): Promise<boolean> {
     const rutNorm = normalizarRutEmpresaValor(empresaRut) ?? empresaRut;
+    const dialogCapture = { texto: '' };
+    wireSafeDialogs(page, { capture: dialogCapture });
+
     await page.goto(SII_URLS.selEmpresa, { waitUntil: 'domcontentloaded', timeout: 20000 });
     const sel = await page.$('select').catch(() => null);
     if (!sel) return true; // cuenta personal, no requiere selección
@@ -2202,46 +2801,87 @@ export class SiiFacturacionService {
     const valueToSelect = match?.value || rutNorm;
     console.log(`[SII] selectEmpresa: eligiendo ${valueToSelect} (${match ? 'match en select' : 'fallback directo'})`);
     await page.selectOption('select', valueToSelect).catch(async () => {
-      await page.selectOption('select', { value: valueToSelect });
+      await page.selectOption('select', { value: valueToSelect }).catch(async () => {
+        await page.selectOption('select', { label: rutNorm });
+      });
     });
     await page.waitForTimeout(400);
 
+    dialogCapture.texto = '';
     const btn = await page.$('input[type="submit"], button[type="submit"]');
     if (btn) {
       await btn.click();
       await page.waitForLoadState('load', { timeout: 20000 }).catch(() => {});
       await page.waitForTimeout(800);
     }
-    return true;
+
+    if (dialogIndicaEmpresaNoSeleccionada(dialogCapture.texto)) {
+      console.warn('[SII] selectEmpresa: SII indicó empresa no seleccionada');
+      return false;
+    }
+
+    const postHtml = await page.content().catch(() => '');
+    if (htmlListadoEmitidosOperativo(postHtml)) return true;
+    if (!/<select\b[^>]*>/i.test(postHtml)) return true;
+
+    console.warn('[SII] selectEmpresa: sigue en selector de empresa tras el POST');
+    return false;
   }
 
   /**
    * El SII exige visitar el listado de emitidos en el mismo tab/contexto antes de
    * mipeGenFacEx (copiar documento). Si no, responde Error 501 ptr NULL (ptrTkn).
    */
-  static async ensurePtrTknOnPage(page: Page, empresaRut?: string): Promise<void> {
-    if (empresaRut) {
-      await this.selectEmpresa(page, empresaRut);
+  static async ensurePtrTknOnPage(page: Page, empresaRut?: string, opts?: { skipEmpresaSelect?: boolean }): Promise<void> {
+    if (empresaRut && !opts?.skipEmpresaSelect) {
+      const ok = await this.selectEmpresa(page, empresaRut);
+      if (!ok) {
+        throw new Error(
+          'No se pudo seleccionar la empresa en MiPyme. Cierra sesión en el workbench, vuelve a sincronizar e intenta de nuevo.',
+        );
+      }
     }
+    const listadoUrl = listadoEmitidosUrlPagina1();
     console.log('[SII] ensurePtrTkn — navegando al listado de emitidos...');
-    await page.goto(SII_URLS.listadoEmitidos, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(400);
+    await page.goto(listadoUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(600);
+    await page
+      .waitForSelector(
+        'input[name="FEC_DESDE"], input[name="NUM_PAG"], input[name="RUT_RECP"], form[name="VIEW_EFXP"]',
+        { timeout: 12000 },
+      )
+      .catch(() => {});
     const html = await page.content().catch(() => '');
-    if (SiiFacturacionService.isSiiPtrTknErrorHtml(html) || isSiiRejectionOrBlockHtml(html)) {
-      const reason = SiiFacturacionService.isSiiPtrTknErrorHtml(html)
-        ? 'Error 501 ptrTkn'
-        : 'SII rechazó el navegador automático';
-      SiiFacturacionService.markSiiBlocked(reason);
+    if (isSiiHardBlockHtml(html)) {
+      SiiFacturacionService.markSiiBlocked('SII rechazó el navegador automático');
       throw new Error(
-        'El SII rechazó la sesión automática (ptrTkn / navegador). ' +
+        'El SII rechazó la sesión automática (navegador). ' +
           'Detén el workbench, espera y entra manualmente en sii.cl antes de reintentar.',
+      );
+    }
+    if (!htmlListadoEmitidosOperativo(html)) {
+      const snippet = html.replace(/\s+/g, ' ').slice(0, 240);
+      console.warn(`[SII] ensurePtrTkn — listado no reconocido. URL=${page.url()} snippet=${snippet}`);
+      throw new Error(
+        'Sesión MiPyme incompleta (listado de emitidos no cargó). ' +
+          'Cierra sesión en el workbench, vuelve a sincronizar MiPyme e intenta emitir de nuevo.',
       );
     }
   }
 
-  /** Detecta la página de error 501 / ptrTkn del SII. */
+  /** Detecta Error 501 / ptrTkn — fallo de sesión, no bloqueo de cuenta. */
   static isSiiPtrTknErrorHtml(html: string): boolean {
-    return /ERROR\s*:\s*501|ptr NULL|ptrTkn/i.test(html);
+    const h = html.toLowerCase();
+    return (
+      /error\s*:?\s*501/.test(h) ||
+      /ptr\s*null|ptrtkn/i.test(html) ||
+      /<title>\s*error\s*501/i.test(h)
+    );
+  }
+
+  /** Expuesto para validar pestaña Playwright antes de omitir ensurePtrTkn. */
+  static isListadoEmitidosOperativoHtml(html: string): boolean {
+    return htmlListadoEmitidosOperativo(html);
   }
 
   // ── Extraer cookies de Playwright para axios ─────────────────────────────
@@ -3071,6 +3711,7 @@ export class SiiFacturacionService {
       items: Array<{
         numero: number;
         descripcion: string;
+        descripcionExtendida?: string;
         cantidad?: number;
         precioUnitario?: number;
       }>;
@@ -3083,6 +3724,8 @@ export class SiiFacturacionService {
       comunaReceptor?: string;
       ciudadReceptor?: string;
       dirReceptor?: string;
+      /** Descuento global MiPyme (Shopify order-level discount). */
+      descuentoGlobal?: DescuentoGlobalEmitParams | null;
     },
     opts?: {
       /** No pulsar Guardar ni completar firma; útil para probar hasta la pantalla previa a la clave. */
@@ -3109,9 +3752,12 @@ export class SiiFacturacionService {
     previewUrl?: string;
     /** Informativo cuando success y detenidoEnPreview (no es fallo). */
     aviso?: string;
+    /** Campos leídos del formulario tras rellenar (retroalimentación real). */
+    formSnapshot?: SiiEmitFormSnapshot;
   }> {
     const { codigoOriginal, tipoCodigo, fechaEmision, items, empresaRut,
-      rutReceptor, razonSocial, giroReceptor, comunaReceptor, ciudadReceptor, dirReceptor } = params;
+      rutReceptor, razonSocial, giroReceptor, comunaReceptor, ciudadReceptor, dirReceptor,
+      descuentoGlobal } = params;
     const detenerEnPreview = !!opts?.detenerEnPreview;
     const previewSoloFormulario = !!opts?.previewSoloFormulario;
     const scraperStep = opts?.scraperStep || 'emitir';
@@ -3137,30 +3783,53 @@ export class SiiFacturacionService {
 
     const url = buildEmitFormUrl(tipoCodigo, codigoOriginal);
     const modo = codigoOriginal?.trim() ? `copiar ${codigoOriginal}` : 'factura nueva';
-    console.log(`[SII] emitir — navegando a formulario (${modo}): ${url}`);
-    await page.goto(url, {
-      waitUntil: 'domcontentloaded',
-      timeout: 60000,
-      referer: SII_URLS.listadoEmitidos,
-    }).catch(async () => {
-      await page.goto(url, { waitUntil: 'commit', timeout: 60000, referer: SII_URLS.listadoEmitidos });
-    });
-    await page.waitForTimeout(400);
 
-    const pageUrl = page.url();
-    const pageTitle = await page.title().catch(() => '?');
-    const pageHtml = await page.content().catch(() => '');
-    console.log(`[SII] emitir — URL actual: ${pageUrl} | título: ${pageTitle}`);
+    const loadEmitForm = async (): Promise<{ pageUrl: string; pageTitle: string; pageHtml: string }> => {
+      console.log(`[SII] emitir — navegando a formulario (${modo}): ${url}`);
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 60000,
+        referer: SII_URLS.listadoEmitidos,
+      }).catch(async () => {
+        await page.goto(url, { waitUntil: 'commit', timeout: 60000, referer: SII_URLS.listadoEmitidos });
+      });
+      await page.waitForTimeout(400);
+      const pageUrl = page.url();
+      const pageTitle = await page.title().catch(() => '?');
+      const pageHtml = await page.content().catch(() => '');
+      console.log(`[SII] emitir — URL actual: ${pageUrl} | título: ${pageTitle}`);
+      return { pageUrl, pageTitle, pageHtml };
+    };
 
-    if (SiiFacturacionService.isSiiPtrTknErrorHtml(pageHtml) || isSiiRejectionOrBlockHtml(pageHtml)) {
-      const reason = SiiFacturacionService.isSiiPtrTknErrorHtml(pageHtml)
-        ? 'Error 501 al copiar documento'
-        : 'SII rechazó copiar documento';
-      SiiFacturacionService.markSiiBlocked(reason);
+    let { pageUrl, pageHtml } = await loadEmitForm();
+
+    if (SiiFacturacionService.isSiiPtrTknErrorHtml(pageHtml)) {
+      console.warn('[SII] emitir — Error 501 al copiar; reintentando ensurePtrTkn + empresa...');
+      try {
+        await this.ensurePtrTknOnPage(page, empresaRut);
+        ({ pageUrl, pageHtml } = await loadEmitForm());
+      } catch (retryErr: any) {
+        return {
+          success: false,
+          error: retryErr?.message || 'Sesión MiPyme incompleta al copiar documento. Cierra sesión, sincroniza de nuevo e intenta emitir.',
+        };
+      }
+    }
+
+    if (isSiiHardBlockHtml(pageHtml)) {
+      SiiFacturacionService.markSiiBlocked('SII rechazó copiar documento');
       return {
         success: false,
         error:
-          'El SII bloqueó o rechazó la operación. No reintentes ahora — espera y entra manualmente en sii.cl primero.',
+          'El SII rechazó el navegador automático. Espera unos minutos, entra manualmente en sii.cl y vuelve a intentar.',
+      };
+    }
+
+    if (SiiFacturacionService.isSiiPtrTknErrorHtml(pageHtml)) {
+      return {
+        success: false,
+        error:
+          'Sesión MiPyme incompleta (Error 501 al abrir el formulario). Cierra sesión en el workbench, vuelve a sincronizar MiPyme e intenta emitir de nuevo.',
       };
     }
 
@@ -3327,16 +3996,19 @@ export class SiiFacturacionService {
       // Asegurar que la fila existe antes de llenarla
       await agregarFilaSii(num);
 
-      await fillEmitirItemDescripcion(page, num, item.descripcion);
+      await fillEmitirItemDescripcion(page, num, item.descripcion, item.descripcionExtendida);
 
-      if (item.precioUnitario !== undefined) {
+      if (item.precioUnitario !== undefined && item.precioUnitario > 0) {
         const prcSel = `input[name="EFXP_PRC_${num}"]`;
         if (await page.$(prcSel)) {
           await page.$eval(prcSel, (el: any, v: string) => {
             el.value = v;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
           }, String(item.precioUnitario));
         }
+      } else {
+        console.warn(`[SII] emitir — línea ${num} sin precio válido (>0), omitiendo PRC`);
       }
 
       if (item.cantidad !== undefined) {
@@ -3344,11 +4016,23 @@ export class SiiFacturacionService {
         if (await page.$(qtySel)) {
           await page.$eval(qtySel, (el: any, v: string) => {
             el.value = v;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
           }, String(item.cantidad));
         }
       }
     }
+
+    if (items.length > 0) {
+      const lastNum = String(items[items.length - 1].numero).padStart(2, '0');
+      const lastQtySel = `input[name="EFXP_QTY_${lastNum}"]`;
+      const lastPrcSel = `input[name="EFXP_PRC_${lastNum}"]`;
+      const lastSel = (await page.$(lastQtySel)) ? lastQtySel : lastPrcSel;
+      await page.locator(lastSel).press('Tab').catch(() => {});
+      await page.waitForTimeout(600);
+    }
+
+    await clearUnusedEmitFormLines(page, items.length);
 
     // ── Rellenar ciudad/comuna emisor y receptor (campos requeridos por el SII) ──
     // Primero escanear TODOS los inputs del form para encontrar los nombres reales
@@ -3436,6 +4120,22 @@ export class SiiFacturacionService {
       await fillExactIfEmpty('EFXP_CMNA_ORIGEN', 'SANTIAGO');
     }
 
+    if (descuentoGlobal && descuentoGlobal.montoNeto > 0) {
+      const filled = await fillDescuentoGlobalSii(page, descuentoGlobal, {
+        setFieldSafe,
+        allInputNames,
+      });
+      if (!filled) {
+        const msg = `No se pudo rellenar el descuento global ($${descuentoGlobal.montoNeto.toLocaleString('es-CL')} neto) en el formulario SII. Revisa el campo «Descuento Global» antes de emitir.`;
+        console.warn(`[SII] emitir — ${msg}`);
+        if (scraperStep === 'emitir' && !detenerEnPreview) {
+          return { success: false, error: msg };
+        }
+      }
+    }
+
+    const formSnapshot = await snapshotEmitFormFromPage(page, items.length);
+
     // Preview Bioma paso 2: dejar formulario rellenado abierto (sin Validar)
     if (detenerEnPreview && previewSoloFormulario) {
       const previewUrl = page.url();
@@ -3446,8 +4146,9 @@ export class SiiFacturacionService {
         success: true,
         detenidoEnPreview: true,
         previewUrl,
+        formSnapshot,
         aviso:
-          'Paso 2 OK: formulario rellenado en Chrome. Revisa RUT, razón social e ítems antes de Emitir.',
+          'Paso 2 OK: formulario rellenado en Chrome. Revisa glosas, descuento global e ítems antes de Emitir.',
       };
     }
 
@@ -3922,17 +4623,19 @@ export class SiiFacturacionService {
 
     // Paso 5: GET listadoEmitidos — valida que la sesión esté operativa (ptrTkn activo).
     console.log('[SII HTTP] GET listadoEmitidos (validar sesión)...');
-    const listRes = await http.get(SII_URLS.listadoEmitidos, {
-      headers: { ...baseHeaders, Cookie: getCookieHeader() },
+    const listUrl = listadoEmitidosRefererPage1();
+    const listRes = await http.get(listUrl, {
+      headers: { ...baseHeaders, Cookie: getCookieHeader(), Referer: SII_URLS.selEmpresa },
     });
     mergeCookies(listRes.headers['set-cookie']);
     const listHtml = String(listRes.data);
     console.log(`[SII HTTP] listadoEmitidos status: ${listRes.status}, bytes: ${listHtml.length}`);
 
-    // Si el SII responde con Error 501, la sesión HTTP no es suficiente — necesita Playwright
-    if (listHtml.includes('Error 501') || listHtml.includes('<TITLE>Error')) {
-      SiiFacturacionService.markSiiBlocked('Error 501 en listado HTTP');
-      throw new Error(`Login HTTP exitoso pero listado devuelve Error 501 — sesión sin ptrTkn, requiere Playwright`);
+    // Si el SII no devuelve listado operativo, fallback a Playwright (no es bloqueo de cuenta).
+    if (!htmlListadoEmitidosOperativo(listHtml)) {
+      const snippet = listHtml.replace(/\s+/g, ' ').slice(0, 240);
+      console.warn(`[SII HTTP] listado no operativo (${listHtml.length} bytes): ${snippet}`);
+      throw new Error(`Login HTTP exitoso pero listado no operativo — requiere Playwright`);
     }
 
     const finalCookies = getCookieHeader();
@@ -3945,12 +4648,16 @@ export class SiiFacturacionService {
   static async createSession(empresaRut: string): Promise<string> {
     SiiFacturacionService.assertSiiAvailable();
     const rutNorm = normalizarRutEmpresaValor(empresaRut) ?? empresaRut;
-    const SESSION_MAX_AGE_MS = 55 * 60 * 1000; // 55 min (SII expira ~60 min)
+    const maxAge = SII_SESSION_MAX_AGE_MS;
     for (const [id, s] of sessions.entries()) {
-      if (s.empresaRut === rutNorm && Date.now() - s.ts < SESSION_MAX_AGE_MS) {
+      const started = s.startedAt ?? s.ts;
+      if (s.empresaRut === rutNorm && Date.now() - started < maxAge) {
         console.log(`[SII] createSession: reutilizando sesión existente ${id} para ${rutNorm}`);
-        s.ts = Date.now(); // renovar timestamp
+        s.ts = Date.now();
         return id;
+      }
+      if (Date.now() - started >= maxAge) {
+        await SiiFacturacionService.closeSession(id).catch(() => {});
       }
     }
 
@@ -4006,7 +4713,14 @@ export class SiiFacturacionService {
 
       // Navegar al listado para inicializar ptrTkn en el servidor (necesario para cualquier request)
       console.log('[SII Playwright] Navegando al listado para inicializar ptrTkn...');
-      await page.goto(SII_URLS.listadoEmitidos, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      await page.goto(listadoEmitidosRefererPage1(), { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      const pwListHtml = await page.content().catch(() => '');
+      if (!htmlListadoEmitidosOperativo(pwListHtml)) {
+        await SiiFacturacionService.siiLogoutRemoto({ context }).catch(() => {});
+        await context.close().catch(() => {});
+        await browser.close().catch(() => {});
+        throw new Error('Login Playwright: listado de emitidos no cargó');
+      }
 
       cookieHeader = await this.extractCookieHeader(page);
       await safeClosePage(page);
@@ -4014,22 +4728,128 @@ export class SiiFacturacionService {
       // Marcar contexto como listo (ptrTkn activo) — no necesita re-login en ensureBrowserForSession
       const sessionId2 = `sii_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const axiosClient2 = buildAxiosClient(cookieHeader);
+      const now = Date.now();
       sessions.set(sessionId2, {
         browser, context, axiosClient: axiosClient2, cookieHeader,
-        empresaRut: rutNorm, ts: Date.now(), playwrightReady: true,
+        empresaRut: rutNorm, ts: now, startedAt: now, playwrightReady: true,
       });
       return sessionId2;
     }
 
     const axiosClient = buildAxiosClient(cookieHeader);
     const sessionId = `sii_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    sessions.set(sessionId, { browser, context, axiosClient, cookieHeader, empresaRut: rutNorm, ts: Date.now() });
+    const now = Date.now();
+    sessions.set(sessionId, {
+      browser, context, axiosClient, cookieHeader, empresaRut: rutNorm, ts: now, startedAt: now,
+    });
     return sessionId;
+  }
+
+  static sessionExpiresAt(session: SiiSession): number {
+    return (session.startedAt ?? session.ts) + SII_SESSION_MAX_AGE_MS;
+  }
+
+  /** Comprueba si las cookies HTTP siguen válidas en MiPyme (sin abrir Playwright). */
+  static async probeSessionAlive(session: SiiSession): Promise<{ ok: boolean; reason?: string }> {
+    try {
+      const url = listadoEmitidosRefererPage1();
+      const res = await session.axiosClient.get(url, { timeout: 18000, validateStatus: () => true });
+      const html = String(res.data || '');
+      const finalUrl = String(res.request?.res?.responseUrl || res.config?.url || '');
+      if (
+        html.includes('id="rutcntr"') ||
+        html.includes('IngresoRutClave') ||
+        finalUrl.includes('IngresoRutClave') ||
+        finalUrl.includes('AUT2000')
+      ) {
+        return { ok: false, reason: 'Sesión SII expirada — el portal pide login de nuevo' };
+      }
+      if (isSiiHardBlockHtml(html)) {
+        return { ok: false, reason: 'El SII bloqueó el acceso temporalmente' };
+      }
+      if (!htmlListadoEmitidosOperativo(html) && html.length > 200) {
+        return { ok: false, reason: 'Sesión SII inválida — no se pudo abrir el listado de emitidos' };
+      }
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, reason: err?.message || 'No se pudo verificar la sesión con el SII' };
+    }
+  }
+
+  static async getSessionStatus(
+    sessionId: string,
+    opts?: { probe?: boolean },
+  ): Promise<{
+    valid: boolean;
+    exists: boolean;
+    expiresAt: number;
+    expiresInMs: number;
+    playwrightReady?: boolean;
+    siiAlive?: boolean;
+    reason?: string;
+  }> {
+    const s = sessions.get(sessionId);
+    if (!s) {
+      return {
+        valid: false,
+        exists: false,
+        expiresAt: 0,
+        expiresInMs: 0,
+        reason: 'Sesión no encontrada en el servidor (¿reinicio del backend o cerraste sesión?)',
+      };
+    }
+    const expiresAt = SiiFacturacionService.sessionExpiresAt(s);
+    const expiresInMs = expiresAt - Date.now();
+    if (expiresInMs <= 0) {
+      await SiiFacturacionService.closeSession(sessionId).catch(() => {});
+      return {
+        valid: false,
+        exists: false,
+        expiresAt,
+        expiresInMs: 0,
+        reason: 'Sesión expirada por tiempo (~55 min). Vuelve a iniciar sesión MiPyme.',
+      };
+    }
+    if (opts?.probe) {
+      const probe = await SiiFacturacionService.probeSessionAlive(s);
+      if (!probe.ok) {
+        await SiiFacturacionService.closeSession(sessionId).catch(() => {});
+        return {
+          valid: false,
+          exists: false,
+          expiresAt,
+          expiresInMs: 0,
+          playwrightReady: s.playwrightReady,
+          siiAlive: false,
+          reason: probe.reason,
+        };
+      }
+      return {
+        valid: true,
+        exists: true,
+        expiresAt,
+        expiresInMs,
+        playwrightReady: s.playwrightReady,
+        siiAlive: true,
+      };
+    }
+    return {
+      valid: true,
+      exists: true,
+      expiresAt,
+      expiresInMs,
+      playwrightReady: s.playwrightReady,
+    };
   }
 
   static getSession(sessionId: string): SiiSession | null {
     const s = sessions.get(sessionId);
     if (!s) return null;
+    const expiresAt = SiiFacturacionService.sessionExpiresAt(s);
+    if (Date.now() >= expiresAt) {
+      void SiiFacturacionService.closeSession(sessionId);
+      return null;
+    }
     s.ts = Date.now();
     return s;
   }
@@ -4121,17 +4941,53 @@ export class SiiFacturacionService {
       try {
         console.log('[SII] Bootstrap Playwright desde cookies HTTP (sin re-login)...');
         await setEmitidoPlaywrightCookies(bootstrapPage, session.cookieHeader);
-        await bootstrapPage.goto(SII_URLS.selEmpresa, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        const selHtml = await bootstrapPage.content().catch(() => '');
-        if (!isLoginLikeHtml(selHtml) && !isSiiRejectionOrBlockHtml(selHtml)) {
-          await this.selectEmpresa(bootstrapPage, session.empresaRut);
-          await this.ensurePtrTknOnPage(bootstrapPage);
+        wireSafeDialogs(bootstrapPage);
+
+        const tryListadoEnPage = async (label: string): Promise<boolean> => {
+          const listadoUrl = listadoEmitidosRefererPage1();
+          console.log(`[SII] Bootstrap: ${label} → ${listadoUrl}`);
+          await bootstrapPage.goto(listadoUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await bootstrapPage.waitForTimeout(600);
           const listHtml = await bootstrapPage.content().catch(() => '');
-          if (!isSiiRejectionOrBlockHtml(listHtml)) {
+          if (htmlListadoEmitidosOperativo(listHtml)) {
+            session.cookieHeader = await this.extractCookieHeader(bootstrapPage);
+            session.axiosClient = buildAxiosClient(session.cookieHeader);
             session.playwrightReady = true;
             session.scraperPage = bootstrapPage;
-            console.log('[SII] Playwright listo via cookies HTTP');
+            console.log(`[SII] Playwright listo via cookies HTTP (${label})`);
+            return true;
+          }
+          const snippet = listHtml.replace(/\s+/g, ' ').slice(0, 200);
+          console.warn(`[SII] Bootstrap ${label} — listado no reconocido: ${snippet}`);
+          return false;
+        };
+
+        if (await tryListadoEnPage('listado directo')) return context;
+
+        // Confirmar con axios (misma sesión HTTP) antes de forzar selectEmpresa en Playwright
+        if (session.axiosClient) {
+          const axRes = await session.axiosClient
+            .get(listadoEmitidosRefererPage1(), { validateStatus: () => true })
+            .catch(() => null);
+          const axHtml = axRes ? String(axRes.data) : '';
+          if (htmlListadoEmitidosOperativo(axHtml)) {
+            await setEmitidoPlaywrightCookies(bootstrapPage, session.cookieHeader);
+            if (await tryListadoEnPage('listado tras probe axios')) return context;
+          }
+        }
+
+        const preHtml = await bootstrapPage.content().catch(() => '');
+        if (!isLoginLikeHtml(preHtml) && !isSiiHardBlockHtml(preHtml)) {
+          try {
+            await this.ensurePtrTknOnPage(bootstrapPage, session.empresaRut);
+            session.cookieHeader = await this.extractCookieHeader(bootstrapPage);
+            session.axiosClient = buildAxiosClient(session.cookieHeader);
+            session.playwrightReady = true;
+            session.scraperPage = bootstrapPage;
+            console.log('[SII] Playwright listo via cookies HTTP (tras selectEmpresa)');
             return context;
+          } catch (ptrErr: any) {
+            console.warn('[SII] Bootstrap ptrTkn falló:', ptrErr?.message || ptrErr);
           }
         }
         console.warn('[SII] Cookies HTTP no bastaron para Playwright — intentando login completo');
@@ -4167,6 +5023,13 @@ export class SiiFacturacionService {
           await safeClosePage(loginPage);
         }
       }
+    }
+
+    if (!session.playwrightReady) {
+      throw new Error(
+        'Sesión MiPyme incompleta (listado de emitidos no cargó). ' +
+          'Cierra sesión en el workbench, vuelve a sincronizar MiPyme e intenta emitir de nuevo.',
+      );
     }
     return context;
   }

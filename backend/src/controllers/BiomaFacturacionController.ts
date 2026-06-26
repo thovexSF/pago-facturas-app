@@ -126,6 +126,57 @@ export class BiomaFacturacionController {
     }
   }
 
+  // POST /api/bioma/limpiar-aviso-nc/:orderId
+  static async limpiarAvisoNc(req: Request, res: Response) {
+    const orderId = req.params.orderId;
+    if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
+    try {
+      await BiomaFacturacionService.clearNcAvisoEmision(orderId);
+      const row = await BiomaFacturacionService.findEmision(orderId);
+      return res.json({ success: true, row });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  }
+
+  // POST /api/bioma/preparar-nc/:orderId — volver a pendientes tras NC manual en SII
+  static async prepararNc(req: Request, res: Response) {
+    const orderId = req.params.orderId;
+    if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
+    try {
+      const { row, avisoNc } = await BiomaFacturacionService.prepararReemisionNotaCredito(orderId);
+      return res.json({
+        success: true,
+        row,
+        avisoNc,
+        message: avisoNc,
+      });
+    } catch (err: any) {
+      return res.status(400).json({ success: false, error: err?.message || String(err) });
+    }
+  }
+
+  // POST /api/bioma/descartar/:orderId — quitar de pendientes sin emitir
+  static async descartar(req: Request, res: Response) {
+    const orderId = req.params.orderId;
+    if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
+    const removeTag = req.body?.removeTag !== false;
+    try {
+      const row = await BiomaFacturacionService.dismissPending(orderId, {
+        removeShopifyTag: removeTag,
+      });
+      return res.json({
+        success: true,
+        row,
+        message: removeTag
+          ? 'Pedido descartado y tag factura removido en Shopify.'
+          : 'Pedido descartado (tag factura conservado en Shopify).',
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  }
+
   // POST /api/bioma/marcar-emitida/:orderId — asociar folio histórico sin re-emitir
   static async marcarEmitida(req: Request, res: Response) {
     const orderId = req.params.orderId;
@@ -172,19 +223,26 @@ export class BiomaFacturacionController {
       const order = await BiomaShopifyService.getOrder(orderId);
       if (!order) return res.status(404).json({ error: 'Pedido no encontrado en Shopify' });
       const row = await BiomaFacturacionService.upsertFromShopify(order);
-      const items = BiomaFacturacionService.buildItemsFromOrder(
-        order,
-        row.tipoCodigo || 33,
-      ).map((it, i) => ({
+      const tipoCodigo = row.tipoCodigo || 33;
+      const builtItems = BiomaFacturacionService.buildItemsFromOrder(order, tipoCodigo);
+      const descuentoGlobal = BiomaFacturacionService.buildDescuentoGlobal(order, builtItems, tipoCodigo);
+      const items = builtItems.map((it, i) => ({
         numero: i + 1,
         descripcion: it.descripcion,
+        descripcionExtendida: it.descripcionExtendida,
         cantidad: it.cantidad,
         precioUnitario: it.precioUnitario,
         subtotal: it.subtotal,
       }));
+      const montosValidacion = BiomaFacturacionService.validateMontos(
+        order,
+        builtItems,
+        tipoCodigo,
+        descuentoGlobal,
+      );
       const template = await BiomaFacturacionService.resolveTemplateInfo({
         rutReceptor: row.tipoCodigo === 39 || row.tipoCodigo === 41 ? null : row.rutReceptor,
-        tipoCodigo: row.tipoCodigo || 33,
+        tipoCodigo,
       });
       return res.json({
         success: true,
@@ -195,15 +253,20 @@ export class BiomaFacturacionController {
           comunaReceptor: row.comunaReceptor,
           ciudadReceptor: row.ciudadReceptor,
           dirReceptor: row.dirReceptor,
-          tipoCodigo: row.tipoCodigo || 33,
+          tipoCodigo,
           fechaEmision: new Date().toISOString().split('T')[0],
           items,
+          descuentoGlobal,
           template,
+          montosValidacion,
         },
         shopify: {
           id: order.id,
           name: order.name,
           total: order.total,
+          subtotal: order.totalNet,
+          shipping: order.shippingTotal,
+          totalDiscounts: order.totalDiscounts,
           tags: order.tags,
         },
         emision: row,
@@ -240,8 +303,22 @@ export class BiomaFacturacionController {
     flags: { scraperStep: 'abrir' | 'rellenar' | 'emitir' },
   ) {
     const orderId = req.params.orderId;
-    const { sessionId, codigoOriginal, tipoCodigo, fechaEmision, esperarMsEnPreview } =
-      req.body || {};
+    const {
+      sessionId,
+      codigoOriginal,
+      tipoCodigo,
+      fechaEmision,
+      esperarMsEnPreview,
+      items,
+      rutReceptor,
+      razonSocial,
+      giroReceptor,
+      comunaReceptor,
+      ciudadReceptor,
+      dirReceptor,
+      skipMontosValidation,
+      descuentoGlobal,
+    } = req.body || {};
     if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
     if (!sessionId) return res.status(400).json({ error: 'sessionId requerido' });
 
@@ -268,6 +345,16 @@ export class BiomaFacturacionController {
         esperarMsEnPreview: Number.isFinite(parseInt(String(esperarMsEnPreview), 10))
           ? parseInt(String(esperarMsEnPreview), 10)
           : undefined,
+        items: Array.isArray(items) ? items : undefined,
+        rutReceptor,
+        razonSocial,
+        giroReceptor,
+        comunaReceptor,
+        ciudadReceptor,
+        dirReceptor,
+        skipMontosValidation: !!skipMontosValidation,
+        descuentoGlobal:
+          descuentoGlobal && typeof descuentoGlobal === 'object' ? descuentoGlobal : undefined,
       });
 
       if (!out.success) {
@@ -396,6 +483,18 @@ export class BiomaFacturacionController {
       if (!row) return res.status(404).json({ error: 'Sin registro de emisión' });
       const link = BiomaFacturacionService.buildWhatsAppLink(row);
       return res.json({ success: true, ...link });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || String(err) });
+    }
+  }
+
+  // GET /api/bioma/email-draft/:orderId
+  static async emailDraft(req: Request, res: Response) {
+    try {
+      const row = await BiomaFacturacionService.findEmision(req.params.orderId);
+      if (!row) return res.status(404).json({ error: 'Sin registro de emisión' });
+      const draft = BiomaFacturacionService.buildEmailDraft(row);
+      return res.json({ success: true, ...draft });
     } catch (err: any) {
       return res.status(500).json({ error: err?.message || String(err) });
     }

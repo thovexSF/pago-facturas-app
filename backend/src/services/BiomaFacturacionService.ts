@@ -21,13 +21,23 @@ import {
 import {
   BIOMA_FACTURA_ATTR,
   extractFacturaFieldsFromOrder,
-  getOrderCustomAttribute,
   orderNeedsFactura,
   orderWantsFacturaEmit,
+  orderHasFacturaPendienteTag,
   isBoletaTipo,
   eboletaReceptorForSii,
 } from '../utils/biomaOrderAttrs';
+import {
+  computeDescuentoGlobalFromOrder,
+  computeMontosValidacion,
+  shopifyMontoANetoSii,
+  type DescuentoGlobalSii,
+  type MontosValidacion,
+} from '../utils/biomaMontos';
+import { buildTituloCompletoLineaShopify, formatGlosaFacturaSii } from '../utils/biomaGlosas';
 import { sanitizeDescripcionParaSii, SiiFacturacionService } from './SiiFacturacionService';
+
+export type { DescuentoGlobalSii, MontosValidacion };
 
 export interface PendingOrderRow {
   shopify: ShopifyOrderForBioma;
@@ -36,16 +46,13 @@ export interface PendingOrderRow {
 
 export interface FacturaItemForSii {
   descripcion: string;
+  /** Texto largo para checkbox «Descripción» del SII (EFXP_DSC_ITEM_*). */
+  descripcionExtendida?: string;
   cantidad: number;
   unidad?: string;
   precioUnitario: number;
   descuento?: number;
   subtotal: number;
-}
-
-/** Reads a custom attribute by key (case-insensitive) from a Shopify order. */
-function attr(order: ShopifyOrderForBioma, key: string): string {
-  return getOrderCustomAttribute(order.customAttributes, key);
 }
 
 /**
@@ -66,15 +73,6 @@ export function normalizePhoneForWhatsApp(raw: string | null | undefined): strin
   if (digits.length === 8) return `569${digits}`; // missing the leading 9
   if (digits.startsWith('0')) digits = digits.replace(/^0+/, '');
   return digits.startsWith('56') ? digits : `56${digits}`;
-}
-
-/** IVA Chile — precios Shopify B2C vienen con IVA incluido; el SII tipo 33 espera neto. */
-const IVA_CHILE_FACTOR = 1.19;
-
-function shopifyMontoANetoSii(montoBruto: number, tipoCodigo: number): number {
-  if (montoBruto <= 0) return 0;
-  if (tipoCodigo !== 33) return Math.round(montoBruto);
-  return Math.round(montoBruto / IVA_CHILE_FACTOR);
 }
 
 export class BiomaFacturacionService {
@@ -211,29 +209,79 @@ export class BiomaFacturacionService {
 
   /**
    * Lists pending Shopify orders (tagged `factura`, not yet emitted) joined
-   * with any existing emission state in our DB.
+   * with any existing emission state in our DB. Incluye re-emisiones tras NC
+   * y filas pending en DB aunque Shopify haya perdido el tag.
    */
   static async listPending(opts: {
     pageSize?: number;
     after?: string | null;
+    maxPages?: number;
   } = {}): Promise<{
     rows: PendingOrderRow[];
     pageInfo: { hasNextPage: boolean; endCursor: string | null };
   }> {
-    const { orders, pageInfo } = await BiomaShopifyService.listPending({
-      pageSize: opts.pageSize ?? 50,
-      after: opts.after,
-    });
+    const pageSize = Math.min(Math.max(opts.pageSize ?? 100, 1), 250);
+    const maxPages = Math.min(Math.max(opts.maxPages ?? 5, 1), 10);
+    const rowsMap = new Map<string, PendingOrderRow>();
 
-    const rows: PendingOrderRow[] = [];
-    for (const shopify of orders) {
-      if (!orderWantsFacturaEmit(shopify)) continue;
-      const emision = await this.upsertFromShopify(shopify);
-      if (emision.status === 'emitted') continue;
-      rows.push({ shopify, emision });
+    let after: string | null = opts.after ?? null;
+    let lastPageInfo: { hasNextPage: boolean; endCursor: string | null } = {
+      hasNextPage: false,
+      endCursor: null,
+    };
+
+    for (let page = 0; page < maxPages; page++) {
+      const { orders, pageInfo } = await BiomaShopifyService.listPending({
+        pageSize,
+        after,
+      });
+      lastPageInfo = pageInfo;
+
+      for (const shopify of orders) {
+        if (!orderWantsFacturaEmit(shopify)) continue;
+        const emision = await this.upsertFromShopify(shopify);
+        if (emision.status === 'emitted' || emision.status === 'dismissed') continue;
+        await this.ensureFacturaTag(shopify);
+        rowsMap.set(shopify.id, { shopify, emision });
+      }
+
+      if (!pageInfo.hasNextPage) break;
+      after = pageInfo.endCursor;
     }
 
-    return { rows, pageInfo };
+    const dbPending = await this.repo
+      .createQueryBuilder('e')
+      .where('e.empresa_rut = :empresaRut', { empresaRut: this.empresaRut })
+      .andWhere('e.tipo_codigo = :tipo', { tipo: 33 })
+      .andWhere('e.status IN (:...statuses)', {
+        statuses: ['pending', 'error', 'drafting', 'emitting'],
+      })
+      .orderBy('e.shopify_order_number', 'DESC', 'NULLS LAST')
+      .getMany();
+
+    for (const emision of dbPending) {
+      if (rowsMap.has(emision.shopifyOrderId)) continue;
+      const order = await BiomaShopifyService.getOrder(emision.shopifyOrderId);
+      if (!order) continue;
+      const refreshed = await this.upsertFromShopify(order);
+      if (refreshed.status === 'emitted' || refreshed.status === 'dismissed') continue;
+      if (!orderWantsFacturaEmit(order) && refreshed.tipoCodigo !== 33) continue;
+      await this.ensureFacturaTag(order);
+      rowsMap.set(order.id, { shopify: order, emision: refreshed });
+    }
+
+    const rows = [...rowsMap.values()].sort((a, b) => {
+      const na = a.shopify.orderNumber ?? 0;
+      const nb = b.shopify.orderNumber ?? 0;
+      return nb - na;
+    });
+
+    return { rows, pageInfo: lastPageInfo };
+  }
+
+  private static async ensureFacturaTag(order: ShopifyOrderForBioma): Promise<void> {
+    if (orderHasFacturaPendienteTag(order.tags)) return;
+    await BiomaShopifyService.addTags(order.id, ['factura']).catch(() => {});
   }
 
   /**
@@ -308,13 +356,9 @@ export class BiomaFacturacionService {
 
       for (const order of orders) {
         scanned++;
-        if (orderNeedsFactura(order.customAttributes, order.note || order.customer?.note)) {
+        if (orderWantsFacturaEmit(order)) {
           skipped++;
           continue;
-        }
-        const existing = await BiomaFacturacionService.findEmision(order.id);
-        if (existing?.tipoCodigo === 33 && existing.status !== 'emitted') {
-          await BiomaFacturacionService.setTipoCodigo(order.id, 39);
         }
         const result = await BiomaShopifyService.registerBoletaOrder(order);
         if (result.tagged) registered++;
@@ -397,7 +441,9 @@ export class BiomaFacturacionService {
       const since = new Date();
       since.setDate(since.getDate() - daysBack);
       since.setHours(0, 0, 0, 0);
-      qb.andWhere('e.shopify_processed_at >= :since', { since });
+      qb.andWhere('(e.shopify_processed_at IS NULL OR e.shopify_processed_at >= :since)', {
+        since,
+      });
     }
 
     qb.orderBy('e.shopify_order_number', 'DESC', 'NULLS LAST')
@@ -409,46 +455,82 @@ export class BiomaFacturacionService {
   }
 
   /**
-   * Simplifica la descripción del producto para el SII.
-   * "Cafe de Especialidad Colombia - chocolate dulce..." + "250gr / Grano" → "CAFE GRANO COLOMBIA 250GR"
+   * Maps a Shopify order's line items into the SII items shape (precio neto por línea).
+   * Descuentos a nivel pedido van al campo «Descuento global» del formulario MiPyme.
    */
-  static simplificarDescripcionSii(title: string, variantTitle: string): string {
-    const t = sanitizeDescripcionParaSii(title).toUpperCase();
-    const v = sanitizeDescripcionParaSii(variantTitle).toUpperCase();
-
-    const pesoMatch = v.match(/(\d+\s*(?:GR|KG|ML|LT|UN))/i);
-    const peso = pesoMatch ? pesoMatch[1].replace(/\s+/g, '') : '';
-
-    const formatoMatch = v.match(/\b(GRANO|MOLIDO|CAPSULAS?|DRIP|COLD\s*BREW)\b/i);
-    const formato = formatoMatch ? formatoMatch[1] : '';
-
-    const parts = t.split(/\s*-\s*/);
-    const nombre = parts[0]?.trim() || t.trim();
-
-    const desc = [nombre, formato, peso].filter(Boolean).join(' ');
-    return desc.slice(0, 40);
-  }
-
-  /**
-   * Maps a Shopify order's line items into the SII items shape.
-   * Each line collapses discount into the unit price so subtotal matches.
-   * Para factura afecta (33), convierte precios Shopify (IVA incluido) a neto SII.
-   */
-  static buildItemsFromOrder(order: ShopifyOrderForBioma, tipoCodigo = 33): FacturaItemForSii[] {
-    return order.lineItems.map((li) => {
+  static buildItemsFromOrder(
+    order: ShopifyOrderForBioma,
+    tipoCodigo = 33,
+  ): FacturaItemForSii[] {
+    const items: FacturaItemForSii[] = order.lineItems.map((li) => {
       const cantidad = Math.max(1, Math.round(li.quantity || 1));
-      const subtotalBruto = Math.round(li.netSubtotal);
+      const lineNetBruto = Math.round(li.netSubtotal);
+      const lineDiscBruto = Math.round(li.totalDiscountAmount || 0);
+      let subtotalBruto = lineNetBruto + lineDiscBruto;
+      if (subtotalBruto <= lineNetBruto && li.originalUnitPriceAmount > 0) {
+        subtotalBruto = Math.round(li.originalUnitPriceAmount) * cantidad;
+      }
       const subtotal = shopifyMontoANetoSii(subtotalBruto, tipoCodigo);
-      const precioUnitario = cantidad ? Math.round(subtotal / cantidad) : subtotal;
-      const descripcion = BiomaFacturacionService.simplificarDescripcionSii(li.title || '', li.variantTitle || '');
+      const precioUnitario = Math.max(
+        1,
+        cantidad ? Math.round(subtotal / cantidad) : Math.max(1, subtotal),
+      );
+      const descripcion = sanitizeDescripcionParaSii(
+        formatGlosaFacturaSii(li.title, li.variantTitle),
+      );
+      const tituloCompleto = sanitizeDescripcionParaSii(
+        buildTituloCompletoLineaShopify(li.title, li.variantTitle),
+      );
+      const descripcionExtendida =
+        tituloCompleto.length > descripcion.length &&
+        tituloCompleto.toUpperCase() !== descripcion.toUpperCase()
+          ? tituloCompleto
+          : undefined;
       return {
         descripcion,
+        descripcionExtendida,
         cantidad,
         unidad: this.defaultUnidad,
         precioUnitario,
         descuento: 0,
-        subtotal,
+        subtotal: precioUnitario * cantidad,
       };
+    });
+
+    const shippingBruto = Math.round(order.shippingTotal || 0);
+    if (shippingBruto > 0) {
+      const shippingNeto = shopifyMontoANetoSii(shippingBruto, tipoCodigo);
+      items.push({
+        descripcion: sanitizeDescripcionParaSii('DESPACHO ENVIO'),
+        cantidad: 1,
+        unidad: this.defaultUnidad,
+        precioUnitario: Math.max(1, shippingNeto),
+        descuento: 0,
+        subtotal: Math.max(1, shippingNeto),
+      });
+    }
+
+    return items;
+  }
+
+  /** Descuento global SII cuando el total Shopify es menor que la suma de líneas netas. */
+  static buildDescuentoGlobal(
+    order: ShopifyOrderForBioma,
+    items: FacturaItemForSii[],
+    tipoCodigo = 33,
+  ): DescuentoGlobalSii | null {
+    return computeDescuentoGlobalFromOrder(order, items, tipoCodigo);
+  }
+
+  /** Compara totales factura vs Shopify para preview y bloqueo de emisión. */
+  static validateMontos(
+    order: ShopifyOrderForBioma,
+    items: FacturaItemForSii[],
+    tipoCodigo = 33,
+    descuentoGlobal?: DescuentoGlobalSii | null,
+  ): MontosValidacion {
+    return computeMontosValidacion(order, items, tipoCodigo, {
+      descuentoGlobalNeto: descuentoGlobal?.montoNeto,
     });
   }
 
@@ -460,6 +542,20 @@ export class BiomaFacturacionService {
     order: ShopifyOrderForBioma,
   ): Promise<BiomaFacturaEmisionEntity> {
     const existing = await this.findEmision(order.id);
+    if (existing?.status === 'dismissed') return existing;
+
+    // Tag `factura` en Shopify = pendiente de emitir (incl. re-emisión tras NC)
+    if (existing?.status === 'emitted' && orderHasFacturaPendienteTag(order.tags)) {
+      existing.status = 'pending';
+      existing.siiFolio = null;
+      existing.siiCodigo = null;
+      existing.siiTrackId = null;
+      existing.emittedAt = null;
+      existing.pdfPublicUrl = null;
+      existing.lastError = null;
+      await this.repo.save(existing);
+    }
+
     const wantsFactura = orderWantsFacturaEmit(order);
     const facturaFields = extractFacturaFieldsFromOrder(order);
 
@@ -523,6 +619,81 @@ export class BiomaFacturacionService {
     await this.repo.save(row);
   }
 
+  /** Quita un pedido de facturas pendientes (ya facturado fuera del módulo, duplicado, etc.). */
+  static async dismissPending(
+    shopifyOrderId: string,
+    opts: { removeShopifyTag?: boolean } = {},
+  ): Promise<BiomaFacturaEmisionEntity> {
+    let row = await this.findEmision(shopifyOrderId);
+    if (!row) {
+      const order = await BiomaShopifyService.getOrder(shopifyOrderId);
+      if (!order) throw new Error('Pedido no encontrado en Shopify');
+      row = await this.upsertFromShopify(order);
+    }
+    const updated = await this.setStatus(shopifyOrderId, 'dismissed', { lastError: null });
+    if (!updated) throw new Error('No se pudo descartar el pedido');
+    if (opts.removeShopifyTag !== false) {
+      await BiomaShopifyService.removeTags(shopifyOrderId, ['factura']).catch(() => {});
+    }
+    return updated;
+  }
+
+  /**
+   * Devuelve un pedido emitido a facturas pendientes para re-emitir tras NC manual en MiPyme.
+   * No emite la NC — solo prepara Shopify + DB.
+   */
+  static async prepararReemisionNotaCredito(
+    shopifyOrderId: string,
+  ): Promise<{
+    row: BiomaFacturaEmisionEntity;
+    avisoNc: string;
+    folioAnterior: number | null;
+  }> {
+    const row = await this.findEmision(shopifyOrderId);
+    if (!row) throw new Error('Sin registro de emisión');
+    if (row.status !== 'emitted') {
+      throw new Error('Solo aplica a documentos ya emitidos (pestaña Realizadas)');
+    }
+    const tipo = row.tipoCodigo ?? 33;
+    if (isBoletaTipo(tipo)) {
+      throw new Error('Nota de crédito manual aplica a facturas (MiPyme), no boletas e-Boleta');
+    }
+
+    const folioAnterior = row.siiFolio;
+    await BiomaShopifyService.revertFacturaForNotaCredito(shopifyOrderId, folioAnterior);
+
+    await this.setStatus(shopifyOrderId, 'pending', {
+      siiFolio: null,
+      siiCodigo: null,
+      siiTrackId: null,
+      emittedAt: null,
+      pdfPublicUrl: null,
+      tipoCodigo: 33,
+      lastError: null,
+    });
+
+    const order = await BiomaShopifyService.getOrder(shopifyOrderId);
+    if (!order) throw new Error('Pedido no encontrado en Shopify');
+    const updated = await this.upsertFromShopify(order);
+
+    const avisoNc = folioAnterior
+      ? `Aviso: si corresponde, emite la nota de crédito en MiPyme (SII) anulando la factura folio ${folioAnterior}. El pedido ya está en Facturas pendientes para re-emitir.`
+      : 'Aviso: si corresponde, emite la nota de crédito en MiPyme (SII). El pedido ya está en Facturas pendientes para re-emitir.';
+
+    return { row: updated, avisoNc, folioAnterior };
+  }
+
+  /** Quita aviso NC guardado en lastError (legacy) — no bloquea re-emisión. */
+  static async clearNcAvisoEmision(shopifyOrderId: string): Promise<void> {
+    const row = await this.findEmision(shopifyOrderId);
+    if (!row?.lastError) return;
+    const t = row.lastError.toLowerCase();
+    if (!t.includes('nota de crédito') && !t.includes('nota de credito') && !t.includes('nc pendiente')) {
+      return;
+    }
+    await this.setStatus(shopifyOrderId, row.status, { lastError: null });
+  }
+
   static async setStatus(
     shopifyOrderId: string,
     status: BiomaFacturaStatus,
@@ -545,20 +716,112 @@ export class BiomaFacturacionService {
     return this.repo.save(row);
   }
 
+  /** URL pública del PDF (e-Boleta o enlace al backend si hay código SII). */
+  static pdfLinkForRow(row: BiomaFacturaEmisionEntity): string | null {
+    if (row.pdfPublicUrl) return row.pdfPublicUrl;
+    const base = BiomaFacturacionService.publicBaseUrl();
+    if (!base || !row.siiCodigo) return null;
+    return `${base}/api/bioma/pdf/${encodeURIComponent(row.shopifyOrderId)}`;
+  }
+
+  private static publicBaseUrl(): string | null {
+    const raw =
+      process.env.BIOMA_PUBLIC_URL ||
+      process.env.PUBLIC_APP_URL ||
+      process.env.RAILWAY_PUBLIC_DOMAIN;
+    if (!raw) return null;
+    const trimmed = raw.replace(/\/$/, '');
+    return trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
+  }
+
+  private static customerMessageContext(row: BiomaFacturaEmisionEntity): {
+    nombre: string;
+    numero: string;
+    folio: string;
+    dte: string;
+    dteCapitalized: string;
+    pdfUrl: string | null;
+  } {
+    const nombre =
+      row.customerName?.split(/\s+/)[0] ||
+      row.razonSocial?.split(/\s+/)[0] ||
+      'cliente';
+    const numero =
+      row.shopifyOrderName ||
+      (row.shopifyOrderNumber != null ? `#${row.shopifyOrderNumber}` : 'tu pedido');
+    const folio = row.siiFolio != null ? String(row.siiFolio) : '';
+    const boleta = isBoletaTipo(row.tipoCodigo);
+    const dte = boleta ? 'boleta' : 'factura';
+    const dteCapitalized = boleta ? 'Boleta' : 'Factura';
+    const pdfUrl = BiomaFacturacionService.pdfLinkForRow(row);
+    return { nombre, numero, folio, dte, dteCapitalized, pdfUrl };
+  }
+
+  private static applyMessageTemplate(
+    template: string,
+    ctx: ReturnType<typeof BiomaFacturacionService.customerMessageContext>,
+  ): string {
+    const folioPart = ctx.folio ? ` (folio ${ctx.folio})` : '';
+    const pdfPart = ctx.pdfUrl
+      ? `\n\nDescargar PDF: ${ctx.pdfUrl}`
+      : '\n\nAdjunta el PDF desde el módulo de facturación si el cliente lo necesita.';
+    return template
+      .replace(/\{nombre\}/g, ctx.nombre)
+      .replace(/\{numero\}/g, ctx.numero)
+      .replace(/\{folio\}/g, ctx.folio)
+      .replace(/\{folio_part\}/g, folioPart)
+      .replace(/\{dte\}/g, ctx.dte)
+      .replace(/\{pdf_url\}/g, ctx.pdfUrl || '')
+      .replace(/\{pdf_part\}/g, pdfPart);
+  }
+
   /** Build the wa.me URL and message for a given emission row. */
   static buildWhatsAppLink(row: BiomaFacturaEmisionEntity): {
     url: string | null;
     text: string;
     phone: string | null;
   } {
+    const ctx = BiomaFacturacionService.customerMessageContext(row);
     const defaultMsg =
       process.env.BIOMA_WHATSAPP_MESSAGE_TEMPLATE ||
-      'Hola {nombre}, te enviamos tu factura electrónica por el pedido {numero}. ☕ Cualquier consulta nos avisas. — Bioma Coffee Roasters';
-    const nombre = row.customerName?.split(' ')[0] || 'cliente';
-    const numero = row.shopifyOrderName || (row.shopifyOrderNumber ? `#${row.shopifyOrderNumber}` : '');
-    const text = defaultMsg.replace('{nombre}', nombre).replace('{numero}', numero);
+      'Hola {nombre}, te enviamos tu {dte} electrónica del pedido {numero}{folio_part}.{pdf_part}\n\n☕ Cualquier consulta nos avisas.\n— Bioma Coffee Roasters';
+    const text = BiomaFacturacionService.applyMessageTemplate(defaultMsg, ctx);
     const phone = row.customerPhone;
     const url = phone ? `https://wa.me/${phone}?text=${encodeURIComponent(text)}` : null;
     return { url, text, phone };
+  }
+
+  /** Abre el cliente de correo en modo borrador (mailto). */
+  static buildEmailDraft(row: BiomaFacturaEmisionEntity): {
+    url: string | null;
+    to: string | null;
+    subject: string;
+    body: string;
+  } {
+    const ctx = BiomaFacturacionService.customerMessageContext(row);
+    const to = row.customerEmail?.trim() || null;
+    const folioPart = ctx.folio ? ` — folio ${ctx.folio}` : '';
+    const subjectTemplate =
+      process.env.BIOMA_EMAIL_SUBJECT_TEMPLATE ||
+      '{dte_capitalized} pedido {numero}{folio_part} — Bioma Coffee Roasters';
+    const subject = subjectTemplate
+      .replace(/\{numero\}/g, ctx.numero)
+      .replace(/\{folio\}/g, ctx.folio)
+      .replace(/\{folio_part\}/g, folioPart)
+      .replace(/\{dte\}/g, ctx.dte)
+      .replace(/\{dte_capitalized\}/g, ctx.dteCapitalized);
+
+    const bodyTemplate =
+      process.env.BIOMA_EMAIL_BODY_TEMPLATE ||
+      'Hola {nombre},\n\nTe enviamos la {dte} electrónica de tu pedido {numero}{folio_part}.{pdf_part}\n\nCualquier consulta nos avisas.\n\nSaludos,\nBioma Coffee Roasters';
+    const body = BiomaFacturacionService.applyMessageTemplate(bodyTemplate, ctx);
+
+    if (!to) return { url: null, to: null, subject, body };
+
+    const params = new URLSearchParams();
+    params.set('subject', subject);
+    params.set('body', body);
+    const url = `mailto:${to}?${params.toString()}`;
+    return { url, to, subject, body };
   }
 }

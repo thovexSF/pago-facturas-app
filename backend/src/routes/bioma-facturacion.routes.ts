@@ -4,6 +4,9 @@ import { BiomaFacturacionController } from '../controllers/BiomaFacturacionContr
 const router = Router();
 
 router.post('/marcar-emitida/:orderId', BiomaFacturacionController.marcarEmitida);
+router.post('/descartar/:orderId', BiomaFacturacionController.descartar);
+router.post('/preparar-nc/:orderId', BiomaFacturacionController.prepararNc);
+router.post('/limpiar-aviso-nc/:orderId', BiomaFacturacionController.limpiarAvisoNc);
 router.post('/sync-boletas', BiomaFacturacionController.syncBoletas);
 router.get('/config', BiomaFacturacionController.config);
 router.get('/facturas-realizadas', BiomaFacturacionController.facturasRealizadas);
@@ -18,6 +21,7 @@ router.post('/preview/:orderId', BiomaFacturacionController.preview);
 router.post('/emitir/:orderId', BiomaFacturacionController.emitir);
 router.post('/pdf/:orderId/fetch', BiomaFacturacionController.fetchPdf);
 router.get('/pdf/:orderId', BiomaFacturacionController.pdf);
+router.get('/email-draft/:orderId', BiomaFacturacionController.emailDraft);
 router.get('/whatsapp-link/:orderId', BiomaFacturacionController.whatsappLink);
 router.post('/whatsapp-sent/:orderId', BiomaFacturacionController.whatsappSent);
 

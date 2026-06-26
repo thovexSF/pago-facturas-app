@@ -126,17 +126,21 @@ export function orderHasFacturaPendienteTag(tags: string[]): boolean {
   return tags.some((tag) => tag.trim().toLowerCase() === 'factura');
 }
 
-/** Factura: checkout, atributos de pedido, notas o tag `factura` en Shopify. */
+/** Factura: checkout, atributos, notas con RUT o tag `factura` en Shopify. */
 export function orderWantsFacturaEmit(order: {
   customAttributes: Array<{ key: string; value: string }>;
   tags: string[];
   note?: string | null;
   customer?: { note?: string | null } | null;
 }): boolean {
-  return (
+  if (
     orderNeedsFactura(order.customAttributes, order.note || order.customer?.note) ||
     orderHasFacturaPendienteTag(order.tags)
-  );
+  ) {
+    return true;
+  }
+  const { rut } = extractFacturaFieldsFromOrder(order);
+  return !!rut;
 }
 
 /** Extrae RUT / razón social / giro desde texto libre (notas de pedido o cliente). */

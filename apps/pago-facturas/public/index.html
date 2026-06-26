@@ -6,7 +6,19 @@
   <title>Facturas por Pagar — Bioma</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>🧾</text></svg>">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css" />
-  <link rel="stylesheet" href="styles.css?v=5" />
+  <link rel="stylesheet" href="styles.css?v=6" />
+  <script>
+    (function () {
+      var params = new URLSearchParams(location.search);
+      if (params.get('embed') === '1') {
+        document.documentElement.classList.add('embed');
+        return;
+      }
+      if (location.pathname === '/' || location.pathname === '/index.html') {
+        location.replace('/sii/');
+      }
+    })();
+  </script>
 </head>
 <body>
   <div class="app">
@@ -18,7 +30,7 @@
         <span class="empresa">Bioma Coffee · 78015129-3</span>
       </div>
       <div class="header-right">
-        <a href="/sii/" class="btn btn-secondary" style="text-decoration:none;display:inline-flex;align-items:center">📤 Facturación SII</a>
+        <a href="/sii/" class="btn btn-secondary btn-sii-nav" style="text-decoration:none;display:inline-flex;align-items:center">📤 Facturación SII</a>
         <button class="btn btn-secondary" id="btn-pdf-sync">
           📄 Descargar PDFs
         </button>

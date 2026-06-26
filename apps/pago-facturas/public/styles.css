@@ -9,6 +9,12 @@ body {
 
 .app { max-width: 1200px; margin: 0 auto; padding: 24px 20px; }
 
+html.embed body { background: transparent; }
+html.embed .app { max-width: none; padding: 0; }
+html.embed .header-left { display: none; }
+html.embed .btn-sii-nav { display: none !important; }
+html.embed .header { margin-bottom: 16px; }
+
 /* ── Header ── */
 .header {
   display: flex;

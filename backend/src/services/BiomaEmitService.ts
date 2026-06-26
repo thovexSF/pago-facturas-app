@@ -9,7 +9,38 @@ import { EBoletaService } from './EBoletaService';
 import { EBoletaSessionService } from './EBoletaSessionService';
 import { boletaReceptorForSii, boletaViaEBoleta } from '../utils/biomaOrderAttrs';
 
+export interface BiomaEmitItemOverride {
+  numero: number;
+  descripcion: string;
+  cantidad: number;
+  precioUnitario: number;
+}
+
+export interface BiomaEmitDescuentoGlobalOverride {
+  montoNeto: number;
+  porcentaje: number;
+  glosa: string;
+}
+
 export type BiomaEmitStep = 'abrir' | 'rellenar' | 'emitir';
+
+export interface BiomaEmitOrderOpts {
+  sessionId: string;
+  scraperStep?: BiomaEmitStep;
+  codigoOriginal?: string | null;
+  tipoCodigo?: number;
+  fechaEmision?: string;
+  esperarMsEnPreview?: number;
+  items?: BiomaEmitItemOverride[];
+  rutReceptor?: string;
+  razonSocial?: string;
+  giroReceptor?: string;
+  comunaReceptor?: string;
+  ciudadReceptor?: string;
+  dirReceptor?: string;
+  skipMontosValidation?: boolean;
+  descuentoGlobal?: BiomaEmitDescuentoGlobalOverride | null;
+}
 
 export interface BiomaEmitResult {
   success: boolean;
@@ -24,14 +55,7 @@ export interface BiomaEmitResult {
 export class BiomaEmitService {
   static async emitOrder(
     orderId: string,
-    opts: {
-      sessionId: string;
-      scraperStep?: BiomaEmitStep;
-      codigoOriginal?: string | null;
-      tipoCodigo?: number;
-      fechaEmision?: string;
-      esperarMsEnPreview?: number;
-    },
+    opts: BiomaEmitOrderOpts,
   ): Promise<BiomaEmitResult> {
     const scraperStep = opts.scraperStep ?? 'emitir';
     const isEmit = scraperStep === 'emitir';
@@ -72,21 +96,77 @@ export class BiomaEmitService {
       await BiomaFacturacionService.setStatus(orderId, 'emitting');
     }
 
-    const items = BiomaFacturacionService.buildItemsFromOrder(order, tipoCodigo).map((it, i) => ({
-      numero: i + 1,
+    const shopifyItems = BiomaFacturacionService.buildItemsFromOrder(order, tipoCodigo);
+    const builtItems =
+      Array.isArray(opts.items) && opts.items.length > 0
+        ? shopifyItems.map((si, i) => {
+            const ov = opts.items![i];
+            const cantidad = Math.max(1, Math.round(Number(ov?.cantidad) || si.cantidad));
+            return {
+              ...si,
+              // Glosas siempre desde Shopify (formatGlosaFacturaSii); no usar borrador/localStorage.
+              descripcion: si.descripcion,
+              cantidad,
+              precioUnitario: si.precioUnitario,
+              subtotal: si.precioUnitario * cantidad,
+            };
+          })
+        : shopifyItems;
+    let descuentoGlobal =
+      opts.descuentoGlobal && opts.descuentoGlobal.montoNeto > 0
+        ? opts.descuentoGlobal
+        : BiomaFacturacionService.buildDescuentoGlobal(order, builtItems, tipoCodigo);
+    if (descuentoGlobal && descuentoGlobal.montoNeto > 0 && !(descuentoGlobal.porcentaje > 0)) {
+      const built = BiomaFacturacionService.buildDescuentoGlobal(order, builtItems, tipoCodigo);
+      if (built?.porcentaje) {
+        descuentoGlobal = { ...descuentoGlobal, porcentaje: built.porcentaje };
+      }
+    }
+    const items = builtItems.map((it, i) => ({
+      numero: opts.items?.[i]?.numero ?? i + 1,
       descripcion: it.descripcion,
+      descripcionExtendida: it.descripcionExtendida,
       cantidad: it.cantidad,
       precioUnitario: it.precioUnitario,
     }));
 
+    const skipMontos = !!opts.skipMontosValidation;
+
+    if (!isBoleta && tipoCodigo === 33 && !skipMontos) {
+      const montos = BiomaFacturacionService.validateMontos(
+        order,
+        builtItems,
+        tipoCodigo,
+        descuentoGlobal,
+      );
+      if (!montos.ok) {
+        await BiomaFacturacionService.setStatus(orderId, 'error', {
+          lastError: `Total factura (${montos.factura.total}) ≠ Shopify (${montos.shopify.total}). Diferencia ${montos.diff}.`,
+        });
+        return {
+          success: false,
+          step: scraperStep,
+          error: `Montos no cuadran con Shopify (dif. $${Math.abs(montos.diff).toLocaleString('es-CL')}). Revisa el preview antes de emitir.`,
+        };
+      }
+    }
+
     await SiiFacturacionService.ensureBrowserForSession(session);
     const { page: emitPage, reused } = await SiiFacturacionService.acquireScraperPage(session);
+    const listHtml = reused ? await emitPage.content().catch(() => '') : '';
     const reusedPtrTkn =
       reused &&
       !!session.playwrightReady &&
-      /listadoEmitidos|mipeAdminDocsEmi/i.test(emitPage.url());
+      SiiFacturacionService.isListadoEmitidosOperativoHtml(listHtml);
 
     const cf = boletaReceptorForSii();
+
+    const receptorRut = isBoleta ? cf.rut : (opts.rutReceptor?.trim() || row.rutReceptor || '');
+    const receptorRazon = isBoleta ? cf.razonSocial : (opts.razonSocial?.trim() || row.razonSocial || '');
+    const receptorGiro = isBoleta ? '' : (opts.giroReceptor?.trim() || row.giroReceptor || '');
+    const receptorComuna = isBoleta ? '' : (opts.comunaReceptor?.trim() || row.comunaReceptor || '');
+    const receptorCiudad = isBoleta ? '' : (opts.ciudadReceptor?.trim() || row.ciudadReceptor || '');
+    const receptorDir = isBoleta ? '' : (opts.dirReceptor?.trim() || row.dirReceptor || '');
 
     let result: Awaited<ReturnType<typeof SiiFacturacionService.emitirFactura>> | undefined;
     try {
@@ -99,19 +179,20 @@ export class BiomaEmitService {
           tipoCodigo,
           fechaEmision: opts.fechaEmision || new Date().toISOString().split('T')[0],
           items,
-          rutReceptor: isBoleta ? cf.rut : (row.rutReceptor || ''),
-          razonSocial: isBoleta ? cf.razonSocial : (row.razonSocial || ''),
-          giroReceptor: isBoleta ? '' : (row.giroReceptor || ''),
-          comunaReceptor: isBoleta ? '' : (row.comunaReceptor || ''),
-          ciudadReceptor: isBoleta ? '' : (row.ciudadReceptor || ''),
-          dirReceptor: isBoleta ? '' : (row.dirReceptor || ''),
+          rutReceptor: receptorRut,
+          razonSocial: receptorRazon,
+          giroReceptor: receptorGiro,
+          comunaReceptor: receptorComuna,
+          ciudadReceptor: receptorCiudad,
+          dirReceptor: receptorDir,
+          descuentoGlobal: descuentoGlobal ?? undefined,
         },
         {
           detenerEnPreview: !isEmit,
           previewSoloFormulario: scraperStep === 'rellenar',
           scraperStep,
-          skipEmpresaSelect: !!session.playwrightReady,
-          skipPtrTkn: reusedPtrTkn,
+          skipEmpresaSelect: reusedPtrTkn,
+          skipPtrTkn: reusedPtrTkn && scraperStep !== 'emitir',
           esperarMsEnPreview: Number.isFinite(opts.esperarMsEnPreview)
             ? opts.esperarMsEnPreview
             : undefined,

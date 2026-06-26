@@ -18,6 +18,7 @@ import {
 } from '@shopify/polaris';
 import { BIOMA_API, SII_API } from '../lib/workbench';
 import { formatRut, validateRut } from '../lib/rut';
+import { formatSessionExpiresIn, isSiiSessionError, useSiiSessionMonitor } from '../hooks/useSiiSessionMonitor';
 
 type ScraperStep = 'abrir' | 'rellenar' | 'emitir';
 
@@ -273,7 +274,20 @@ export default function FacturacionIndex() {
     }
   }, [sessionId]);
 
-  const sessionReady = !!sessionId;
+  const handleSiiSessionInvalid = useCallback((reason?: string) => {
+    setSessionId(null);
+    localStorage.removeItem('biomaSiiSessionId');
+    setConfigOpen(true);
+    setError(reason || 'Sesión SII expirada. Vuelve a abrir sesión en Configuración.');
+  }, []);
+
+  const siiSession = useSiiSessionMonitor({
+    siiApiBase: SII_API(),
+    sessionId,
+    onInvalid: handleSiiSessionInvalid,
+  });
+
+  const sessionReady = siiSession.sessionReady;
 
   const stopAllSii = useCallback(async () => {
     try {
@@ -333,7 +347,9 @@ export default function FacturacionIndex() {
         });
         const data = await res.json();
         if (!res.ok || !data.success) {
-          throw new Error(data.error || data.result?.error || `HTTP ${res.status}`);
+          const errMsg = data.error || data.result?.error || `HTTP ${res.status}`;
+          if (isSiiSessionError(res.status, errMsg)) handleSiiSessionInvalid(errMsg);
+          throw new Error(errMsg);
         }
         setToast(data.message || data.result?.aviso || `${STEP_LABELS[step]} — OK`);
         setLastAviso(data.message || data.result?.aviso || null);
@@ -347,7 +363,7 @@ export default function FacturacionIndex() {
         setBusyOrderId(null);
       }
     },
-    [sessionReady, sessionId, payload, loadPending, loadPayload, selectedId, siiBlocked, loadBlockStatus],
+    [sessionReady, sessionId, payload, loadPending, loadPayload, selectedId, siiBlocked, loadBlockStatus, handleSiiSessionInvalid],
   );
 
   const pendingCount = rows.filter((r) => r.emision?.status !== 'emitted').length;
@@ -516,8 +532,25 @@ export default function FacturacionIndex() {
                     <InlineStack gap="200">
                       {sessionReady ? (
                         <>
-                          <Badge tone="success">Sesión OK</Badge>
+                          <Badge tone={siiSession.expiresSoon ? 'warning' : 'success'}>
+                            Sesión OK
+                            {siiSession.status?.valid
+                              ? ` · ${formatSessionExpiresIn(siiSession.status.expiresInMs)}`
+                              : ''}
+                          </Badge>
                           <Button onClick={closeSession}>Cerrar sesión</Button>
+                        </>
+                      ) : sessionId ? (
+                        <>
+                          <Badge tone="critical">Sesión inválida</Badge>
+                          <Button
+                            variant="primary"
+                            onClick={createSession}
+                            loading={creatingSession}
+                            disabled={!empresaRut || siiBlocked.blocked}
+                          >
+                            Reabrir sesión SII
+                          </Button>
                         </>
                       ) : (
                         <Button
@@ -535,6 +568,22 @@ export default function FacturacionIndex() {
               </BlockStack>
             </Card>
           </Layout.Section>
+
+          {sessionId && siiSession.status && !siiSession.status.valid ? (
+            <Layout.Section>
+              <Banner tone="critical">
+                Sesión SII no válida{siiSession.status.reason ? `: ${siiSession.status.reason}` : ''}. Abre sesión de nuevo en Configuración antes de usar el scraper.
+              </Banner>
+            </Layout.Section>
+          ) : null}
+
+          {siiSession.expiresSoon && siiSession.status?.valid ? (
+            <Layout.Section>
+              <Banner tone="warning">
+                La sesión SII caduca en {formatSessionExpiresIn(siiSession.status.expiresInMs)}. Reabre sesión pronto para evitar fallos al emitir.
+              </Banner>
+            </Layout.Section>
+          ) : null}
 
           {lastAviso && !error ? (
             <Layout.Section>

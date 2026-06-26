@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { SiiFacturacionService } from '../services/SiiFacturacionService';
+import { SII_SESSION_MAX_AGE_MS, SiiFacturacionService } from '../services/SiiFacturacionService';
 import { SiiCredentialsService } from '../services/SiiCredentialsService';
 
 // ── Background jobs (sync histórico) ────────────────────────────────────────
@@ -49,11 +49,14 @@ export class SiiFacturacionController {
     try {
       const sessionId = await SiiFacturacionService.createSession(empresaRut);
 
+      const session = SiiFacturacionService.getSession(sessionId);
+      const expiresAt = session
+        ? SiiFacturacionService.sessionExpiresAt(session)
+        : Date.now() + SII_SESSION_MAX_AGE_MS;
+
       // Billing: precalienta Playwright + PDFs. Bioma: solo HTTP hasta el primer preview/emit.
-      if (!deferPlaywright) {
-        const session = SiiFacturacionService.getSession(sessionId);
-        if (session) {
-          SiiFacturacionService.ensureBrowserForSession(session)
+      if (!deferPlaywright && session) {
+        SiiFacturacionService.ensureBrowserForSession(session)
             .then((context) => {
               setTimeout(() => {
                 SiiFacturacionService.startBackgroundPdfDownload(context, empresaRut);
@@ -62,10 +65,9 @@ export class SiiFacturacionController {
             .catch((err) => {
               console.warn('[SII] ensureBrowserForSession (background):', err?.message || err);
             });
-        }
       }
 
-      return res.json({ success: true, sessionId });
+      return res.json({ success: true, sessionId, expiresAt });
     } catch (err: any) {
       const msg = err?.message || 'Error al crear sesión';
       console.error('[SII] createSession error:', msg, err?.stack?.split('\n')[1] || '');
@@ -78,6 +80,26 @@ export class SiiFacturacionController {
     const { sessionId } = req.params;
     await SiiFacturacionService.closeSession(sessionId);
     return res.json({ success: true });
+  }
+
+  // GET /api/sii-facturacion/session/:sessionId/status?probe=0|1
+  static async sessionStatus(req: Request, res: Response) {
+    const { sessionId } = req.params;
+    if (!sessionId) return res.status(400).json({ error: 'sessionId requerido' });
+    const probe = req.query.probe !== '0' && req.query.probe !== 'false';
+    try {
+      const status = await SiiFacturacionService.getSessionStatus(sessionId, { probe });
+      return res.json({ success: true, ...status });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  }
+
+  /** Cierre best-effort al salir de la app (navigator.sendBeacon). */
+  static async beaconCloseSession(req: Request, res: Response) {
+    const sessionId = String(req.body?.sessionId || req.query?.sessionId || '').trim();
+    if (sessionId) await SiiFacturacionService.closeSession(sessionId).catch(() => {});
+    return res.status(204).send();
   }
 
   // POST /api/sii-facturacion/session/close-all

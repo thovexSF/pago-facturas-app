@@ -7,7 +7,13 @@ import {
   Index,
 } from 'typeorm';
 
-export type BiomaFacturaStatus = 'pending' | 'drafting' | 'emitting' | 'emitted' | 'error';
+export type BiomaFacturaStatus =
+  | 'pending'
+  | 'drafting'
+  | 'emitting'
+  | 'emitted'
+  | 'error'
+  | 'dismissed';
 
 /**
  * Tracks which Shopify orders (for Bioma) have been turned into SII facturas.
