@@ -43,6 +43,8 @@ export interface ShopifyOrderAttribute {
 }
 
 export interface ShopifyOrderLineItem {
+  /** Nombre completo de la línea en Shopify (título + variante). */
+  name: string;
   title: string;
   variantTitle: string | null;
   quantity: number;
@@ -146,6 +148,7 @@ const ORDERS_QUERY = `#graphql
           lineItems(first: 50) {
             edges {
               node {
+                name
                 title
                 variantTitle
                 quantity
@@ -198,6 +201,7 @@ const DRAFT_ORDERS_QUERY = `#graphql
           lineItems(first: 50) {
             edges {
               node {
+                name
                 title
                 variantTitle
                 quantity
@@ -216,6 +220,7 @@ const DRAFT_ORDERS_QUERY = `#graphql
 function mapDraftOrderNode(node: any): ShopifyOrderForBioma {
   const lineItems: ShopifyOrderLineItem[] =
     node?.lineItems?.edges?.map((edge: any) => ({
+      name: edge.node?.name ?? edge.node?.title ?? '',
       title: edge.node?.title ?? '',
       variantTitle: edge.node?.variantTitle ?? null,
       quantity: num(edge.node?.quantity),
@@ -345,6 +350,7 @@ function num(value: unknown): number {
 function mapOrderNode(node: any): ShopifyOrderForBioma {
   const lineItems: ShopifyOrderLineItem[] =
     node?.lineItems?.edges?.map((edge: any) => ({
+      name: edge.node?.name ?? edge.node?.title ?? '',
       title: edge.node?.title ?? '',
       variantTitle: edge.node?.variantTitle ?? null,
       quantity: num(edge.node?.quantity),
