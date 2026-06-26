@@ -23,6 +23,7 @@ import {
 import { draftMetaForStorage, mergeDraftMeta } from '../utils/facturaDraft';
 import type { SiiEmitFormSnapshot } from '../utils/siiFormSnapshot';
 import { formatSessionExpiresIn, isSiiSessionError, useSiiSessionMonitor } from '../hooks/useSiiSessionMonitor';
+import { fetchFacturaPdfFile, shareWhatsAppWithPdf } from '../utils/whatsappShare';
 
 const BIOMA_API = `${API_CONFIG.BASE_URL}/api/bioma`;
 const SII_API = `${API_CONFIG.BASE_URL}/api/sii-facturacion`;
@@ -817,17 +818,44 @@ export default function BiomaFacturacion() {
       const res = await fetch(`${BIOMA_API}/whatsapp-link/${encodeURIComponent(orderId)}`);
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
-      if (!data.url) {
-        throw new Error(
-          data.phone
-            ? 'No se pudo armar el enlace de WhatsApp'
-            : 'Sin teléfono del cliente en Shopify (revisa el pedido)',
-        );
+      if (!data.phone) {
+        throw new Error('Sin teléfono del cliente en Shopify (revisa el pedido)');
       }
-      window.open(data.url, '_blank', 'noopener,noreferrer');
+
+      let mode: 'native' | 'fallback' | 'text-only' = 'text-only';
+
+      if (data.hasPdf) {
+        const filename = String(data.pdfFilename || 'factura.pdf');
+        const file = await fetchFacturaPdfFile(
+          `${BIOMA_API}/pdf/${encodeURIComponent(orderId)}`,
+          filename,
+        );
+        try {
+          mode = await shareWhatsAppWithPdf({
+            phone: data.phone,
+            text: data.text,
+            file,
+            waUrl: data.url,
+          });
+        } catch (err: unknown) {
+          if (err instanceof DOMException && err.name === 'AbortError') return;
+          throw err;
+        }
+      } else if (data.url) {
+        window.open(data.url, '_blank', 'noopener,noreferrer');
+      } else {
+        throw new Error('No se pudo armar el enlace de WhatsApp');
+      }
+
       await fetch(`${BIOMA_API}/whatsapp-sent/${encodeURIComponent(orderId)}`, { method: 'POST' });
       await loadRealizadas();
-      setSnack('WhatsApp abierto — revisa el mensaje y adjunta el PDF si hace falta');
+      if (mode === 'native') {
+        setSnack('WhatsApp abierto con el PDF adjunto');
+      } else if (mode === 'fallback') {
+        setSnack('PDF descargado — adjúntalo en WhatsApp antes de enviar');
+      } else {
+        setSnack('WhatsApp abierto (sin PDF disponible todavía)');
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(`WhatsApp: ${msg}`);

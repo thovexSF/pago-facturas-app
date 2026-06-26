@@ -757,11 +757,15 @@ export class BiomaFacturacionService {
   private static applyMessageTemplate(
     template: string,
     ctx: ReturnType<typeof BiomaFacturacionService.customerMessageContext>,
+    opts?: { includePdfLink?: boolean },
   ): string {
     const folioPart = ctx.folio ? ` (folio ${ctx.folio})` : '';
-    const pdfPart = ctx.pdfUrl
-      ? `\n\nDescargar PDF: ${ctx.pdfUrl}`
-      : '\n\nAdjunta el PDF desde el módulo de facturación si el cliente lo necesita.';
+    const includePdfLink = opts?.includePdfLink ?? false;
+    const pdfPart = includePdfLink
+      ? ctx.pdfUrl
+        ? `\n\nDescargar PDF: ${ctx.pdfUrl}`
+        : '\n\nAdjunta el PDF desde el módulo de facturación si el cliente lo necesita.'
+      : '';
     return template
       .replace(/\{nombre\}/g, ctx.nombre)
       .replace(/\{numero\}/g, ctx.numero)
@@ -772,20 +776,37 @@ export class BiomaFacturacionService {
       .replace(/\{pdf_part\}/g, pdfPart);
   }
 
+  static pdfFilenameForRow(row: BiomaFacturaEmisionEntity): string {
+    const num = (row.shopifyOrderName || (row.shopifyOrderNumber != null ? `#${row.shopifyOrderNumber}` : 'pedido'))
+      .replace(/#/g, '')
+      .trim();
+    const folio = row.siiFolio != null ? `-folio-${row.siiFolio}` : '';
+    const tipo = isBoletaTipo(row.tipoCodigo) ? 'Boleta' : 'Factura';
+    return `${tipo}-${num}${folio}.pdf`.replace(/[^\w.-]+/g, '-');
+  }
+
   /** Build the wa.me URL and message for a given emission row. */
   static buildWhatsAppLink(row: BiomaFacturaEmisionEntity): {
     url: string | null;
     text: string;
     phone: string | null;
+    pdfFilename: string;
+    hasPdf: boolean;
   } {
     const ctx = BiomaFacturacionService.customerMessageContext(row);
     const defaultMsg =
       process.env.BIOMA_WHATSAPP_MESSAGE_TEMPLATE ||
-      'Hola {nombre}, te enviamos tu {dte} electrónica del pedido {numero}{folio_part}.{pdf_part}\n\n☕ Cualquier consulta nos avisas.\n— Bioma Coffee Roasters';
-    const text = BiomaFacturacionService.applyMessageTemplate(defaultMsg, ctx);
+      'Hola {nombre}, te enviamos tu {dte} electrónica del pedido {numero}{folio_part}.{pdf_part}\n\nCualquier consulta nos avisas.\n— Bioma Coffee Roasters';
+    const text = BiomaFacturacionService.applyMessageTemplate(defaultMsg, ctx, { includePdfLink: false });
     const phone = row.customerPhone;
     const url = phone ? `https://wa.me/${phone}?text=${encodeURIComponent(text)}` : null;
-    return { url, text, phone };
+    return {
+      url,
+      text,
+      phone,
+      pdfFilename: BiomaFacturacionService.pdfFilenameForRow(row),
+      hasPdf: !!(row.siiCodigo || row.pdfPublicUrl),
+    };
   }
 
   /** Abre el cliente de correo en modo borrador (mailto). */
@@ -811,7 +832,7 @@ export class BiomaFacturacionService {
     const bodyTemplate =
       process.env.BIOMA_EMAIL_BODY_TEMPLATE ||
       'Hola {nombre},\n\nTe enviamos la {dte} electrónica de tu pedido {numero}{folio_part}.{pdf_part}\n\nCualquier consulta nos avisas.\n\nSaludos,\nBioma Coffee Roasters';
-    const body = BiomaFacturacionService.applyMessageTemplate(bodyTemplate, ctx);
+    const body = BiomaFacturacionService.applyMessageTemplate(bodyTemplate, ctx, { includePdfLink: true });
 
     if (!to) return { url: null, to: null, subject, body };
 
