@@ -235,7 +235,7 @@ export default function FacturaEmitPreview({
           }}
         >
           {editable
-            ? 'FORMULARIO MIPYME — Vista previa editable (campos EFXP_*)'
+            ? 'FORMULARIO MIPYME — Vista previa editable'
             : 'FORMULARIO MIPYME — Vista previa antes de emitir'}
         </Typography>
         <Stack direction="row" spacing={1} alignItems="center">
@@ -419,7 +419,7 @@ export default function FacturaEmitPreview({
                 }
                 label={
                   <Typography variant="body2">
-                    Activar columna «Descripción extendida» ({SII_MIPYME_FIELDS.descripcionExtendida})
+                    Activar columna «Descripción extendida»
                   </Typography>
                 }
               />
@@ -429,8 +429,8 @@ export default function FacturaEmitPreview({
           {lineasNombreLargo.length > 0 && (
             <Alert severity="warning" sx={{ mb: 1.5, py: 0.5 }}>
               {lineasNombreLargo.length === 1
-                ? `La línea ${lineasNombreLargo[0].numero} supera ${SII_EFXP_NMB_MAX} caracteres en ${SII_MIPYME_FIELDS.nombre}.`
-                : `${lineasNombreLargo.length} líneas superan ${SII_EFXP_NMB_MAX} caracteres en ${SII_MIPYME_FIELDS.nombre}.`}{' '}
+                ? `La línea ${lineasNombreLargo[0].numero} supera ${SII_EFXP_NMB_MAX} caracteres en el nombre corto.`
+                : `${lineasNombreLargo.length} líneas superan ${SII_EFXP_NMB_MAX} caracteres en el nombre corto.`}{' '}
               El SII guardará solo el nombre corto truncado; activa «Descripción extendida» para el detalle completo.
             </Alert>
           )}
@@ -443,34 +443,25 @@ export default function FacturaEmitPreview({
                   <TableCell sx={{ fontWeight: 700, minWidth: 200 }}>
                     Nombre
                     <Typography variant="caption" display="block" color="text.secondary">
-                      {SII_MIPYME_FIELDS.nombre} · máx. {SII_EFXP_NMB_MAX} car.
+                      máx. {SII_EFXP_NMB_MAX} caracteres
                     </Typography>
                   </TableCell>
                   {payload.useDescripcionExtendida && (
                     <TableCell sx={{ fontWeight: 700, minWidth: 220 }}>
                       Descripción extendida
                       <Typography variant="caption" display="block" color="text.secondary">
-                        {SII_MIPYME_FIELDS.descripcionExtendida} · opcional
+                        opcional
                       </Typography>
                     </TableCell>
                   )}
                   <TableCell sx={{ fontWeight: 700 }} align="center" width={72}>
                     Cant.
-                    <Typography variant="caption" display="block" color="text.secondary">
-                      {SII_MIPYME_FIELDS.cantidad}
-                    </Typography>
                   </TableCell>
                   <TableCell sx={{ fontWeight: 700 }} align="right" width={100}>
                     P. unit.{esAfecta ? ' neto' : ''}
-                    <Typography variant="caption" display="block" color="text.secondary">
-                      {SII_MIPYME_FIELDS.precioUnitario}
-                    </Typography>
                   </TableCell>
                   <TableCell sx={{ fontWeight: 700 }} align="right" width={100}>
                     Subtotal
-                    <Typography variant="caption" display="block" color="text.secondary">
-                      {SII_MIPYME_FIELDS.subtotalLinea}
-                    </Typography>
                   </TableCell>
                   {editable && <TableCell width={44} />}
                 </TableRow>
@@ -616,7 +607,7 @@ export default function FacturaEmitPreview({
           <Grid item xs={12} md={7}>
             <Paper variant="outlined" sx={{ p: 1.5, borderWidth: 2, borderColor: '#90a4ae', bgcolor: '#fff' }}>
               <Typography variant="subtitle2" fontWeight={700} gutterBottom>
-                Totales (como en el formulario SII)
+                Totales
               </Typography>
               <MipymeField label={SII_MIPYME_FIELDS.subtotal} value={fmt(montoNeto)} mono />
               <MipymeField

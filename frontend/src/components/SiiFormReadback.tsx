@@ -79,7 +79,7 @@ export default function SiiFormReadback({
           <TableHead>
             <TableRow>
               <TableCell>#</TableCell>
-              <TableCell>Nombre (EFXP_NMB)</TableCell>
+              <TableCell>Nombre</TableCell>
               <TableCell>Descripción extendida</TableCell>
               <TableCell align="right">Cant.</TableCell>
               <TableCell align="right">P. unit.</TableCell>

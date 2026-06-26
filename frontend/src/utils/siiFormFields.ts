@@ -32,16 +32,17 @@ export function previewNombreEnSii(texto: string, max = SII_EFXP_NMB_MAX): strin
   return t.slice(0, cut).trim();
 }
 
+/** Etiquetas legibles del formulario MiPyme (sin códigos internos EFXP_*). */
 export const SII_MIPYME_FIELDS = {
-  nombre: 'EFXP_NMB',
-  descripcionExtendida: 'EFXP_DSC_ITEM',
-  cantidad: 'EFXP_QTY',
-  precioUnitario: 'EFXP_PRC',
-  subtotalLinea: 'EFXP_SUBT',
-  subtotal: 'EFXP_SUBTOTAL',
-  descuentoGlobalPct: 'Descuento global %',
-  montoNeto: 'EFXP_MNT_NETO',
-  iva: 'EFXP_IVA',
-  total: 'EFXP_MNT_TOTAL',
-  formaPago: 'EFXP_DSC_FMA_PAGO',
+  nombre: 'Nombre',
+  descripcionExtendida: 'Descripción extendida',
+  cantidad: 'Cantidad',
+  precioUnitario: 'Precio unitario',
+  subtotalLinea: 'Subtotal línea',
+  subtotal: 'Subtotal',
+  descuentoGlobalPct: 'Descuento global',
+  montoNeto: 'Monto neto',
+  iva: 'IVA',
+  total: 'Total',
+  formaPago: 'Forma de pago',
 } as const;
