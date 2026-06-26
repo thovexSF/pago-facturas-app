@@ -46,3 +46,24 @@ export const SII_MIPYME_FIELDS = {
   total: 'Total',
   formaPago: 'Forma de pago',
 } as const;
+
+export type FormaPagoMipyme = 'contado' | 'credito';
+
+export const FORMA_PAGO_MIPYME_OPTIONS: ReadonlyArray<{ value: FormaPagoMipyme; label: string }> = [
+  { value: 'contado', label: 'Contado' },
+  { value: 'credito', label: 'Crédito' },
+];
+
+export function normalizeFormaPagoMipyme(raw: unknown): FormaPagoMipyme {
+  const s = String(raw ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (s === '2' || s === 'credito' || s === 'credit') return 'credito';
+  return 'contado';
+}
+
+export function formaPagoMipymeLabel(raw?: FormaPagoMipyme | string | null): string {
+  return normalizeFormaPagoMipyme(raw) === 'credito' ? 'Crédito' : 'Contado';
+}

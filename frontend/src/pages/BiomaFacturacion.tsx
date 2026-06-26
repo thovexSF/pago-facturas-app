@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ComponentProps } from 'react';
 import {
   Box, Typography, Paper, Button, Alert, CircularProgress, Table, TableBody,
   TableCell, TableContainer, TableHead, TableRow, Chip, Snackbar,
@@ -149,7 +149,58 @@ function dteLabel(tipo: number): string {
 }
 
 function templateReady(t: PayloadData['template'] | null | undefined): boolean {
-  return !!t && (t.source === 'nueva' || !!t.codigo);
+  if (!t) return false;
+  if (t.codigo) return true;
+  // Factura nueva sin código plantilla (source «nueva» o respuesta legacy sin source).
+  return t.source === 'nueva' || t.source == null;
+}
+
+function mipymeEmitBlockReason(opts: {
+  isBusy: boolean;
+  sessionReady: boolean;
+  sessionChecking: boolean;
+  hasSessionId: boolean;
+  siiBlocked: boolean;
+  siiBlockedMinutes?: number;
+  template: PayloadData['template'] | null | undefined;
+  editDraft: FacturaEditDraft | null;
+  payloadLoading: boolean;
+  previewRut: string | null;
+  forEmit?: boolean;
+}): string | null {
+  if (opts.isBusy || opts.payloadLoading) return null;
+  if (!opts.editDraft) return 'Generando vista previa del pedido…';
+  if (opts.siiBlocked) {
+    return `SII en pausa${opts.siiBlockedMinutes ? ` (~${opts.siiBlockedMinutes} min)` : ''}. Espera o entra manual en sii.cl.`;
+  }
+  if (!templateReady(opts.template)) return 'No hay plantilla MiPyme para este pedido.';
+  if (opts.hasSessionId && opts.sessionChecking && !opts.sessionReady) {
+    return 'Verificando sesión MiPyme…';
+  }
+  if (!opts.sessionReady) return 'Abre sesión MiPyme (botón arriba o aquí abajo).';
+  if (opts.forEmit && opts.previewRut && !validateRut(opts.previewRut)) {
+    return 'Corrige el RUT receptor en el preview antes de emitir.';
+  }
+  return null;
+}
+
+function DisabledActionButton({
+  disabled,
+  tooltip,
+  children,
+  ...props
+}: ComponentProps<typeof Button> & { tooltip?: string | null }) {
+  const btn = (
+    <Button disabled={disabled} {...props}>
+      {children}
+    </Button>
+  );
+  if (!disabled || !tooltip) return btn;
+  return (
+    <Tooltip title={tooltip} arrow placement="top">
+      <span style={{ display: 'inline-block' }}>{btn}</span>
+    </Tooltip>
+  );
 }
 
 const fmt = (n: number) => `$${(n || 0).toLocaleString('es-CL')}`;
@@ -624,6 +675,7 @@ export default function BiomaFacturacion() {
             : undefined,
         })),
         useDescripcionExtendida: !!editDraft.useDescripcionExtendida,
+        formaPago: editDraft.formaPago ?? 'contado',
         skipMontosValidation: !!draftDirty,
       };
       if (dg) body.descuentoGlobal = dg;
@@ -728,6 +780,7 @@ export default function BiomaFacturacion() {
             : undefined,
         }));
         body.useDescripcionExtendida = !!editDraft.useDescripcionExtendida;
+        body.formaPago = editDraft.formaPago ?? 'contado';
         const dg =
           payload?.descuentoGlobal ??
           computeDescuentoGlobalPreview(editDraft.items, shopifyTotalRef, editDraft.tipoCodigo ?? 33, {
@@ -1016,6 +1069,66 @@ export default function BiomaFacturacion() {
   const previewRut = editDraft?.rutReceptor ?? payload?.rutReceptor ?? null;
   const selectedBoleta = boletasRows.find((r) => r.shopifyOrderId === selectedId) ?? null;
   const isBusy = busyOrderId === selectedId;
+
+  const rellenarBlockReason = useMemo(
+    () =>
+      mipymeEmitBlockReason({
+        isBusy,
+        sessionReady,
+        sessionChecking: siiSession.checking,
+        hasSessionId: !!sessionId,
+        siiBlocked: siiBlocked.blocked,
+        siiBlockedMinutes: siiBlocked.retryAfterMinutes,
+        template: payload?.template,
+        editDraft,
+        payloadLoading,
+        previewRut,
+      }),
+    [
+      isBusy,
+      sessionReady,
+      siiSession.checking,
+      sessionId,
+      siiBlocked.blocked,
+      siiBlocked.retryAfterMinutes,
+      payload?.template,
+      editDraft,
+      payloadLoading,
+      previewRut,
+    ],
+  );
+
+  const emitirBlockReason = useMemo(
+    () =>
+      mipymeEmitBlockReason({
+        isBusy,
+        sessionReady,
+        sessionChecking: siiSession.checking,
+        hasSessionId: !!sessionId,
+        siiBlocked: siiBlocked.blocked,
+        siiBlockedMinutes: siiBlocked.retryAfterMinutes,
+        template: payload?.template,
+        editDraft,
+        payloadLoading,
+        previewRut,
+        forEmit: true,
+      }),
+    [
+      isBusy,
+      sessionReady,
+      siiSession.checking,
+      sessionId,
+      siiBlocked.blocked,
+      siiBlocked.retryAfterMinutes,
+      payload?.template,
+      editDraft,
+      payloadLoading,
+      previewRut,
+    ],
+  );
+
+  const rellenarDisabled = !!rellenarBlockReason || isBusy;
+  const emitirDisabled = !!emitirBlockReason || isBusy;
 
   return (
     <Box>
@@ -1405,6 +1518,13 @@ export default function BiomaFacturacion() {
             </Typography>
             <Typography variant="body2" color="text.secondary">
               {dteLabel(payload?.tipoCodigo === 61 ? 61 : 33)} · preview antes de emitir en MiPyme
+              {sessionReady ? (
+                <> · <Box component="span" sx={{ color: 'success.main', fontWeight: 600 }}>Sesión OK</Box></>
+              ) : sessionId ? (
+                <> · <Box component="span" sx={{ color: 'warning.main' }}>Sin sesión MiPyme válida</Box></>
+              ) : (
+                <> · <Box component="span" sx={{ color: 'error.main' }}>Abre sesión MiPyme</Box></>
+              )}
             </Typography>
           </Box>
           <IconButton onClick={closeFacturaModal} aria-label="Cerrar">
@@ -1489,36 +1609,46 @@ export default function BiomaFacturacion() {
             </Alert>
           )}
         </DialogContent>
-        <DialogActions sx={{ px: 3, py: 2, flexWrap: 'wrap', gap: 1 }}>
-          <Button
+        <DialogActions sx={{ px: 3, py: 2, flexWrap: 'wrap', gap: 1, flexDirection: 'column', alignItems: 'stretch' }}>
+          {(rellenarBlockReason || emitirBlockReason) && (
+            <Alert
+              severity={!sessionReady ? 'warning' : 'info'}
+              sx={{ width: '100%', mb: 0.5 }}
+              action={
+                !sessionReady && !siiBlocked.blocked ? (
+                  <Button
+                    color="inherit"
+                    size="small"
+                    onClick={createSession}
+                    disabled={creatingSession || !empresaRut}
+                  >
+                    {creatingSession ? 'Conectando…' : 'Abrir MiPyme'}
+                  </Button>
+                ) : undefined
+              }
+            >
+              {rellenarBlockReason || emitirBlockReason}
+            </Alert>
+          )}
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ width: '100%', justifyContent: 'flex-end' }}>
+          <DisabledActionButton
             variant="outlined"
             color="primary"
-            disabled={
-              isBusy ||
-              !sessionReady ||
-              siiBlocked.blocked ||
-              !templateReady(payload?.template) ||
-              !editDraft
-            }
+            disabled={rellenarDisabled}
+            tooltip={rellenarBlockReason}
             onClick={() => selectedRow && rellenarEnSii(selectedRow.shopify.id)}
           >
             {isBusy ? 'Rellenando…' : 'Rellenar en SII'}
-          </Button>
-          <Button
+          </DisabledActionButton>
+          <DisabledActionButton
             variant="contained"
             color="success"
-            disabled={
-              isBusy ||
-              !sessionReady ||
-              siiBlocked.blocked ||
-              !templateReady(payload?.template) ||
-              !editDraft ||
-              (!!previewRut && !validateRut(previewRut))
-            }
+            disabled={emitirDisabled}
+            tooltip={emitirBlockReason}
             onClick={() => selectedRow && emitirDte(selectedRow.shopify.id, { isBoleta: false })}
           >
             {isBusy ? 'Emitiendo…' : 'Emitir factura'}
-          </Button>
+          </DisabledActionButton>
           <Button
             variant="outlined"
             color="secondary"
@@ -1535,6 +1665,7 @@ export default function BiomaFacturacion() {
           >
             Quitar de pendientes
           </Button>
+          </Stack>
         </DialogActions>
       </Dialog>
 

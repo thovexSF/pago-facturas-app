@@ -11,6 +11,7 @@ export type FacturaDraftMeta = Pick<
   | 'dirReceptor'
   | 'fechaEmision'
   | 'useDescripcionExtendida'
+  | 'formaPago'
 >;
 
 export function mergeDraftMeta(base: FacturaEditDraft, saved: Partial<FacturaEditDraft>): FacturaEditDraft {
@@ -38,6 +39,7 @@ export function mergeDraftMeta(base: FacturaEditDraft, saved: Partial<FacturaEdi
     dirReceptor: saved.dirReceptor?.trim() || base.dirReceptor,
     fechaEmision: saved.fechaEmision || base.fechaEmision,
     useDescripcionExtendida: saved.useDescripcionExtendida ?? base.useDescripcionExtendida,
+    formaPago: saved.formaPago ?? base.formaPago,
     items,
     descuentoGlobal: base.descuentoGlobal,
   };

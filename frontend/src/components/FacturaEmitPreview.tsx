@@ -15,9 +15,12 @@ import {
   TableRow,
   TextField,
   Typography,
-  FormControlLabel,
+  FormControl,
   Checkbox,
   Alert,
+  Select,
+  MenuItem,
+  FormControlLabel,
 } from '@mui/material';
 import CheckCircleOutlineIcon from '@mui/icons-material/esm/CheckCircleOutline.js';
 import ErrorOutlineIcon from '@mui/icons-material/esm/ErrorOutline.js';
@@ -31,8 +34,11 @@ import {
   SII_EFXP_DSC_ITEM_MAX,
   SII_EFXP_NMB_MAX,
   SII_MIPYME_FIELDS,
+  FORMA_PAGO_MIPYME_OPTIONS,
+  formaPagoMipymeLabel,
   previewNombreEnSii,
   siiCharMeta,
+  type FormaPagoMipyme,
 } from '../utils/siiFormFields';
 
 export interface FacturaEmitPreviewData {
@@ -60,6 +66,7 @@ export interface FacturaEmitPreviewData {
   }>;
   /** Activar checkbox «Descripción» extendida en MiPyme al rellenar/emitir. */
   useDescripcionExtendida?: boolean;
+  formaPago?: FormaPagoMipyme;
 }
 
 export interface MontosValidacionPreview {
@@ -594,7 +601,28 @@ export default function FacturaEmitPreview({
               <Typography variant="subtitle2" fontWeight={700} gutterBottom>
                 Otros campos MiPyme
               </Typography>
-              <MipymeField label={SII_MIPYME_FIELDS.formaPago} value="Contado" />
+              {editable ? (
+                <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+                    {SII_MIPYME_FIELDS.formaPago}
+                  </Typography>
+                  <Select
+                    value={payload.formaPago ?? 'contado'}
+                    onChange={(e) => patch({ formaPago: e.target.value as FormaPagoMipyme })}
+                  >
+                    {FORMA_PAGO_MIPYME_OPTIONS.map((opt) => (
+                      <MenuItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              ) : (
+                <MipymeField
+                  label={SII_MIPYME_FIELDS.formaPago}
+                  value={formaPagoMipymeLabel(payload.formaPago)}
+                />
+              )}
               <MipymeField label="Pedido Shopify" value={orderName} />
               {showDescuentoGlobal && (
                 <MipymeField

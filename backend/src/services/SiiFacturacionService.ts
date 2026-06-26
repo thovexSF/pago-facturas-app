@@ -23,6 +23,12 @@ import { AppDataSource } from '../config/database';
 import { SiiFacturaEntity } from '../entities/SiiFacturaEntity';
 import { SiiContactoEntity } from '../entities/SiiContactoEntity';
 import { WorkbenchClient } from '../entities/WorkbenchClient';
+import {
+  normalizeFormaPagoMipyme,
+  SII_FMA_PAGO_CODE,
+  SII_FMA_PAGO_LABEL,
+  type FormaPagoMipyme,
+} from '../utils/biomaFormaPago';
 
 // ─── Tipos ─────────────────────────────────────────────────────────────────
 
@@ -2474,6 +2480,41 @@ async function verifyDescuentoGlobalEnFormulario(
 }
 
 /** Rellena el descuento global del formulario MiPyme (fila Sub Total → Descuento Global %). */
+async function fillFormaPagoMipyme(
+  page: Page,
+  setFieldSafe: (fieldName: string, value: string) => Promise<void>,
+  formaRaw?: FormaPagoMipyme | string | null,
+): Promise<boolean> {
+  const forma = normalizeFormaPagoMipyme(formaRaw);
+  const code = SII_FMA_PAGO_CODE[forma];
+  const label = SII_FMA_PAGO_LABEL[forma];
+
+  const selectNames = ['EFXP_FMA_PAGO', 'EFXP_FORMA_PAGO', 'EFXP_FMA_PGO'];
+  for (const name of selectNames) {
+    const sel = `select[name="${name}"]`;
+    if (!(await page.$(sel))) continue;
+    try {
+      await page.selectOption(sel, { value: code });
+      console.log(`[SII] emitir — forma de pago ${label} (${name}=${code})`);
+      return true;
+    } catch {
+      try {
+        await page.selectOption(sel, { label });
+        console.log(`[SII] emitir — forma de pago ${label} (${name} por etiqueta)`);
+        return true;
+      } catch {
+        /* siguiente selector */
+      }
+    }
+  }
+
+  await setFieldSafe('EFXP_FMA_PAGO', code);
+  await setFieldSafe('EFXP_DSC_FMA_PAGO', label);
+  await setFieldSafe('EFXP_GLS_FMA_PAGO', label);
+  console.log(`[SII] emitir — forma de pago ${label} (campos hidden)`);
+  return true;
+}
+
 async function fillDescuentoGlobalSii(
   page: Page,
   dr: DescuentoGlobalEmitParams,
@@ -3725,6 +3766,8 @@ export class SiiFacturacionService {
       dirReceptor?: string;
       /** Descuento global MiPyme (Shopify order-level discount). */
       descuentoGlobal?: DescuentoGlobalEmitParams | null;
+      /** Contado (1) o Crédito (2) en el formulario MiPyme. */
+      formaPago?: FormaPagoMipyme | string;
     },
     opts?: {
       /** No pulsar Guardar ni completar firma; útil para probar hasta la pantalla previa a la clave. */
@@ -3756,7 +3799,7 @@ export class SiiFacturacionService {
   }> {
     const { codigoOriginal, tipoCodigo, fechaEmision, items, empresaRut,
       rutReceptor, razonSocial, giroReceptor, comunaReceptor, ciudadReceptor, dirReceptor,
-      descuentoGlobal } = params;
+      descuentoGlobal, formaPago } = params;
     const detenerEnPreview = !!opts?.detenerEnPreview;
     const previewSoloFormulario = !!opts?.previewSoloFormulario;
     const scraperStep = opts?.scraperStep || 'emitir';
@@ -4132,6 +4175,8 @@ export class SiiFacturacionService {
         }
       }
     }
+
+    await fillFormaPagoMipyme(page, setFieldSafe, formaPago);
 
     const formSnapshot = await snapshotEmitFormFromPage(page, items.length);
 

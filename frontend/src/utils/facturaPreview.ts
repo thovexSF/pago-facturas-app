@@ -78,6 +78,7 @@ export function payloadToDraft(payload: FacturaEmitPreviewData): FacturaEditDraf
       subtotal: Math.round((it.cantidad || 1) * (it.precioUnitario || 0)),
     })),
     useDescripcionExtendida: payload.useDescripcionExtendida ?? false,
+    formaPago: payload.formaPago ?? 'contado',
   };
 }
 

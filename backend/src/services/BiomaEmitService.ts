@@ -8,6 +8,7 @@ import { SiiCredentialsService } from './SiiCredentialsService';
 import { EBoletaService } from './EBoletaService';
 import { EBoletaSessionService } from './EBoletaSessionService';
 import { boletaReceptorForSii, boletaViaEBoleta } from '../utils/biomaOrderAttrs';
+import { normalizeFormaPagoMipyme, type FormaPagoMipyme } from '../utils/biomaFormaPago';
 
 export interface BiomaEmitItemOverride {
   numero: number;
@@ -43,6 +44,7 @@ export interface BiomaEmitOrderOpts {
   descuentoGlobal?: BiomaEmitDescuentoGlobalOverride | null;
   /** Si true, rellena EFXP_DSC_ITEM_* con el título Shopify completo por línea. */
   useDescripcionExtendida?: boolean;
+  formaPago?: FormaPagoMipyme | string;
 }
 
 export interface BiomaEmitResult {
@@ -126,6 +128,7 @@ export class BiomaEmitService {
       }
     }
     const useExt = !!opts.useDescripcionExtendida;
+    const formaPago = normalizeFormaPagoMipyme(opts.formaPago);
     const items = builtItems.map((it, i) => ({
       numero: opts.items?.[i]?.numero ?? i + 1,
       descripcion: it.descripcion,
@@ -192,6 +195,7 @@ export class BiomaEmitService {
           ciudadReceptor: receptorCiudad,
           dirReceptor: receptorDir,
           descuentoGlobal: descuentoGlobal ?? undefined,
+          formaPago,
         },
         {
           detenerEnPreview: !isEmit,

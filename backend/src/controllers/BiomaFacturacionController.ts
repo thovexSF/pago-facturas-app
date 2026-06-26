@@ -258,6 +258,7 @@ export class BiomaFacturacionController {
           items,
           descuentoGlobal,
           useDescripcionExtendida: false,
+          formaPago: 'contado',
           template,
           montosValidacion,
         },
@@ -320,6 +321,7 @@ export class BiomaFacturacionController {
       skipMontosValidation,
       descuentoGlobal,
       useDescripcionExtendida,
+      formaPago,
     } = req.body || {};
     if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
     if (!sessionId) return res.status(400).json({ error: 'sessionId requerido' });
@@ -358,6 +360,7 @@ export class BiomaFacturacionController {
         descuentoGlobal:
           descuentoGlobal && typeof descuentoGlobal === 'object' ? descuentoGlobal : undefined,
         useDescripcionExtendida: !!useDescripcionExtendida,
+        formaPago: formaPago != null ? String(formaPago) : undefined,
       });
 
       if (!out.success) {
