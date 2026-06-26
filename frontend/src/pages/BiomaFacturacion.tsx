@@ -194,6 +194,11 @@ export default function BiomaFacturacion() {
   const handleSiiSessionInvalid = useCallback((reason?: string) => {
     setSessionId(null);
     localStorage.removeItem('biomaSiiSessionId');
+    const r = (reason || '').toLowerCase();
+    if (r.includes('no encontrada') || r.includes('reinicio del backend')) {
+      setError(null);
+      return;
+    }
     setError(reason || 'Sesión MiPyme expirada. Vuelve a abrir sesión SII.');
   }, []);
 
@@ -507,12 +512,13 @@ export default function BiomaFacturacion() {
       setSessionId(data.sessionId);
       localStorage.setItem('biomaSiiSessionId', data.sessionId);
       setSnack('Sesión MiPyme lista (facturas). Playwright se abre al emitir.');
+      void siiSession.refresh({ probe: false });
     } catch (e: any) {
       setError(`Sesión: ${e?.message || e}`);
     } finally {
       setCreatingSession(false);
     }
-  }, [empresaRut, siiBlocked, moduleTab]);
+  }, [empresaRut, siiBlocked, moduleTab, siiSession]);
 
   const closeSession = useCallback(async () => {
     if (moduleTab === 'boletas') {

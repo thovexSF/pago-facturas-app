@@ -125,6 +125,8 @@ interface SiiSession {
   credentials?: { rut: string; password: string };
   /** true si el browser ya hizo login completo (ptrTkn disponible) */
   playwrightReady?: boolean;
+  /** Listado MiPyme validado al crear la sesión (HTTP o Playwright). */
+  listadoVerifiedAt?: number;
   /** Pestaña Playwright reutilizable entre pasos abrir/rellenar/emitir (mismo tab = ptrTkn válido). */
   scraperPage?: Page;
 }
@@ -4652,9 +4654,15 @@ export class SiiFacturacionService {
     for (const [id, s] of sessions.entries()) {
       const started = s.startedAt ?? s.ts;
       if (s.empresaRut === rutNorm && Date.now() - started < maxAge) {
-        console.log(`[SII] createSession: reutilizando sesión existente ${id} para ${rutNorm}`);
-        s.ts = Date.now();
-        return id;
+        const probe = await SiiFacturacionService.probeSessionAlive(s);
+        if (probe.ok) {
+          console.log(`[SII] createSession: reutilizando sesión existente ${id} para ${rutNorm}`);
+          s.ts = Date.now();
+          return id;
+        }
+        console.warn(`[SII] createSession: sesión ${id} caducó en SII — creando una nueva`);
+        await SiiFacturacionService.closeSession(id).catch(() => {});
+        continue;
       }
       if (Date.now() - started >= maxAge) {
         await SiiFacturacionService.closeSession(id).catch(() => {});
@@ -4732,6 +4740,7 @@ export class SiiFacturacionService {
       sessions.set(sessionId2, {
         browser, context, axiosClient: axiosClient2, cookieHeader,
         empresaRut: rutNorm, ts: now, startedAt: now, playwrightReady: true,
+        listadoVerifiedAt: now,
       });
       return sessionId2;
     }
@@ -4741,6 +4750,7 @@ export class SiiFacturacionService {
     const now = Date.now();
     sessions.set(sessionId, {
       browser, context, axiosClient, cookieHeader, empresaRut: rutNorm, ts: now, startedAt: now,
+      listadoVerifiedAt: now,
     });
     return sessionId;
   }

@@ -32,6 +32,12 @@ export function formatSessionExpiresIn(ms: number): string {
   return `${s}s`;
 }
 
+function isStaleServerSession(reason?: string): boolean {
+  if (!reason) return false;
+  const r = reason.toLowerCase();
+  return r.includes('no encontrada') || r.includes('reinicio del backend');
+}
+
 type Options = {
   siiApiBase: string;
   sessionId: string | null;
@@ -55,12 +61,16 @@ export function useSiiSessionMonitor({
   const [status, setStatus] = useState<SiiSessionStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const probeCounter = useRef(0);
+  const sessionIdRef = useRef(sessionId);
+  const wasValidRef = useRef(false);
   const onInvalidRef = useRef(onInvalid);
   onInvalidRef.current = onInvalid;
+  sessionIdRef.current = sessionId;
 
   const refresh = useCallback(
     async (opts?: { probe?: boolean }) => {
-      if (!sessionId) {
+      const sid = sessionIdRef.current;
+      if (!sid) {
         setStatus(null);
         return null;
       }
@@ -68,9 +78,11 @@ export function useSiiSessionMonitor({
       try {
         const probe = opts?.probe ? '1' : '0';
         const res = await fetch(
-          `${siiApiBase}/session/${encodeURIComponent(sessionId)}/status?probe=${probe}`,
+          `${siiApiBase}/session/${encodeURIComponent(sid)}/status?probe=${probe}`,
         );
         const data = await res.json();
+        if (sessionIdRef.current !== sid) return null;
+
         if (!res.ok || !data.success) {
           const invalid: SiiSessionStatus = {
             valid: false,
@@ -80,7 +92,8 @@ export function useSiiSessionMonitor({
             reason: data.error || 'No se pudo verificar la sesión',
           };
           setStatus(invalid);
-          onInvalidRef.current?.(invalid.reason);
+          if (wasValidRef.current) onInvalidRef.current?.(invalid.reason);
+          wasValidRef.current = false;
           return invalid;
         }
         const next: SiiSessionStatus = {
@@ -93,25 +106,37 @@ export function useSiiSessionMonitor({
           reason: data.reason,
         };
         setStatus(next);
-        if (!next.valid) onInvalidRef.current?.(next.reason);
+        if (next.valid) {
+          wasValidRef.current = true;
+        } else if (isStaleServerSession(next.reason)) {
+          wasValidRef.current = false;
+          onInvalidRef.current?.(next.reason);
+        } else if (wasValidRef.current) {
+          wasValidRef.current = false;
+          onInvalidRef.current?.(next.reason);
+        }
         return next;
       } catch (err: unknown) {
+        if (sessionIdRef.current !== sid) return null;
         const msg = err instanceof Error ? err.message : String(err);
         setStatus(invalidStatus(msg));
         return invalidStatus(msg);
       } finally {
-        setChecking(false);
+        if (sessionIdRef.current === sid) setChecking(false);
       }
     },
-    [sessionId, siiApiBase],
+    [siiApiBase],
   );
 
   useEffect(() => {
     if (!sessionId) {
       setStatus(null);
+      wasValidRef.current = false;
       return;
     }
-    void refresh({ probe: true });
+    wasValidRef.current = false;
+    probeCounter.current = 0;
+    void refresh({ probe: false });
     const id = window.setInterval(() => {
       probeCounter.current += pollMs;
       const doProbe = probeCounter.current >= probeMs;
@@ -124,8 +149,10 @@ export function useSiiSessionMonitor({
   useEffect(() => {
     if (!closeOnPageHide || !sessionId) return;
     const beaconUrl = `${siiApiBase}/session/beacon-close`;
+    const sid = sessionId;
     const onPageHide = () => {
-      const body = JSON.stringify({ sessionId });
+      if (sessionIdRef.current !== sid) return;
+      const body = JSON.stringify({ sessionId: sid });
       if (navigator.sendBeacon) {
         navigator.sendBeacon(beaconUrl, new Blob([body], { type: 'application/json' }));
       } else {
