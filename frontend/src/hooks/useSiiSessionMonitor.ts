@@ -169,9 +169,28 @@ export function useSiiSessionMonitor({
   }, [closeOnPageHide, sessionId, siiApiBase]);
 
   const sessionReady = !!sessionId && !!status?.valid;
-  const expiresSoon = !!status?.valid && status.expiresInMs > 0 && status.expiresInMs < 10 * 60_000;
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
-  return { status, checking, sessionReady, expiresSoon, refresh };
+  useEffect(() => {
+    if (!status?.valid || !status.expiresAt) return;
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [status?.valid, status?.expiresAt]);
+
+  const liveExpiresInMs =
+    status?.valid && status.expiresAt
+      ? Math.max(0, status.expiresAt - nowMs)
+      : (status?.expiresInMs ?? 0);
+
+  const liveStatus =
+    status && status.valid
+      ? { ...status, expiresInMs: liveExpiresInMs }
+      : status;
+
+  const expiresSoon = !!liveStatus?.valid && liveExpiresInMs > 0 && liveExpiresInMs < 10 * 60_000;
+
+  return { status: liveStatus, checking, sessionReady, expiresSoon, refresh };
 }
 
 function invalidStatus(reason: string): SiiSessionStatus {
