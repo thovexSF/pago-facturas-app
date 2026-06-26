@@ -1,11 +1,18 @@
 /**
  * Glosas cortas para factura SII (EFXP_NMB ~40 chars).
- * Ej: "Cafe de Especialidad - Guatemala - 500gr / Grano" → "CAFE ESPEC. GUATEMALA 500GR"
+ * Ej: "Cafe de Especialidad Guatemala - …" + Tamaño 500gr → "CAFE ESPEC. GUATEMALA 500GR"
  */
 
 const SII_GLOSA_MAX = 40;
-const WEIGHT_RE = /\b(\d+)\s*(kg|kilo|kilos|gr|g|ml|lt|l)\b/i;
+const WEIGHT_RE =
+  /\b(\d+(?:[.,]\d+)?)\s*(kg|kilo?s?|gr(?:amos?)?|g(?:ramos?|rams?)?|ml|lt?|l)\b/i;
+const WEIGHT_OPTION_NAME_RE = /tama[nñ]o|peso|size|weight|formato|presentaci[oó]n/i;
 const DEFAULT_VARIANT_TITLE = /^default\s+title$/i;
+
+export interface GlosaVariantOption {
+  name: string;
+  value: string;
+}
 
 function foldAccents(s: string): string {
   return (s || '')
@@ -17,23 +24,51 @@ function foldAccents(s: string): string {
 }
 
 function normalizeWeight(num: string, unitRaw: string, context: string): string {
+  const n = num.replace(',', '.');
   const unit = unitRaw.toLowerCase();
-  if (unit === 'kg' || unit === 'kilo' || unit === 'kilos') return `${num}KG`;
-  if (unit === 'ml') return `${num}ML`;
-  if (unit === 'lt' || unit === 'l') return `${num}LT`;
-  if (unit === 'gr' || (unit === 'g' && new RegExp(`${num}\\s*gr`, 'i').test(context))) {
-    return `${num}GR`;
+  if (unit === 'kg' || unit === 'kilo' || unit === 'kilos') return `${n}KG`;
+  if (unit === 'ml') return `${n}ML`;
+  if (unit === 'lt' || unit === 'l') return `${n}LT`;
+  if (unit === 'gr' || unit.startsWith('gr') || (unit === 'g' && new RegExp(`${n}\\s*gr`, 'i').test(context))) {
+    return `${n}GR`;
   }
-  if (unit === 'g') return `${num}G`;
-  return `${num}${unit.toUpperCase()}`;
+  if (unit === 'g' || unit.startsWith('g')) return `${n}G`;
+  return `${n}${unit.toUpperCase()}`;
 }
 
-function extractWeight(...sources: string[]): string {
+function extractWeightFromText(text: string): string {
+  const folded = foldAccents(text);
+  if (!folded) return '';
+
+  const m = folded.match(WEIGHT_RE);
+  if (m) return normalizeWeight(m[1], m[2], folded);
+
+  const compact = folded.match(/(?:^|[^0-9])(\d+(?:[.,]\d+)?)\s*(kg|gr|g)(?:[^a-z]|$)/i);
+  if (compact) return normalizeWeight(compact[1], compact[2], folded);
+
+  return '';
+}
+
+function extractWeight(
+  variantOptions: GlosaVariantOption[] | undefined,
+  ...sources: string[]
+): string {
+  if (variantOptions?.length) {
+    for (const opt of variantOptions) {
+      if (WEIGHT_OPTION_NAME_RE.test(foldAccents(opt.name))) {
+        const w = extractWeightFromText(opt.value);
+        if (w) return w;
+      }
+    }
+    for (const opt of variantOptions) {
+      const w = extractWeightFromText(opt.value);
+      if (w) return w;
+    }
+  }
+
   for (const src of sources) {
-    const folded = foldAccents(src);
-    if (!folded) continue;
-    const m = folded.match(WEIGHT_RE);
-    if (m) return normalizeWeight(m[1], m[2], folded);
+    const w = extractWeightFromText(src);
+    if (w) return w;
   }
   return '';
 }
@@ -66,10 +101,13 @@ function extractOrigenWords(segment: string): string {
 }
 
 /**
- * Origen desde título/variante/nombre completo de línea Shopify.
- * Bioma suele usar título genérico «Café de Especialidad» y país/peso en la variante.
+ * Origen desde título/variante/nombre completo/opciones Shopify.
+ * Bioma: país en el título del producto o en la variante; peso suele ir en opción «Tamaño».
  */
-function extractOrigenEspecialidad(sources: string[]): string {
+function extractOrigenEspecialidad(
+  sources: string[],
+  variantOptions?: GlosaVariantOption[],
+): string {
   for (const raw of sources) {
     const folded = foldAccents(raw);
     if (!folded || !isCafeEspecialidad(folded)) continue;
@@ -86,6 +124,15 @@ function extractOrigenEspecialidad(sources: string[]): string {
     if (!isUsefulVariant(raw)) continue;
     const origen = extractOrigenWords(raw);
     if (origen) return origen;
+  }
+
+  if (variantOptions?.length) {
+    for (const opt of variantOptions) {
+      if (/origen|pa[ií]s|country|variedad|region/i.test(foldAccents(opt.name))) {
+        const origen = extractOrigenWords(opt.value);
+        if (origen) return origen;
+      }
+    }
   }
 
   return '';
@@ -134,13 +181,15 @@ export function buildTituloCompletoLineaShopify(
 }
 
 /**
- * Convierte título + variante (+ nombre de línea Shopify) en glosa factura SII.
+ * Convierte título + variante (+ opciones Shopify) en glosa factura SII.
  * Prioriza café de especialidad: CAFE ESPEC. {ORIGEN} {PESO}
  */
 export function formatGlosaFacturaSii(
   title: string,
   variantTitle?: string | null,
   lineName?: string | null,
+  variantOptions?: GlosaVariantOption[],
+  sku?: string | null,
 ): string {
   const t = (title || '').trim();
   const v = (variantTitle || '').trim();
@@ -153,10 +202,10 @@ export function formatGlosaFacturaSii(
     return 'DESPACHO ENVIO';
   }
 
-  const weight = extractWeight(v, t, display);
+  const weight = extractWeight(variantOptions, v, t, display, sku || '');
 
   if (isCafeEspecialidad(t) || isCafeEspecialidad(v) || isCafeEspecialidad(display)) {
-    const origen = extractOrigenEspecialidad([display, t, v]);
+    const origen = extractOrigenEspecialidad([display, t, v], variantOptions);
     return buildEspecialidadGlosa(origen, weight);
   }
 

@@ -42,11 +42,18 @@ export interface ShopifyOrderAttribute {
   value: string;
 }
 
+export interface ShopifyVariantOption {
+  name: string;
+  value: string;
+}
+
 export interface ShopifyOrderLineItem {
   /** Nombre completo de la línea en Shopify (título + variante). */
   name: string;
   title: string;
   variantTitle: string | null;
+  variantOptions: ShopifyVariantOption[];
+  sku: string | null;
   quantity: number;
   originalUnitPriceAmount: number;
   totalDiscountAmount: number;
@@ -151,6 +158,13 @@ const ORDERS_QUERY = `#graphql
                 name
                 title
                 variantTitle
+                variant {
+                  sku
+                  selectedOptions {
+                    name
+                    value
+                  }
+                }
                 quantity
                 originalUnitPriceSet { shopMoney { amount } }
                 totalDiscountSet { shopMoney { amount } }
@@ -204,6 +218,13 @@ const DRAFT_ORDERS_QUERY = `#graphql
                 name
                 title
                 variantTitle
+                variant {
+                  sku
+                  selectedOptions {
+                    name
+                    value
+                  }
+                }
                 quantity
                 originalUnitPrice
                 totalDiscount
@@ -219,15 +240,7 @@ const DRAFT_ORDERS_QUERY = `#graphql
 
 function mapDraftOrderNode(node: any): ShopifyOrderForBioma {
   const lineItems: ShopifyOrderLineItem[] =
-    node?.lineItems?.edges?.map((edge: any) => ({
-      name: edge.node?.name ?? edge.node?.title ?? '',
-      title: edge.node?.title ?? '',
-      variantTitle: edge.node?.variantTitle ?? null,
-      quantity: num(edge.node?.quantity),
-      originalUnitPriceAmount: num(edge.node?.originalUnitPrice),
-      totalDiscountAmount: num(edge.node?.totalDiscount),
-      netSubtotal: num(edge.node?.discountedTotal),
-    })) ?? [];
+    node?.lineItems?.edges?.map((edge: any) => mapLineItemFromDraftNode(edge)) ?? [];
 
   const orderNumberMatch = node?.name?.match(/#?D?(\d+)/);
   const orderNumber = orderNumberMatch ? parseInt(orderNumberMatch[1], 10) : null;
@@ -328,8 +341,16 @@ const ORDER_FETCH_QUERY = `#graphql
       lineItems(first: 50) {
         edges {
           node {
+            name
             title
             variantTitle
+            variant {
+              sku
+              selectedOptions {
+                name
+                value
+              }
+            }
             quantity
             originalUnitPriceSet { shopMoney { amount } }
             totalDiscountSet { shopMoney { amount } }
@@ -347,17 +368,45 @@ function num(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function mapVariantOptions(node: any): ShopifyVariantOption[] {
+  const opts = node?.variant?.selectedOptions ?? [];
+  return opts.map((o: any) => ({
+    name: String(o?.name ?? ''),
+    value: String(o?.value ?? ''),
+  }));
+}
+
+function mapLineItemFromDraftNode(edge: any): ShopifyOrderLineItem {
+  return {
+    name: edge.node?.name ?? edge.node?.title ?? '',
+    title: edge.node?.title ?? '',
+    variantTitle: edge.node?.variantTitle ?? null,
+    variantOptions: mapVariantOptions(edge.node),
+    sku: edge.node?.variant?.sku ?? null,
+    quantity: num(edge.node?.quantity),
+    originalUnitPriceAmount: num(edge.node?.originalUnitPrice),
+    totalDiscountAmount: num(edge.node?.totalDiscount),
+    netSubtotal: num(edge.node?.discountedTotal),
+  };
+}
+
+function mapLineItemFromOrderNode(edge: any): ShopifyOrderLineItem {
+  return {
+    name: edge.node?.name ?? edge.node?.title ?? '',
+    title: edge.node?.title ?? '',
+    variantTitle: edge.node?.variantTitle ?? null,
+    variantOptions: mapVariantOptions(edge.node),
+    sku: edge.node?.variant?.sku ?? null,
+    quantity: num(edge.node?.quantity),
+    originalUnitPriceAmount: num(edge.node?.originalUnitPriceSet?.shopMoney?.amount),
+    totalDiscountAmount: num(edge.node?.totalDiscountSet?.shopMoney?.amount),
+    netSubtotal: num(edge.node?.discountedTotalSet?.shopMoney?.amount),
+  };
+}
+
 function mapOrderNode(node: any): ShopifyOrderForBioma {
   const lineItems: ShopifyOrderLineItem[] =
-    node?.lineItems?.edges?.map((edge: any) => ({
-      name: edge.node?.name ?? edge.node?.title ?? '',
-      title: edge.node?.title ?? '',
-      variantTitle: edge.node?.variantTitle ?? null,
-      quantity: num(edge.node?.quantity),
-      originalUnitPriceAmount: num(edge.node?.originalUnitPriceSet?.shopMoney?.amount),
-      totalDiscountAmount: num(edge.node?.totalDiscountSet?.shopMoney?.amount),
-      netSubtotal: num(edge.node?.discountedTotalSet?.shopMoney?.amount),
-    })) ?? [];
+    node?.lineItems?.edges?.map((edge: any) => mapLineItemFromOrderNode(edge)) ?? [];
 
   const orderNumberMatch = node?.name?.match(/#(\d+)/);
   const orderNumber = orderNumberMatch ? parseInt(orderNumberMatch[1], 10) : null;

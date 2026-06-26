@@ -485,7 +485,13 @@ export class BiomaFacturacionService {
         cantidad ? Math.round(subtotal / cantidad) : Math.max(1, subtotal),
       );
       const descripcion = sanitizeDescripcionParaSii(
-        formatGlosaFacturaSii(li.title, li.variantTitle, li.name),
+        formatGlosaFacturaSii(
+          li.title,
+          li.variantTitle,
+          li.name,
+          li.variantOptions,
+          li.sku,
+        ),
       );
       const tituloExtendido = sanitizeDescripcionParaSii(
         buildTituloCompletoLineaShopify(li.title, li.variantTitle, li.name),
