@@ -15,6 +15,21 @@ function initChipsFiltro() {
 }
 let chipsFiltro = initChipsFiltro();
 
+function initCalendarioFiltroVcto() {
+  const raw = localStorage.getItem('calendarioFiltroVcto');
+  return raw || 'pendientes';
+}
+let calendarioFiltroVcto = initCalendarioFiltroVcto();
+
+const AGENDA_PALETTE = [
+  { bg: '#3182ce', border: '#2b6cb0', text: '#ffffff' },
+  { bg: '#FFD700', border: '#E6C200', text: '#1a1a1a' },
+  { bg: '#38a169', border: '#276749', text: '#ffffff' },
+  { bg: '#805ad5', border: '#6b46c1', text: '#ffffff' },
+  { bg: '#dd6b20', border: '#c05621', text: '#ffffff' },
+  { bg: '#319795', border: '#285e61', text: '#ffffff' },
+];
+
 // Filtro del gráfico: Set de razon_social seleccionados (vacío antes de inicializar)
 let graficoProvsFiltro = new Set();
 let graficoFiltroIniciado = false;
@@ -80,6 +95,15 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('filter-incluir-ocultas')?.addEventListener('change', renderTabla);
   document.getElementById('btn-filtros-limpiar')?.addEventListener('click', limpiarFiltrosLista);
   document.getElementById('grafico-tipo').addEventListener('change', renderGrafico);
+  const calVcto = document.getElementById('filter-cal-vcto');
+  if (calVcto) {
+    calVcto.value = calendarioFiltroVcto;
+    calVcto.addEventListener('change', (e) => {
+      calendarioFiltroVcto = e.target.value;
+      localStorage.setItem('calendarioFiltroVcto', calendarioFiltroVcto);
+      cargarEventosCalendar();
+    });
+  }
 
   // Cerrar dropdowns al hacer click fuera
   document.addEventListener('click', e => {
@@ -116,41 +140,109 @@ function initCalendar() {
   calendar.render();
 }
 
+function proveedorPorRut(rut) {
+  return proveedores.find(p => p.rut_emisor === rut);
+}
+
+function indiceAgendaProveedor(p) {
+  const agenda = proveedores.filter(x => x.en_agenda);
+  const idx = agenda.findIndex(x => x.rut_emisor === p.rut_emisor);
+  return idx >= 0 ? idx : 0;
+}
+
+function coloresProveedor(p, indexFallback = 0) {
+  if (p?.color_agenda) {
+    return {
+      bg: p.color_agenda,
+      border: p.color_agenda,
+      text: p.color_texto_agenda || '#ffffff',
+    };
+  }
+  const pal = AGENDA_PALETTE[indexFallback % AGENDA_PALETTE.length];
+  return { bg: pal.bg, border: pal.border, text: pal.text };
+}
+
+function nombreCortoProveedor(p, f) {
+  const name = p?.razon_social || f?.razon_social || '';
+  if (/chilexpress/i.test(name)) return 'Chilexpress';
+  if (/arabica/i.test(name)) return 'Arabica';
+  const first = name.trim().split(/\s+/)[0];
+  return first || name.slice(0, 16) || 'Proveedor';
+}
+
+function pasaFiltroVencimiento(vctoStr, pagado) {
+  if (!vctoStr) return false;
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+  const v = new Date(`${vctoStr.split('T')[0]}T12:00:00`);
+  const diffDays = Math.ceil((v - hoy) / 86400000);
+
+  switch (calendarioFiltroVcto) {
+    case 'todos':
+      return true;
+    case 'pendientes':
+      return !pagado;
+    case 'vencidas':
+      return !pagado && v < hoy;
+    case '7dias':
+      return !pagado && diffDays >= 0 && diffDays <= 7;
+    case '30dias':
+      return !pagado && diffDays >= 0 && diffDays <= 30;
+    case 'mes':
+      if (pagado) return false;
+      return v.getMonth() === hoy.getMonth() && v.getFullYear() === hoy.getFullYear();
+    default:
+      return !pagado;
+  }
+}
+
 function cargarEventosCalendar() {
   calendar.removeAllEvents();
+  const agendaRuts = new Set(proveedores.filter(p => p.en_agenda).map(p => p.rut_emisor));
+
   facturasVisibles().forEach(f => {
     if (esDocNc(f)) return;
+    if (!agendaRuts.has(f.rut_emisor)) return;
     if (chipsFiltro !== null && !chipsFiltro.has(f.rut_emisor)) return;
 
-    const colorBase = (pagado, vencida) => ({
-      bg:     pagado ? '#48bb78' : vencida ? '#e53e3e' : '#3182ce',
-      border: pagado ? '#276749' : vencida ? '#c53030' : '#2b6cb0',
-    });
+    const prov = proveedorPorRut(f.rut_emisor);
+    const provIdx = prov ? indiceAgendaProveedor(prov) : 0;
+    const nombre = nombreCortoProveedor(prov, f);
+    const baseColors = coloresProveedor(prov, provIdx);
 
-    if (f.vcto_1) {
-      const vencida = !f.pagado_1 && new Date(f.vcto_1) < new Date();
-      const c = colorBase(f.pagado_1, vencida);
+    const addCuota = (cuotaNum, vcto, monto, pagado) => {
+      if (!vcto) return;
+      if (!pasaFiltroVencimiento(vcto, pagado)) return;
+
+      const vencida = !pagado && new Date(vcto.split('T')[0] + 'T12:00:00') < new Date(new Date().toDateString());
+      let bg = baseColors.bg;
+      let border = baseColors.border;
+      let text = baseColors.text;
+      const classNames = [];
+
+      if (pagado) {
+        bg = '#48bb78';
+        border = '#276749';
+        text = '#ffffff';
+        classNames.push('event-pagada');
+      } else if (vencida) {
+        classNames.push('event-vencida');
+      }
+
+      const cuotaLabel = prov?.condicion === 'credito' && f.vcto_2 ? `C${cuotaNum} · ` : '';
       calendar.addEvent({
-        id: `${f.id}-1`,
-        title: `C1 Factura N° ${f.folio} $${formatMonto(f.monto_1)}`,
-        start: f.vcto_1.split('T')[0],
-        backgroundColor: c.bg,
-        borderColor:     c.border,
-        textColor:       '#fff',
+        id: `${f.id}-${cuotaNum}`,
+        title: `${nombre} · ${cuotaLabel}#${f.folio} · $${formatMonto(monto)}`,
+        start: vcto.split('T')[0],
+        backgroundColor: bg,
+        borderColor: border,
+        textColor: text,
+        classNames,
       });
-    }
-    if (f.vcto_2) {
-      const vencida = !f.pagado_2 && new Date(f.vcto_2) < new Date();
-      const c = colorBase(f.pagado_2, vencida);
-      calendar.addEvent({
-        id: `${f.id}-2`,
-        title: `C2 Factura N° ${f.folio} $${formatMonto(f.monto_2)}`,
-        start: f.vcto_2.split('T')[0],
-        backgroundColor: c.bg,
-        borderColor:     c.border,
-        textColor:       '#fff',
-      });
-    }
+    };
+
+    addCuota(1, f.vcto_1, f.monto_1, f.pagado_1);
+    addCuota(2, f.vcto_2, f.monto_2, f.pagado_2);
   });
 }
 
@@ -158,16 +250,42 @@ function cargarEventosCalendar() {
 
 function renderChips() {
   const container = document.getElementById('chips-container');
-  const credito = proveedores.filter(p => p.condicion === 'credito');
-  if (!credito.length) { container.innerHTML = ''; return; }
+  const agenda = proveedores.filter(p => p.en_agenda);
+  if (!agenda.length) {
+    container.innerHTML = '<span class="calendar-toolbar-hint">Marca proveedores en la pestaña <strong>Proveedores</strong> → columna «En agenda».</span>';
+    const leg = document.getElementById('agenda-legend');
+    if (leg) leg.innerHTML = '';
+    return;
+  }
   const todosActivo = chipsFiltro === null;
   container.innerHTML = [
-    `<button class="chip ${todosActivo ? 'chip-active' : ''}" onclick="toggleChip('__todos__')">Todos</button>`,
-    ...credito.map(p => {
+    `<button type="button" class="chip ${todosActivo ? 'chip-active' : ''}" onclick="toggleChip('__todos__')">Todos</button>`,
+    ...agenda.map((p) => {
       const activo = chipsFiltro !== null && chipsFiltro.has(p.rut_emisor);
-      return `<button class="chip ${activo ? 'chip-active' : ''}" onclick="toggleChip('${p.rut_emisor}')">${esc(p.razon_social || p.rut_emisor)}</button>`;
-    })
+      const c = coloresProveedor(p, indiceAgendaProveedor(p));
+      const style = activo ? '' : `style="border-color:${c.border};"`;
+      return `<button type="button" class="chip ${activo ? 'chip-active' : ''}" ${style} onclick="toggleChip('${p.rut_emisor}')">
+        <span class="chip-dot" style="background:${c.bg}"></span>${esc(p.razon_social || p.rut_emisor)}
+      </button>`;
+    }),
   ].join('');
+  renderAgendaLeyenda(agenda);
+}
+
+function renderAgendaLeyenda(agenda) {
+  const el = document.getElementById('agenda-legend');
+  if (!el) return;
+  el.innerHTML = agenda.map((p) => {
+    const c = coloresProveedor(p, indiceAgendaProveedor(p));
+    const cond = p.condicion === 'credito'
+      ? `Crédito · ${p.dias_1 || 30} d${p.pct_1 < 100 ? ` / ${p.dias_2 || 40} d` : ''}`
+      : 'Contado';
+    return `<span class="agenda-legend-item">
+      <span class="agenda-legend-swatch" style="background:${c.bg}"></span>
+      <span><strong>${esc(p.razon_social || p.rut_emisor)}</strong>
+      <span class="agenda-legend-meta"> · ${esc(cond)}</span></span>
+    </span>`;
+  }).join('');
 }
 
 function toggleChip(rut) {
@@ -383,6 +501,7 @@ function renderProveedores() {
         <th>Condición</th>
         <th>Cuota 1</th>
         <th>Cuota 2</th>
+        <th>Color agenda</th>
         <th>En agenda</th>
       </tr></thead>
       <tbody>
@@ -419,6 +538,12 @@ function renderProveedores() {
               <input class="prov-input prov-input-sm" type="number" value="${p.pct_2}" min="1" max="100"
                 ${p.condicion==='contado'?'disabled':''}
                 onchange="actualizarProveedor('${p.rut_emisor}','pct_2',parseInt(this.value))">%
+            </td>
+            <td class="prov-colors">
+              <input type="color" class="prov-color-input" value="${esc(p.color_agenda || '#3182ce')}" title="Color de fondo en calendario"
+                onchange="actualizarProveedor('${p.rut_emisor}','color_agenda',this.value)">
+              <input type="color" class="prov-color-input" value="${esc(p.color_texto_agenda || '#ffffff')}" title="Color de texto"
+                onchange="actualizarProveedor('${p.rut_emisor}','color_texto_agenda',this.value)">
             </td>
             <td>
               <input type="checkbox" ${p.en_agenda?'checked':''}

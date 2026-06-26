@@ -19,6 +19,8 @@ router.post('/sync/:orderId', BiomaFacturacionController.sync);
 router.get('/emision/:orderId', BiomaFacturacionController.getEmision);
 router.post('/preview/:orderId', BiomaFacturacionController.preview);
 router.post('/emitir/:orderId', BiomaFacturacionController.emitir);
+router.post('/emitir-cola', BiomaFacturacionController.emitirCola);
+router.get('/emitir-cola/status', BiomaFacturacionController.emitirColaStatus);
 router.post('/pdf/:orderId/fetch', BiomaFacturacionController.fetchPdf);
 router.get('/pdf/:orderId', BiomaFacturacionController.pdf);
 router.get('/email-draft/:orderId', BiomaFacturacionController.emailDraft);

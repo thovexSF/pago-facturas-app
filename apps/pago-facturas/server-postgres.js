@@ -33,6 +33,8 @@ async function setupDb() {
       dias_2       INTEGER DEFAULT 40,
       pct_2        INTEGER DEFAULT 50,
       en_agenda    BOOLEAN DEFAULT FALSE,
+      color_agenda VARCHAR(20),
+      color_texto_agenda VARCHAR(20),
       updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -68,6 +70,8 @@ async function setupDb() {
   `);
   // Migraciones
   await pool.query(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS categoria VARCHAR(100)`).catch(() => {});
+  await pool.query(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS color_agenda VARCHAR(20)`).catch(() => {});
+  await pool.query(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS color_texto_agenda VARCHAR(20)`).catch(() => {});
   for (const [col, type] of [
     ['banco','VARCHAR(100)'],['tipo_cuenta','VARCHAR(50)'],['numero_cuenta','VARCHAR(50)'],
     ['titular','VARCHAR(255)'],['rut_titular','VARCHAR(20)'],['email_transferencia','VARCHAR(255)'],
@@ -83,6 +87,43 @@ async function setupDb() {
       titular = COALESCE(titular, 'ARABICA SPA'),
       rut_titular = COALESCE(rut_titular, '77368986-5'),
       email_transferencia = COALESCE(email_transferencia, 'ventas@sarabicoffee.com')
+    WHERE rut_emisor = '77368986-5'
+  `).catch(() => {});
+  // Chilexpress: crédito 30 días, una cuota, agenda amarillo/negro
+  await pool.query(`
+    UPDATE proveedores SET
+      condicion = 'credito',
+      dias_1 = 30,
+      pct_1 = 100,
+      dias_2 = 40,
+      pct_2 = 0,
+      en_agenda = TRUE,
+      color_agenda = COALESCE(color_agenda, '#FFD700'),
+      color_texto_agenda = COALESCE(color_texto_agenda, '#1a1a1a'),
+      categoria = COALESCE(NULLIF(TRIM(categoria), ''), 'Logística')
+    WHERE LOWER(COALESCE(razon_social, '')) LIKE '%chilexpress%'
+       OR rut_emisor LIKE '96539670%'
+  `).catch(() => {});
+  await pool.query(`
+    UPDATE facturas_recibidas f SET
+      pagado_1 = FALSE,
+      pagado_1_at = NULL,
+      pagado_2 = FALSE,
+      pagado_2_at = NULL,
+      updated_at = NOW()
+    FROM proveedores p
+    WHERE f.rut_emisor = p.rut_emisor
+      AND LOWER(COALESCE(p.razon_social, '')) LIKE '%chilexpress%'
+      AND COALESCE(f.tipo_doc, '33') <> '61'
+      AND f.pagado_1 = TRUE
+      AND f.vcto_1 = f.fecha_emision
+  `).catch(() => {});
+  // Arabica en agenda (crédito habitual)
+  await pool.query(`
+    UPDATE proveedores SET
+      en_agenda = TRUE,
+      color_agenda = COALESCE(color_agenda, '#3182ce'),
+      color_texto_agenda = COALESCE(color_texto_agenda, '#ffffff')
     WHERE rut_emisor = '77368986-5'
   `).catch(() => {});
   for (const [col, type] of [
@@ -135,7 +176,74 @@ async function setupDb() {
       pagado_2 = TRUE, pagado_2_at = COALESCE(pagado_2_at, vcto_2), updated_at = NOW()
     WHERE pagado_2 = FALSE AND vcto_2 IS NOT NULL AND vcto_2 < CURRENT_DATE
   `);
+  await recalcularVencimientosProveedorPorNombre('chilexpress').catch(() => {});
   console.log('[DB] Tablas listas');
+}
+
+/** Recalcula vencimientos según condición del proveedor (facturas no NC). */
+async function recalcularVencimientosProveedor(rut) {
+  const { rows } = await pool.query('SELECT * FROM proveedores WHERE rut_emisor=$1', [rut]);
+  const p = rows[0];
+  if (!p) return;
+
+  if (p.condicion === 'contado') {
+    await pool.query(`
+      UPDATE facturas_recibidas SET
+        vcto_1 = fecha_emision,
+        monto_1 = COALESCE(monto_total, ROUND(monto_neto * 1.19)),
+        pagado_1 = TRUE,
+        pagado_1_at = COALESCE(pagado_1_at, created_at),
+        vcto_2 = NULL,
+        monto_2 = NULL,
+        pagado_2 = FALSE,
+        pagado_2_at = NULL,
+        updated_at = NOW()
+      WHERE rut_emisor = $1
+        AND COALESCE(tipo_doc, '33') <> '61'
+        AND COALESCE(anulada, FALSE) = FALSE
+    `, [rut]);
+    return;
+  }
+
+  const unaCuota = (p.pct_1 >= 100) || !(p.pct_2 > 0);
+  await pool.query(`
+    UPDATE facturas_recibidas SET
+      vcto_1 = (fecha_emision + ($2::text || ' days')::interval)::date,
+      monto_1 = ROUND(COALESCE(monto_total, ROUND(monto_neto * 1.19)) * $3 / 100.0),
+      vcto_2 = CASE
+        WHEN $4::boolean THEN NULL
+        ELSE (fecha_emision + ($5::text || ' days')::interval)::date
+      END,
+      monto_2 = CASE
+        WHEN $4::boolean THEN NULL
+        ELSE COALESCE(monto_total, ROUND(monto_neto * 1.19))
+             - ROUND(COALESCE(monto_total, ROUND(monto_neto * 1.19)) * $3 / 100.0)
+      END,
+      pagado_1 = CASE
+        WHEN pagado_1 = TRUE AND pagado_1_at IS NOT NULL THEN TRUE
+        ELSE FALSE
+      END,
+      pagado_1_at = CASE
+        WHEN pagado_1 = TRUE AND pagado_1_at IS NOT NULL THEN pagado_1_at
+        ELSE NULL
+      END,
+      pagado_2 = CASE WHEN $4::boolean THEN FALSE ELSE pagado_2 END,
+      pagado_2_at = CASE WHEN $4::boolean THEN NULL ELSE pagado_2_at END,
+      updated_at = NOW()
+    WHERE rut_emisor = $1
+      AND COALESCE(tipo_doc, '33') <> '61'
+      AND COALESCE(anulada, FALSE) = FALSE
+  `, [rut, p.dias_1 ?? 30, p.pct_1 ?? 100, unaCuota, p.dias_2 ?? 40]);
+}
+
+async function recalcularVencimientosProveedorPorNombre(fragmento) {
+  const { rows } = await pool.query(
+    `SELECT rut_emisor FROM proveedores WHERE LOWER(COALESCE(razon_social, '')) LIKE $1`,
+    [`%${String(fragmento).toLowerCase()}%`],
+  );
+  for (const r of rows) {
+    await recalcularVencimientosProveedor(r.rut_emisor);
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1265,6 +1373,7 @@ app.get('/api/proveedores', async (req, res) => {
 
 app.put('/api/proveedores/:rut', async (req, res) => {
   const { condicion, categoria, dias_1, pct_1, dias_2, pct_2, en_agenda,
+          color_agenda, color_texto_agenda,
           banco, tipo_cuenta, numero_cuenta, titular, rut_titular, email_transferencia } = req.body;
   try {
     await pool.query(
@@ -1276,6 +1385,8 @@ app.put('/api/proveedores/:rut', async (req, res) => {
          dias_2     = COALESCE($7, dias_2),
          pct_2      = COALESCE($8, pct_2),
          en_agenda  = COALESCE($9, en_agenda),
+         color_agenda = CASE WHEN $16::boolean THEN $17 ELSE color_agenda END,
+         color_texto_agenda = CASE WHEN $18::boolean THEN $19 ELSE color_texto_agenda END,
          banco      = COALESCE($10, banco),
          tipo_cuenta = COALESCE($11, tipo_cuenta),
          numero_cuenta = COALESCE($12, numero_cuenta),
@@ -1287,8 +1398,17 @@ app.put('/api/proveedores/:rut', async (req, res) => {
       [req.params.rut, condicion??null,
        categoria !== undefined, categoria ?? null,
        dias_1??null, pct_1??null, dias_2??null, pct_2??null, en_agenda??null,
-       banco??null, tipo_cuenta??null, numero_cuenta??null, titular??null, rut_titular??null, email_transferencia??null]
+       banco??null, tipo_cuenta??null, numero_cuenta??null, titular??null, rut_titular??null, email_transferencia??null,
+       color_agenda !== undefined, color_agenda ?? null,
+       color_texto_agenda !== undefined, color_texto_agenda ?? null]
     );
+    const recalc =
+      condicion !== undefined ||
+      dias_1 !== undefined ||
+      pct_1 !== undefined ||
+      dias_2 !== undefined ||
+      pct_2 !== undefined;
+    if (recalc) await recalcularVencimientosProveedor(req.params.rut);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

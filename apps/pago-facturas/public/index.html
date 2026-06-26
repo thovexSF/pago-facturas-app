@@ -70,7 +70,22 @@
 
     <!-- Calendario -->
     <div class="tab-content active" id="tab-calendario">
+      <div class="calendar-toolbar">
+        <label class="calendar-filter-label">
+          Vencimiento
+          <select id="filter-cal-vcto" class="calendar-filter-select">
+            <option value="pendientes">Pendientes (agenda)</option>
+            <option value="todos">Todos en agenda</option>
+            <option value="vencidas">Vencidas</option>
+            <option value="7dias">Vencen en 7 días</option>
+            <option value="30dias">Vencen en 30 días</option>
+            <option value="mes">Vencen este mes</option>
+          </select>
+        </label>
+        <span class="calendar-toolbar-hint">Solo proveedores marcados «En agenda». Colores por proveedor.</span>
+      </div>
       <div id="chips-container" class="chips-container"></div>
+      <div id="agenda-legend" class="agenda-legend"></div>
       <div id="calendar"></div>
     </div>
 

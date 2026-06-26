@@ -480,6 +480,44 @@ export class BiomaFacturacionController {
     }
   }
 
+  // POST /api/bioma/emitir-cola — encolar emisión manual (una a la vez en servidor)
+  static async emitirCola(req: Request, res: Response) {
+    try {
+      const { sessionId, orderIds, kind } = req.body || {};
+      if (!sessionId) return res.status(400).json({ success: false, error: 'sessionId requerido' });
+      if (!Array.isArray(orderIds) || orderIds.length === 0) {
+        return res.status(400).json({ success: false, error: 'orderIds debe ser un arreglo no vacío' });
+      }
+
+      const k: 'factura' | 'boleta' = kind === 'boleta' ? 'boleta' : 'factura';
+      if (k === 'factura') {
+        try {
+          SiiFacturacionService.assertSiiAvailable();
+        } catch (err: any) {
+          return res.status(429).json({ success: false, error: err?.message || String(err) });
+        }
+      }
+
+      const out = BiomaAutoEmitService.enqueueManual(orderIds, String(sessionId), k);
+      return res.json({
+        success: true,
+        ...out,
+        status: BiomaAutoEmitService.getStatus(),
+      });
+    } catch (err: any) {
+      return res.status(400).json({ success: false, error: err?.message || String(err) });
+    }
+  }
+
+  // GET /api/bioma/emitir-cola/status
+  static async emitirColaStatus(_req: Request, res: Response) {
+    try {
+      return res.json({ success: true, status: BiomaAutoEmitService.getStatus() });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || String(err) });
+    }
+  }
+
   // GET /api/bioma/email-draft/:orderId
   static async emailDraft(req: Request, res: Response) {
     try {

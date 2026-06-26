@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, type ComponentProps } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import {
   Box, Typography, Paper, Button, Alert, CircularProgress, Table, TableBody,
   TableCell, TableContainer, TableHead, TableRow, Chip, Snackbar,
   Stack, LinearProgress, Grid, Divider, Tabs, Tab,
-  Dialog, DialogTitle, DialogContent, DialogActions, IconButton, Tooltip, SvgIcon,
+  Dialog, DialogTitle, DialogContent, DialogActions, IconButton, Tooltip, SvgIcon, Checkbox,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/esm/Refresh.js';
 import CloseIcon from '@mui/icons-material/esm/Close.js';
@@ -49,6 +49,21 @@ interface BiomaEmision {
   razonSocial?: string | null;
   customerName?: string | null;
   tipoCodigo?: number;
+}
+
+interface EmitQueueStatus {
+  processing: boolean;
+  queueLength: number;
+  pendingOrderIds: string[];
+  current: { orderId: string; kind: 'factura' | 'boleta'; source: 'auto' | 'manual' } | null;
+  recentResults: Array<{
+    orderId: string;
+    kind: 'factura' | 'boleta';
+    success: boolean;
+    folio: number | null;
+    error: string | null;
+    finishedAt: string;
+  }>;
 }
 
 interface PendingRow {
@@ -215,6 +230,15 @@ function statusChip(status?: BiomaEmision['status']) {
   return <Chip size="small" label={String(status)} />;
 }
 
+function isQueueSelectableStatus(status?: string | null): boolean {
+  return !status || status === 'pending' || status === 'error' || status === 'drafting';
+}
+
+function isOrderInEmitQueue(orderId: string, emitQueue: EmitQueueStatus | null): boolean {
+  if (!emitQueue) return false;
+  return emitQueue.pendingOrderIds.includes(orderId);
+}
+
 function clienteFactura(row: PendingRow): { razon: string; rut: string; nombre: string } {
   const attrs = Object.fromEntries(row.shopify.customAttributes.map((a) => [a.key, a.value]));
   const rut = row.emision?.rutReceptor || attrs._rut_empresa || '';
@@ -282,6 +306,11 @@ export default function BiomaFacturacion() {
   const [lastAviso, setLastAviso] = useState<string | null>(null);
   const [ncAviso, setNcAviso] = useState<{ orderId: string; text: string } | null>(null);
   const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
+  const [selectedFacturaIds, setSelectedFacturaIds] = useState<Set<string>>(() => new Set());
+  const [selectedBoletaIds, setSelectedBoletaIds] = useState<Set<string>>(() => new Set());
+  const [emitQueue, setEmitQueue] = useState<EmitQueueStatus | null>(null);
+  const [enqueueBusy, setEnqueueBusy] = useState(false);
+  const queueWasActiveRef = useRef(false);
   const [creatingSession, setCreatingSession] = useState(false);
   const [siiBlocked, setSiiBlocked] = useState<{
     blocked: boolean;
@@ -339,6 +368,22 @@ export default function BiomaFacturacion() {
     const t = window.setInterval(loadBlockStatus, 60_000);
     return () => clearInterval(t);
   }, [loadBlockStatus]);
+
+  const loadEmitQueueStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${BIOMA_API}/emitir-cola/status`);
+      const data = await res.json();
+      if (data.success && data.status) setEmitQueue(data.status);
+    } catch {
+      /* ok */
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadEmitQueueStatus();
+    const t = window.setInterval(loadEmitQueueStatus, 2500);
+    return () => clearInterval(t);
+  }, [loadEmitQueueStatus]);
 
   const loadPending = useCallback(async () => {
     setLoading(true);
@@ -402,6 +447,19 @@ export default function BiomaFacturacion() {
       setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!emitQueue) return;
+    const active = emitQueue.processing || emitQueue.queueLength > 0 || !!emitQueue.current;
+    if (queueWasActiveRef.current && !active) {
+      void loadPending();
+      void loadBoletas({ quiet: true });
+      void loadRealizadas();
+      setSelectedFacturaIds(new Set());
+      setSelectedBoletaIds(new Set());
+    }
+    queueWasActiveRef.current = active;
+  }, [emitQueue, loadPending, loadBoletas, loadRealizadas]);
 
   const refreshCurrentTab = useCallback(() => {
     if (moduleTab === 'pendientes') return loadPending();
@@ -1047,10 +1105,123 @@ export default function BiomaFacturacion() {
     await loadBoletas({ sync: true });
   }, [loadBoletas]);
 
+  const enqueueSelectedDtes = useCallback(
+    async (kind: 'factura' | 'boleta') => {
+      const isBoleta = kind === 'boleta';
+      const selectedIds = isBoleta ? selectedBoletaIds : selectedFacturaIds;
+      const orderIds = [...selectedIds];
+      if (!orderIds.length) return;
+
+      if (!sessionReady || !activeSessionId) {
+        setError(isBoleta ? 'Abre sesión e-Boleta antes de emitir en cola' : 'Abre sesión MiPyme antes de emitir en cola');
+        return;
+      }
+      if (!isBoleta && siiBlocked.blocked) {
+        setError(`SII en pausa ~${siiBlocked.retryAfterMinutes} min.`);
+        return;
+      }
+
+      const label = isBoleta ? 'boleta(s)' : 'factura(s)';
+      const ok = window.confirm(
+        `¿Emitir ${orderIds.length} ${label} en cola?\n\n` +
+          'Se procesan una a la vez (~1 min c/u) con los datos automáticos de Shopify.\n' +
+          'Las ediciones del preview no se aplican en lote — abre cada pedido si necesitas ajustar algo.',
+      );
+      if (!ok) return;
+
+      setEnqueueBusy(true);
+      setError(null);
+      try {
+        const res = await fetch(`${BIOMA_API}/emitir-cola`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: activeSessionId, orderIds, kind }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          if (!isBoleta && isSiiSessionError(res.status, data.error)) handleSiiSessionInvalid(data.error);
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        const skipped = data.skipped ? ` (${data.skipped} ya en cola)` : '';
+        setSnack(`${data.enqueued} ${label} en cola${skipped}`);
+        if (isBoleta) setSelectedBoletaIds(new Set());
+        else setSelectedFacturaIds(new Set());
+        void loadEmitQueueStatus();
+        void loadPending();
+        if (isBoleta) void loadBoletas({ quiet: true });
+      } catch (e: any) {
+        setError(`Cola de emisión: ${e?.message || e}`);
+        if (!isBoleta) void loadBlockStatus();
+      } finally {
+        setEnqueueBusy(false);
+      }
+    },
+    [
+      selectedBoletaIds,
+      selectedFacturaIds,
+      sessionReady,
+      activeSessionId,
+      siiBlocked.blocked,
+      siiBlocked.retryAfterMinutes,
+      handleSiiSessionInvalid,
+      loadEmitQueueStatus,
+      loadPending,
+      loadBoletas,
+      loadBlockStatus,
+    ],
+  );
+
   const pendingRows = rows.filter((r) => r.emision?.status !== 'emitted' && r.emision?.status !== 'dismissed');
   const pendingCount = pendingRows.length;
   const boletasCount = boletasRows.length;
   const pendingMonto = pendingRows.reduce((sum, r) => sum + (r.shopify.total || 0), 0);
+
+  const queueActive = !!(
+    emitQueue?.processing ||
+    (emitQueue?.queueLength ?? 0) > 0 ||
+    emitQueue?.current
+  );
+
+  const orderNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of pendingRows) map.set(r.shopify.id, r.shopify.name);
+    for (const r of boletasRows) map.set(r.shopifyOrderId, r.shopifyOrderName);
+    return map;
+  }, [pendingRows, boletasRows]);
+
+  const selectableFacturaRows = useMemo(
+    () =>
+      pendingRows.filter(
+        (r) =>
+          isQueueSelectableStatus(r.emision?.status) && !isOrderInEmitQueue(r.shopify.id, emitQueue),
+      ),
+    [pendingRows, emitQueue],
+  );
+
+  const selectableBoletaRows = useMemo(
+    () =>
+      boletasRows.filter(
+        (r) => isQueueSelectableStatus(r.status) && !isOrderInEmitQueue(r.shopifyOrderId, emitQueue),
+      ),
+    [boletasRows, emitQueue],
+  );
+
+  const queueProgressLabel = useMemo(() => {
+    if (!emitQueue || !queueActive) return '';
+    const currentName = emitQueue.current
+      ? orderNameById.get(emitQueue.current.orderId) || emitQueue.current.orderId
+      : null;
+    const pending = emitQueue.queueLength + (emitQueue.current ? 1 : 0);
+    if (currentName) {
+      return `Emitiendo ${currentName} · ${pending} en cola`;
+    }
+    return `${pending} documento(s) en cola`;
+  }, [emitQueue, queueActive, orderNameById]);
+
+  const recentQueueFailures = useMemo(
+    () => (emitQueue?.recentResults || []).filter((r) => !r.success).slice(-3),
+    [emitQueue],
+  );
   const selectedRow = rows.find((r) => r.shopify.id === selectedId) ?? null;
   const previewMontos = useMemo(() => {
     if (!editDraft) return payload?.montosValidacion;
@@ -1073,7 +1244,7 @@ export default function BiomaFacturacion() {
   }, [editDraft, payload, shopifyTotalRef]);
   const previewRut = editDraft?.rutReceptor ?? payload?.rutReceptor ?? null;
   const selectedBoleta = boletasRows.find((r) => r.shopifyOrderId === selectedId) ?? null;
-  const isBusy = busyOrderId === selectedId;
+  const isBusy = busyOrderId === selectedId || queueActive || enqueueBusy;
 
   const rellenarBlockReason = useMemo(
     () =>
@@ -1355,6 +1526,68 @@ export default function BiomaFacturacion() {
       {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>{error}</Alert>}
       {loading && <LinearProgress sx={{ mb: 2, borderRadius: 1 }} />}
 
+      {queueActive && (
+        <Alert severity="info" sx={{ mb: 2 }} icon={false}>
+          <Stack spacing={1}>
+            <Typography variant="body2" fontWeight={600}>
+              Cola de emisión activa — {queueProgressLabel}
+            </Typography>
+            <LinearProgress />
+            <Typography variant="caption" color="text.secondary">
+              Las facturas/boletas se emiten de a una para no bloquear el SII. Puedes seguir navegando; la lista se actualiza al terminar.
+            </Typography>
+            {recentQueueFailures.length > 0 && (
+              <Typography variant="caption" color="error.main">
+                Últimos errores:{' '}
+                {recentQueueFailures
+                  .map((r) => `${orderNameById.get(r.orderId) || r.orderId}: ${r.error || 'falló'}`)
+                  .join(' · ')}
+              </Typography>
+            )}
+          </Stack>
+        </Alert>
+      )}
+
+      {moduleTab === 'pendientes' && selectedFacturaIds.size > 0 && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 2 }}
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              variant="outlined"
+              disabled={!sessionReady || !!siiBlocked.blocked || enqueueBusy}
+              onClick={() => void enqueueSelectedDtes('factura')}
+            >
+              Emitir {selectedFacturaIds.size} en cola
+            </Button>
+          }
+        >
+          {selectedFacturaIds.size} factura(s) seleccionada(s). El lote usa datos automáticos de Shopify (sin ediciones del preview).
+        </Alert>
+      )}
+
+      {moduleTab === 'boletas' && selectedBoletaIds.size > 0 && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 2 }}
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              variant="outlined"
+              disabled={!sessionReady || enqueueBusy}
+              onClick={() => void enqueueSelectedDtes('boleta')}
+            >
+              Emitir {selectedBoletaIds.size} en cola
+            </Button>
+          }
+        >
+          {selectedBoletaIds.size} boleta(s) seleccionada(s).
+        </Alert>
+      )}
+
       {moduleTab === 'realizadas' && (
         <TableContainer component={Paper} variant="outlined" sx={{ bgcolor: '#fff' }}>
           <Table size="small" stickyHeader>
@@ -1484,6 +1717,28 @@ export default function BiomaFacturacion() {
           <Table size="small" stickyHeader>
             <TableHead>
               <TableRow>
+                <TableCell padding="checkbox" sx={{ bgcolor: '#f7fafc' }}>
+                  <Checkbox
+                    size="small"
+                    indeterminate={
+                      selectableFacturaRows.some((r) => selectedFacturaIds.has(r.shopify.id)) &&
+                      !selectableFacturaRows.every((r) => selectedFacturaIds.has(r.shopify.id))
+                    }
+                    checked={
+                      selectableFacturaRows.length > 0 &&
+                      selectableFacturaRows.every((r) => selectedFacturaIds.has(r.shopify.id))
+                    }
+                    disabled={selectableFacturaRows.length === 0 || enqueueBusy}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedFacturaIds(new Set(selectableFacturaRows.map((r) => r.shopify.id)));
+                      } else {
+                        setSelectedFacturaIds(new Set());
+                      }
+                    }}
+                    inputProps={{ 'aria-label': 'Seleccionar todas las facturas pendientes' }}
+                  />
+                </TableCell>
                 <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Pedido</TableCell>
                 <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Fecha</TableCell>
                 <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Cliente</TableCell>
@@ -1494,20 +1749,42 @@ export default function BiomaFacturacion() {
             <TableBody>
               {pendingRows.length === 0 && !loading && (
                 <TableRow>
-                  <TableCell colSpan={5} align="center" sx={{ py: 6, color: 'text.secondary' }}>
+                  <TableCell colSpan={6} align="center" sx={{ py: 6, color: 'text.secondary' }}>
                     No hay facturas pendientes (tag factura en Shopify).
                   </TableCell>
                 </TableRow>
               )}
               {pendingRows.map((row) => {
                 const { razon, rut, nombre } = clienteFactura(row);
+                const selectable =
+                  isQueueSelectableStatus(row.emision?.status) &&
+                  !isOrderInEmitQueue(row.shopify.id, emitQueue);
+                const inQueue = isOrderInEmitQueue(row.shopify.id, emitQueue);
                 return (
                   <TableRow
                     key={row.shopify.id}
                     hover
                     onClick={() => selectOrder(row)}
+                    selected={selectedFacturaIds.has(row.shopify.id)}
                     sx={{ cursor: 'pointer' }}
                   >
+                    <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
+                      <Checkbox
+                        size="small"
+                        checked={selectedFacturaIds.has(row.shopify.id)}
+                        disabled={!selectable || enqueueBusy}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          setSelectedFacturaIds((prev) => {
+                            const next = new Set(prev);
+                            if (e.target.checked) next.add(row.shopify.id);
+                            else next.delete(row.shopify.id);
+                            return next;
+                          });
+                        }}
+                        inputProps={{ 'aria-label': `Seleccionar ${row.shopify.name}` }}
+                      />
+                    </TableCell>
                     <TableCell><Typography fontWeight={600} fontSize={13}>{row.shopify.name}</Typography></TableCell>
                     <TableCell>{new Date(row.shopify.processedAt).toLocaleDateString('es-CL')}</TableCell>
                     <TableCell>
@@ -1518,7 +1795,9 @@ export default function BiomaFacturacion() {
                       {rut && <Typography variant="caption" display="block">{formatRut(rut)}</Typography>}
                     </TableCell>
                     <TableCell align="right"><Typography fontWeight={600} fontSize={13}>{fmt(row.shopify.total)}</Typography></TableCell>
-                    <TableCell>{statusChip(row.emision?.status)}</TableCell>
+                    <TableCell>
+                      {inQueue ? <Chip size="small" label="En cola" color="info" /> : statusChip(row.emision?.status)}
+                    </TableCell>
                   </TableRow>
                 );
               })}
@@ -1697,6 +1976,28 @@ export default function BiomaFacturacion() {
             <Table size="small" stickyHeader>
               <TableHead>
                 <TableRow>
+                  <TableCell padding="checkbox" sx={{ bgcolor: '#f7fafc' }}>
+                    <Checkbox
+                      size="small"
+                      indeterminate={
+                        selectableBoletaRows.some((r) => selectedBoletaIds.has(r.shopifyOrderId)) &&
+                        !selectableBoletaRows.every((r) => selectedBoletaIds.has(r.shopifyOrderId))
+                      }
+                      checked={
+                        selectableBoletaRows.length > 0 &&
+                        selectableBoletaRows.every((r) => selectedBoletaIds.has(r.shopifyOrderId))
+                      }
+                      disabled={selectableBoletaRows.length === 0 || enqueueBusy}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedBoletaIds(new Set(selectableBoletaRows.map((r) => r.shopifyOrderId)));
+                        } else {
+                          setSelectedBoletaIds(new Set());
+                        }
+                      }}
+                      inputProps={{ 'aria-label': 'Seleccionar todas las boletas pendientes' }}
+                    />
+                  </TableCell>
                   <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Pedido</TableCell>
                   <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Fecha</TableCell>
                   <TableCell sx={{ fontWeight: 600, bgcolor: '#f7fafc' }}>Cliente</TableCell>
@@ -1706,21 +2007,42 @@ export default function BiomaFacturacion() {
               <TableBody>
                 {boletasRows.length === 0 && !loading && (
                   <TableRow>
-                    <TableCell colSpan={4} align="center" sx={{ py: 6, color: 'text.secondary' }}>
+                    <TableCell colSpan={5} align="center" sx={{ py: 6, color: 'text.secondary' }}>
                       No hay boletas pendientes. Pulsa <strong>Importar desde Shopify</strong>.
                     </TableCell>
                   </TableRow>
                 )}
                 {boletasRows.map((row) => {
                   const isSelected = selectedId === row.shopifyOrderId;
+                  const selectable =
+                    isQueueSelectableStatus(row.status) &&
+                    !isOrderInEmitQueue(row.shopifyOrderId, emitQueue);
+                  const inQueue = isOrderInEmitQueue(row.shopifyOrderId, emitQueue);
                   return (
                     <TableRow
                       key={row.shopifyOrderId}
                       hover
-                      selected={isSelected}
+                      selected={isSelected || selectedBoletaIds.has(row.shopifyOrderId)}
                       onClick={() => selectBoleta(row)}
                       sx={{ cursor: 'pointer', '&.Mui-selected': { bgcolor: 'rgba(43, 108, 176, 0.08) !important' } }}
                     >
+                      <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          size="small"
+                          checked={selectedBoletaIds.has(row.shopifyOrderId)}
+                          disabled={!selectable || enqueueBusy}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            setSelectedBoletaIds((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(row.shopifyOrderId);
+                              else next.delete(row.shopifyOrderId);
+                              return next;
+                            });
+                          }}
+                          inputProps={{ 'aria-label': `Seleccionar ${row.shopifyOrderName}` }}
+                        />
+                      </TableCell>
                       <TableCell><Typography fontWeight={600} fontSize={13}>{row.shopifyOrderName}</Typography></TableCell>
                       <TableCell>
                         {row.createdAt
@@ -1728,7 +2050,9 @@ export default function BiomaFacturacion() {
                           : '—'}
                       </TableCell>
                       <TableCell><Typography fontSize={13}>{row.customerName || 'Consumidor final'}</Typography></TableCell>
-                      <TableCell>{statusChip(row.status)}</TableCell>
+                      <TableCell>
+                        {inQueue ? <Chip size="small" label="En cola" color="info" /> : statusChip(row.status)}
+                      </TableCell>
                     </TableRow>
                   );
                 })}
