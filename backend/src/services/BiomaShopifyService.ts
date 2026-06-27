@@ -10,6 +10,9 @@
  * Optional:
  *   - BIOMA_SHOPIFY_API_VERSION    (defaults to 2025-10)
  *   - BIOMA_FACTURA_TAG            (defaults to 'factura')
+ *
+ * Scopes Admin API: read_orders, write_orders, read_customers, read_all_orders,
+ * read_products (variant.sku y selectedOptions en líneas — opcional con fallback).
  */
 
 import axios from 'axios';
@@ -178,6 +181,62 @@ const ORDERS_QUERY = `#graphql
   }
 `;
 
+/** Sin `variant { }` — no requiere scope read_products. */
+const ORDERS_QUERY_LITE = `#graphql
+  query BiomaPendingLite($cursor: String, $query: String!, $first: Int!) {
+    orders(first: $first, after: $cursor, query: $query, sortKey: PROCESSED_AT, reverse: true) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id
+          name
+          note
+          processedAt
+          displayFinancialStatus
+          tags
+          customAttributes { key value }
+          currencyCode
+          customer {
+            id
+            email
+            firstName
+            lastName
+            phone
+            note
+          }
+          shippingAddress {
+            name
+            phone
+            address1
+            city
+            province
+            zip
+            country
+          }
+          currentSubtotalPriceSet { shopMoney { amount } }
+          currentTotalTaxSet { shopMoney { amount } }
+          currentTotalDiscountsSet { shopMoney { amount } }
+          currentShippingPriceSet { shopMoney { amount } }
+          currentTotalPriceSet { shopMoney { amount } }
+          lineItems(first: 50) {
+            edges {
+              node {
+                name
+                title
+                variantTitle
+                quantity
+                originalUnitPriceSet { shopMoney { amount } }
+                totalDiscountSet { shopMoney { amount } }
+                discountedTotalSet { shopMoney { amount } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
 const DRAFT_ORDERS_QUERY = `#graphql
   query BiomaDraftPending($cursor: String, $query: String!, $first: Int!) {
     draftOrders(first: $first, after: $cursor, query: $query, sortKey: UPDATED_AT, reverse: true) {
@@ -225,6 +284,59 @@ const DRAFT_ORDERS_QUERY = `#graphql
                     value
                   }
                 }
+                quantity
+                originalUnitPrice
+                totalDiscount
+                discountedTotal
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const DRAFT_ORDERS_QUERY_LITE = `#graphql
+  query BiomaDraftPendingLite($cursor: String, $query: String!, $first: Int!) {
+    draftOrders(first: $first, after: $cursor, query: $query, sortKey: UPDATED_AT, reverse: true) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id
+          name
+          note
+          createdAt
+          status
+          tags
+          customAttributes { key value }
+          currencyCode
+          customer {
+            id
+            email
+            firstName
+            lastName
+            phone
+            note
+          }
+          shippingAddress {
+            name
+            phone
+            address1
+            city
+            province
+            zip
+            country
+          }
+          subtotalPrice
+          totalTax
+          totalPrice
+          lineItems(first: 50) {
+            edges {
+              node {
+                name
+                title
+                variantTitle
                 quantity
                 originalUnitPrice
                 totalDiscount
@@ -362,6 +474,56 @@ const ORDER_FETCH_QUERY = `#graphql
   }
 `;
 
+const ORDER_FETCH_QUERY_LITE = `#graphql
+  query OrderByIdLite($id: ID!) {
+    order(id: $id) {
+      id
+      name
+      note
+      processedAt
+      displayFinancialStatus
+      tags
+      customAttributes { key value }
+      currencyCode
+      customer {
+        id
+        email
+        firstName
+        lastName
+        phone
+        note
+      }
+      shippingAddress {
+        name
+        phone
+        address1
+        city
+        province
+        zip
+        country
+      }
+      currentSubtotalPriceSet { shopMoney { amount } }
+      currentTotalTaxSet { shopMoney { amount } }
+      currentTotalDiscountsSet { shopMoney { amount } }
+      currentShippingPriceSet { shopMoney { amount } }
+      currentTotalPriceSet { shopMoney { amount } }
+      lineItems(first: 50) {
+        edges {
+          node {
+            name
+            title
+            variantTitle
+            quantity
+            originalUnitPriceSet { shopMoney { amount } }
+            totalDiscountSet { shopMoney { amount } }
+            discountedTotalSet { shopMoney { amount } }
+          }
+        }
+      }
+    }
+  }
+`;
+
 function num(value: unknown): number {
   if (value === null || value === undefined) return 0;
   const n = Number(value);
@@ -370,10 +532,46 @@ function num(value: unknown): number {
 
 function mapVariantOptions(node: any): ShopifyVariantOption[] {
   const opts = node?.variant?.selectedOptions ?? [];
-  return opts.map((o: any) => ({
-    name: String(o?.name ?? ''),
-    value: String(o?.value ?? ''),
-  }));
+  if (opts.length) {
+    return opts.map((o: any) => ({
+      name: String(o?.name ?? ''),
+      value: String(o?.value ?? ''),
+    }));
+  }
+  return inferVariantOptionsFromLine(
+    String(node?.name ?? node?.title ?? ''),
+    node?.variantTitle ?? null,
+  );
+}
+
+/** Aproxima opciones (p. ej. Tamaño) desde name/variantTitle cuando falta read_products. */
+function inferVariantOptionsFromLine(
+  name: string,
+  variantTitle: string | null,
+): ShopifyVariantOption[] {
+  const out: ShopifyVariantOption[] = [];
+  const v = (variantTitle || '').trim();
+  if (v && !/^default\s+title$/i.test(v)) {
+    out.push({ name: 'Variant', value: v });
+    if (/\d+\s*(kg|gr?|ml|lt?|l)\b/i.test(v)) {
+      out.push({ name: 'Tamaño', value: v });
+    }
+  }
+  const dashIdx = name.indexOf(' - ');
+  if (dashIdx >= 0) {
+    const tail = name.slice(dashIdx + 3);
+    for (const seg of tail.split('/')) {
+      const s = seg.trim();
+      if (!s) continue;
+      if (!out.some((o) => o.value === s)) {
+        out.push({ name: 'Opción', value: s });
+      }
+      if (/\d+\s*(kg|gr?|ml|lt?|l)\b/i.test(s) && !out.some((o) => o.name === 'Tamaño')) {
+        out.push({ name: 'Tamaño', value: s });
+      }
+    }
+  }
+  return out;
 }
 
 function mapLineItemFromDraftNode(edge: any): ShopifyOrderLineItem {
@@ -454,6 +652,8 @@ function mapOrderNode(node: any): ShopifyOrderForBioma {
 
 export class BiomaShopifyService {
   private static tokenCache: TokenCache | null = null;
+  /** null = aún no probado; false = falta read_products (usar query lite). */
+  private static variantFieldsAvailable: boolean | null = null;
 
   private static get storeDomain(): string {
     const v = process.env.BIOMA_SHOPIFY_SHOP || process.env.BIOMA_SHOPIFY_STORE_DOMAIN;
@@ -508,12 +708,46 @@ export class BiomaShopifyService {
       );
     }
     const expiresInSec = num(res.data.expires_in) || 3600;
+    const scope = String(res.data.scope || '');
     this.tokenCache = {
       token: res.data.access_token,
-      scope: res.data.scope || '',
+      scope,
       expiresAt: now + expiresInSec * 1000,
     };
+    if (scope.split(',').map((s) => s.trim()).includes('read_products')) {
+      this.variantFieldsAvailable = true;
+    }
     return this.tokenCache.token;
+  }
+
+  private static isReadProductsVariantError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    return (
+      msg.includes('read_products') &&
+      (msg.includes('variant field') || msg.includes('"variant"'))
+    );
+  }
+
+  private static async graphqlWithVariantFallback<T>(
+    fullQuery: string,
+    liteQuery: string,
+    variables: Record<string, unknown>,
+  ): Promise<T> {
+    if (this.variantFieldsAvailable === false) {
+      return this.graphql<T>(liteQuery, variables);
+    }
+    try {
+      const data = await this.graphql<T>(fullQuery, variables);
+      if (this.variantFieldsAvailable === null) this.variantFieldsAvailable = true;
+      return data;
+    } catch (err) {
+      if (!this.isReadProductsVariantError(err)) throw err;
+      console.warn(
+        '[bioma shopify] Falta scope read_products — usando query sin variant (glosas pueden perder peso de opción Tamaño). Actualiza scopes en Dev Dashboard.',
+      );
+      this.variantFieldsAvailable = false;
+      return this.graphql<T>(liteQuery, variables);
+    }
   }
 
   private static async graphql<T = any>(query: string, variables: Record<string, unknown>): Promise<T> {
@@ -556,16 +790,20 @@ export class BiomaShopifyService {
     const queryStr = parts.join(' ');
 
     const [ordersData, draftsData] = await Promise.all([
-      this.graphql<{ orders: any }>(ORDERS_QUERY, {
+      this.graphqlWithVariantFallback<{ orders: any }>(ORDERS_QUERY, ORDERS_QUERY_LITE, {
         cursor: after,
         query: queryStr,
         first: pageSize,
       }),
-      this.graphql<{ draftOrders: any }>(DRAFT_ORDERS_QUERY, {
-        cursor: null,
-        query: `tag:${tag}`,
-        first: pageSize,
-      }).catch((err) => {
+      this.graphqlWithVariantFallback<{ draftOrders: any }>(
+        DRAFT_ORDERS_QUERY,
+        DRAFT_ORDERS_QUERY_LITE,
+        {
+          cursor: null,
+          query: `tag:${tag}`,
+          first: pageSize,
+        },
+      ).catch((err) => {
         console.warn('[bioma] draftOrders query failed (non-fatal):', err?.message);
         return { draftOrders: { edges: [], pageInfo: { hasNextPage: false, endCursor: null } } };
       }),
@@ -601,7 +839,11 @@ export class BiomaShopifyService {
   }
 
   static async getOrder(orderId: string): Promise<ShopifyOrderForBioma | null> {
-    const data = await this.graphql<{ order: any | null }>(ORDER_FETCH_QUERY, { id: orderId });
+    const data = await this.graphqlWithVariantFallback<{ order: any | null }>(
+      ORDER_FETCH_QUERY,
+      ORDER_FETCH_QUERY_LITE,
+      { id: orderId },
+    );
     if (!data.order) return null;
     return mapOrderNode(data.order);
   }
@@ -641,11 +883,15 @@ export class BiomaShopifyService {
 
     // Priorizar ventana reciente en la búsqueda de Shopify
     const queryStr = `financial_status:paid created_at:>=${sinceIso}`;
-    const data = await this.graphql<{ orders: any }>(ORDERS_QUERY, {
-      cursor: after,
-      query: queryStr,
-      first: pageSize,
-    });
+    const data = await this.graphqlWithVariantFallback<{ orders: any }>(
+      ORDERS_QUERY,
+      ORDERS_QUERY_LITE,
+      {
+        cursor: after,
+        query: queryStr,
+        first: pageSize,
+      },
+    );
     const edges = data.orders?.edges ?? [];
     const orders = edges
       .map((edge: any) => mapOrderNode(edge.node))

@@ -21,7 +21,7 @@ dev_store_url = "biomacoffee.myshopify.com"
 api_version = "2026-04"
 
 [access_scopes]
-scopes = "read_orders,write_orders,read_customers,read_all_orders"
+scopes = "read_orders,write_orders,read_customers,read_all_orders,read_products"
 
 [pos]
 embedded = false
