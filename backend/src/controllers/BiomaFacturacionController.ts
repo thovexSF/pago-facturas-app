@@ -405,6 +405,15 @@ export class BiomaFacturacionController {
     }
   }
 
+  // POST /api/bioma/pdf/sync-pendientes — descarga PDFs faltantes en background
+  static async syncPdfsPendientes(req: Request, res: Response) {
+    const { sessionId } = req.body || {};
+    BiomaFacturacionService.startBackgroundPdfSyncForBioma({
+      sessionId: sessionId ? String(sessionId) : undefined,
+    });
+    return res.json({ success: true, started: true });
+  }
+
   // POST /api/bioma/pdf/:orderId/fetch — busca CODIGO SII por folio y descarga PDF
   static async fetchPdf(req: Request, res: Response) {
     const orderId = req.params.orderId;
@@ -460,6 +469,20 @@ export class BiomaFacturacionController {
           error:
             'Sin PDF todavía. En Realizadas pulsa PDF (busca por folio en el SII) o verifica el folio en sii.cl.',
         });
+      }
+      let buffer = await SiiFacturacionService.getPdfData(codigo);
+      if (!buffer) {
+        try {
+          buffer = await SiiFacturacionService.fetchPdfToDb(codigo);
+        } catch (fetchErr: any) {
+          console.warn(`[bioma] pdf lazy fetch order=${orderId}:`, fetchErr?.message || fetchErr);
+        }
+      }
+      if (buffer) {
+        const filename = BiomaFacturacionService.pdfFilenameForRow(row);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+        return res.send(buffer);
       }
       const target = `/api/sii-facturacion/pdf/${encodeURIComponent(codigo)}`;
       return res.redirect(307, target);

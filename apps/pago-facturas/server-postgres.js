@@ -780,6 +780,46 @@ async function buscarCodigoPdf(cookies, folio, rutEmisor, tipoDte = null) {
   return null;
 }
 
+// Espera a que la página SII deje de redirigir antes de leer HTML (evita error Playwright).
+async function esperarPaginaEstable(page, opts = {}) {
+  const timeout = opts.timeout ?? 20000;
+  try {
+    await page.waitForLoadState('domcontentloaded', { timeout });
+  } catch { /* ignore */ }
+  try {
+    await page.waitForLoadState('networkidle', { timeout: Math.min(timeout, 10000) });
+  } catch { /* SII rara vez llega a networkidle */ }
+  await sleep(opts.extraMs ?? 500);
+}
+
+async function safePageContent(page, opts = {}) {
+  const retries = opts.retries ?? 5;
+  for (let i = 0; i < retries; i++) {
+    try {
+      await esperarPaginaEstable(page, opts);
+      return await page.content();
+    } catch (err) {
+      const msg = err?.message ?? String(err);
+      if (!/navigating|changing the content|execution context was destroyed|Target closed/i.test(msg)) {
+        throw err;
+      }
+      await sleep(600 + i * 500);
+    }
+  }
+  throw new Error('No se pudo leer el HTML de la página SII (navegación inestable)');
+}
+
+function cookiesDesdeContexto(ctx) {
+  return ctx.cookies().then(rawCookies =>
+    rawCookies.map(c => ({
+      name: c.name,
+      value: c.value,
+      domain: c.domain?.startsWith('.') ? c.domain : `.${c.domain}`,
+      path: c.path ?? '/',
+    })).filter(c => c.name && c.value && c.value !== 'DEL')
+  );
+}
+
 // ── Descargar PDF de un documento dado su CODIGO interno ─────────────────────
 async function descargarPdfPorCodigo(cookies, codigo, yaPreparado = false) {
   const launchUrl = 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4';
@@ -1169,7 +1209,17 @@ async function descargarPdfSII(folio, rutEmisor, codigoBd = null, tipoDte = null
     try {
       return await descargarPdfPorCodigo(cookies, codigo, true);
     } catch (httpErr) {
-      console.warn(`[SII pdf] HTTP falló (${httpErr.message}), intentando vía browser (sin re-login)...`);
+      console.warn(`[SII pdf] HTTP falló (${httpErr.message}), re-auth y reintento HTTP...`);
+    }
+
+    try {
+      cookies = await autenticarSIIdirecto(true);
+      cookies = await prepararPortalDocsRecibidos(cookies);
+      siiAuthCache = cookies;
+      siiAuthCacheAt = Date.now();
+      return await descargarPdfPorCodigo(cookies, codigo, true);
+    } catch (httpErr2) {
+      console.warn(`[SII pdf] HTTP reintento falló (${httpErr2.message}), intentando vía browser...`);
     }
 
     return await descargarPdfViaBrowser(folio, rutEmisor, codigo, tipoDte, cookies);
@@ -1182,15 +1232,42 @@ async function descargarPdfSII(folio, rutEmisor, codigoBd = null, tipoDte = null
 async function descargarPdfViaBrowser(folio, rutEmisor, codigoBd = null, tipoDte = null, cookiesBase = null) {
   const { chromium } = require('playwright');
   const browser = await chromium.launch({ headless: true });
+  const launchUrl = 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4';
   try {
     const ctx = await browser.newContext({ ignoreHTTPSErrors: true, userAgent: SII_UA });
     const page = await ctx.newPage();
     let cookies = cookiesBase;
 
+    const tryHttpDesdeCtx = async (codigo) => {
+      if (!codigo) return null;
+      try {
+        const ck = await cookiesDesdeContexto(ctx);
+        if (ck.length) return await descargarPdfPorCodigo(ck, codigo, true);
+      } catch (e) {
+        console.warn(`[SII pdf] HTTP con cookies browser CODIGO=${codigo}: ${e.message}`);
+      }
+      return null;
+    };
+
     if (cookies?.length) {
       await inyectarCookiesEnContexto(ctx, cookies);
-      await page.goto('https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4', { waitUntil: 'domcontentloaded', timeout: 30000 });
-      const html = await page.content();
+      if (codigoBd) {
+        const bufDirecto = await tryHttpDesdeCtx(codigoBd);
+        if (bufDirecto) return bufDirecto;
+      }
+      await page.goto(launchUrl, { waitUntil: 'commit', timeout: 45000 }).catch(() => {});
+      let html = '';
+      try {
+        html = await safePageContent(page);
+      } catch (e) {
+        console.warn(`[SII pdf] safePageContent launch: ${e.message}`);
+        if (codigoBd) {
+          await loginSII(page);
+          await seleccionarEmpresa(page);
+        } else {
+          throw e;
+        }
+      }
       if (page.url().includes('zeusr.sii.cl') || tituloHtmlEsErrorContribuyente(html)) {
         console.warn('[SII pdf] Cookies cacheadas inválidas en browser, seleccionando empresa...');
         await seleccionarEmpresa(page);
@@ -1207,8 +1284,9 @@ async function descargarPdfViaBrowser(folio, rutEmisor, codigoBd = null, tipoDte
       for (const td of intentos) {
         const tpo = td === '' ? '&TPO_DOC=' : `&TPO_DOC=${encodeURIComponent(td)}`;
         const searchUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeAdminDocsRcp.cgi?RUT_EMI=${rutNum}&FOLIO=${folio}&RZN_SOC=&FEC_DESDE=&FEC_HASTA=${tpo}&ESTADO=&ORDEN=&NUM_PAG=1`;
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        const m = (await page.content()).match(/CODIGO=(\d+)/);
+        await page.goto(searchUrl, { waitUntil: 'commit', timeout: 45000 }).catch(() => {});
+        const html = await safePageContent(page);
+        const m = html.match(/CODIGO=(\d+)/);
         if (m) { codigo = m[1]; break; }
       }
       if (!codigo) throw new Error(`Folio ${folio} no encontrado en SII (browser)`);
@@ -1216,20 +1294,17 @@ async function descargarPdfViaBrowser(folio, rutEmisor, codigoBd = null, tipoDte
 
     console.log(`[SII pdf] Folio ${folio} → CODIGO ${codigo} (browser)`);
 
+    const bufHttp = await tryHttpDesdeCtx(codigo);
+    if (bufHttp) return bufHttp;
+
     const pdfUrl = `https://www1.sii.cl/cgi-bin/Portal001/mipeShowPdf.cgi?CODIGO=${codigo}`;
-    const resp = await page.goto(pdfUrl, { waitUntil: 'load', timeout: 45000 }).catch(() => null);
+    const resp = await page.goto(pdfUrl, { waitUntil: 'commit', timeout: 45000 }).catch(() => null);
     if (resp) {
       const buf = Buffer.from(await resp.body());
       if (buf.slice(0, 4).toString() === '%PDF') return buf;
     }
 
-    const rawCookies = await ctx.cookies();
-    const ck = rawCookies.map(c => ({
-      name: c.name,
-      value: c.value,
-      domain: c.domain?.startsWith('.') ? c.domain : `.${c.domain}`,
-      path: c.path ?? '/',
-    })).filter(c => c.name && c.value && c.value !== 'DEL');
+    const ck = await cookiesDesdeContexto(ctx);
     return await descargarPdfPorCodigo(ck, codigo, true);
   } finally {
     await browser.close().catch(() => {});
@@ -1261,10 +1336,11 @@ async function descargarPdfsBulkSII() {
     for (const f of sinPdf) {
       // Pausa cortés entre documentos para no saturar SII
       await sleep(400);
+      let codigo = null;
       try {
         // Usar CODIGO guardado en BD directamente (viene de detCodigo al sincronizar)
         // Fallback: buscar en mipeAdminDocsRcp si no está en BD (documentos antiguos)
-        let codigo = f.codigo;
+        codigo = f.codigo;
         if (!codigo) {
           codigo = await buscarCodigoPdf(cookies, f.folio, f.rut_emisor, f.tipo_doc || null);
         }
@@ -1289,6 +1365,30 @@ async function descargarPdfsBulkSII() {
         sesionErrores++;
         errores++;
         console.error(`[PDF bulk] ✗ Folio ${f.folio}: ${err.message}`);
+
+        if (codigo) {
+          try {
+            console.warn(`[PDF bulk] Folio ${f.folio} → fallback browser...`);
+            const buf = await descargarPdfViaBrowser(
+              f.folio, f.rut_emisor, codigo, f.tipo_doc || null, cookies,
+            );
+            const nombre = f.tipo_doc === '61'
+              ? `nc_${f.folio}_${f.rut_emisor}.pdf`
+              : `factura_${f.folio}_${f.rut_emisor}.pdf`;
+            await pool.query(
+              `UPDATE facturas_recibidas SET pdf_data=$1, pdf_nombre=$2, pdf_at=NOW(), updated_at=NOW() WHERE id=$3`,
+              [buf, nombre, f.id]
+            );
+            descargadas++;
+            errores--;
+            sesionErrores = 0;
+            console.log(`[PDF bulk] ✓ Folio ${f.folio} (browser)`);
+            continue;
+          } catch (browserErr) {
+            console.error(`[PDF bulk] ✗ Folio ${f.folio} browser: ${browserErr.message}`);
+          }
+        }
+
         // Si 3 errores seguidos, la sesión probablemente expiró → re-autenticar
         if (sesionErrores >= 3) {
           console.warn('[PDF bulk] 3 errores seguidos → re-autenticando sesión SII...');

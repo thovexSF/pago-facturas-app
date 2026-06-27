@@ -140,6 +140,8 @@ interface EmisionDbRow {
   whatsappSentAt: string | null;
   createdAt?: string | null;
   lastError: string | null;
+  hasPdfCached?: boolean;
+  pdfSyncing?: boolean;
 }
 
 function WhatsAppIcon(props: { fontSize?: 'small' | 'inherit' | 'medium' | 'large' }) {
@@ -440,13 +442,18 @@ export default function BiomaFacturacion() {
       if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
       setRealizadasRows(data.rows || []);
       setRealizadasTotal(data.total ?? data.rows?.length ?? 0);
+      void fetch(`${BIOMA_API}/pdf/sync-pendientes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sessionId ? { sessionId } : {}),
+      }).catch(() => {});
     } catch (e: any) {
       setError(`Realizadas: ${e?.message || e}`);
       setRealizadasRows([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
     if (!emitQueue) return;
@@ -897,7 +904,25 @@ export default function BiomaFacturacion() {
     handleSiiSessionInvalid,
   ]);
 
-  const descargarPdf = useCallback(async (orderId: string) => {
+  useEffect(() => {
+    if (moduleTab !== 'realizadas') return;
+    const syncing = realizadasRows.some((r) => r.pdfSyncing);
+    if (!syncing) return;
+    const t = window.setInterval(() => void loadRealizadas(), 20000);
+    return () => clearInterval(t);
+  }, [moduleTab, realizadasRows, loadRealizadas]);
+
+  const verPdf = useCallback(async (orderId: string, row: EmisionDbRow) => {
+    const url = `${BIOMA_API}/pdf/${encodeURIComponent(orderId)}`;
+    if (row.hasPdfCached) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (row.pdfSyncing) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      setSnack('El PDF puede tardar unos minutos en aparecer en el SII.');
+      return;
+    }
     setBusyOrderId(orderId);
     setError(null);
     try {
@@ -911,7 +936,7 @@ export default function BiomaFacturacion() {
         throw new Error(data.error || 'No se pudo obtener el PDF del SII');
       }
       await loadRealizadas();
-      window.open(`${BIOMA_API}/pdf/${encodeURIComponent(orderId)}`, '_blank');
+      window.open(url, '_blank', 'noopener,noreferrer');
       if (data.pdfCached) {
         setSnack(`PDF sincronizado (folio ${data.row?.siiFolio ?? '—'})`);
       }
@@ -1628,19 +1653,22 @@ export default function BiomaFacturacion() {
                       title={
                         !row.siiFolio && !row.siiCodigo
                           ? 'Sin folio SII'
-                          : !row.siiCodigo
-                            ? 'Buscar PDF en el SII por folio'
-                            : 'Descargar PDF'
+                          : row.hasPdfCached
+                            ? 'Ver PDF'
+                            : row.pdfSyncing
+                              ? 'PDF en sincronización con el SII'
+                              : 'Obtener PDF del SII'
                       }
                     >
                       <span>
                         <Button
                           size="small"
                           variant="outlined"
+                          color={row.hasPdfCached ? 'success' : 'inherit'}
                           disabled={(!row.siiFolio && !row.siiCodigo) || busyOrderId === row.shopifyOrderId}
-                          onClick={() => descargarPdf(row.shopifyOrderId)}
+                          onClick={() => verPdf(row.shopifyOrderId, row)}
                         >
-                          PDF
+                          {row.hasPdfCached ? 'Ver PDF' : row.pdfSyncing ? 'PDF…' : 'PDF'}
                         </Button>
                       </span>
                     </Tooltip>

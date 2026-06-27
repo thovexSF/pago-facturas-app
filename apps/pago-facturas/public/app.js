@@ -331,6 +331,7 @@ async function cargarFacturas() {
   renderTabla();
   cargarEventosCalendar();
   renderGrafico();
+  void syncPdfsAuto();
 }
 
 async function cargarProveedores() {
@@ -476,9 +477,8 @@ function renderTabla() {
         </td>
         <td><span class="badge ${estadoClass}">${estadoLabel}</span></td>
         <td onclick="event.stopPropagation()">
-          ${f.has_pdf
-            ? `<a class="btn btn-sm btn-success" href="/api/facturas/${f.id}/pdf" target="_blank" rel="noopener">📄 Ver</a>`
-            : `<button class="btn btn-sm btn-secondary" onclick="descargarPdfFactura(${f.id}, this)">⬇ PDF</button>`}
+          <button class="btn btn-sm ${f.has_pdf ? 'btn-success' : 'btn-secondary'}"
+            onclick="abrirPdfFactura(${f.id}, this)">${f.has_pdf ? '📄 Ver PDF' : '📄 PDF'}</button>
         </td>
         <td>${!esDocNc(f) && !ambaPagada?`<button class="btn btn-sm btn-pay" onclick="event.stopPropagation();abrirModal(facturas.find(x=>x.id===${f.id}))">Pagar</button>`:''}</td>
       </tr>`;
@@ -730,13 +730,10 @@ function abrirModal(f, lista) {
     iframe.src = '';
     iframe.style.display = 'none';
     placeholder.style.display = 'flex';
-    btnPdf.textContent = '⬇ Descargar PDF';
+    btnPdf.textContent = '📄 Obtener PDF';
     btnPdf.disabled = false;
     btnPdf.onclick = async () => {
-      btnPdf.disabled = true;
-      btnPdf.textContent = '⏳ Descargando…';
-      await descargarPdfFactura(f.id);
-      await cargarFacturas();
+      await abrirPdfFactura(f.id, btnPdf);
       const updated = facturas.find(x => x.id === f.id);
       if (updated) abrirModal(updated);
     };
@@ -785,6 +782,47 @@ async function desmarcarCuota(cuota) {
 
 // ─── PDF ──────────────────────────────────────────────────────────────────────
 
+let pdfAutoSyncRunning = false;
+
+async function syncPdfsAuto() {
+  if (pdfAutoSyncRunning) return;
+  try {
+    const st = await fetch('/api/pdf/status').then(r => r.json()).catch(() => null);
+    if (!st || st.total === 0 || st.con_pdf >= st.total) return;
+    pdfAutoSyncRunning = true;
+    const res = await fetch('/api/pdf/sync', { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok || !data.pendientes) {
+      pdfAutoSyncRunning = false;
+      return;
+    }
+    let intentos = 0;
+    const poll = setInterval(async () => {
+      intentos++;
+      const st2 = await fetch('/api/pdf/status').then(r => r.json()).catch(() => null);
+      if (st2 && (st2.con_pdf >= st2.total || intentos >= 40)) {
+        clearInterval(poll);
+        pdfAutoSyncRunning = false;
+        await cargarFacturas();
+      }
+    }, 15000);
+  } catch {
+    pdfAutoSyncRunning = false;
+  }
+}
+
+async function abrirPdfFactura(id, btnRef) {
+  const f = facturas.find(x => x.id === id);
+  if (f?.has_pdf) {
+    window.open(`/api/facturas/${id}/pdf`, '_blank', 'noopener,noreferrer');
+    return;
+  }
+  const ok = await descargarPdfFactura(id, btnRef);
+  if (ok) {
+    window.open(`/api/facturas/${id}/pdf`, '_blank', 'noopener,noreferrer');
+  }
+}
+
 async function descargarPdfFactura(id, btnRef) {
   // Spinner en el botón que lo disparó (modal o tabla)
   const btn = btnRef || document.getElementById('btn-modal-pdf');
@@ -822,8 +860,10 @@ async function descargarPdfFactura(id, btnRef) {
       mostrarToast(`PDF guardado (${Math.round(data.bytes/1024)} KB)`, 'success');
     }
     await cargarFacturas();
+    return true;
   } catch (err) {
     mostrarToast('Error PDF: ' + err.message, 'error');
+    return false;
   } finally {
     clearInterval(intervalo);
     if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }

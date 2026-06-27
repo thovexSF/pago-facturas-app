@@ -389,7 +389,7 @@ export class BiomaFacturacionService {
     page?: number;
     pageSize?: number;
   } = {}): Promise<{
-    rows: BiomaFacturaEmisionEntity[];
+    rows: Array<BiomaFacturaEmisionEntity & { hasPdfCached: boolean; pdfSyncing: boolean }>;
     total: number;
     page: number;
     pageSize: number;
@@ -407,7 +407,86 @@ export class BiomaFacturacionService {
 
     const total = await qb.getCount();
     const rows = await qb.skip(skip).take(pageSize).getMany();
-    return { rows, total, page, pageSize };
+    const codigos = [
+      ...new Set(rows.map((r) => r.siiCodigo).filter(Boolean) as string[]),
+    ];
+    const cached = await BiomaFacturacionService.pdfCachedCodigos(codigos);
+    const enriched = BiomaFacturacionService.enrichRealizadasRows(rows, cached);
+    return { rows: enriched, total, page, pageSize };
+  }
+
+  private static readonly PDF_RECENT_MS = 15 * 60 * 1000;
+
+  private static async pdfCachedCodigos(codigos: string[]): Promise<Set<string>> {
+    if (!codigos.length) return new Set();
+    const repo = AppDataSource.getRepository(SiiFacturaEntity);
+    const found = await repo
+      .createQueryBuilder('f')
+      .select('f.codigo')
+      .where('f.codigo IN (:...codigos)', { codigos })
+      .andWhere('f.hasPdf = true')
+      .getMany();
+    return new Set(found.map((f) => f.codigo));
+  }
+
+  private static enrichRealizadasRows(
+    rows: BiomaFacturaEmisionEntity[],
+    cached: Set<string>,
+  ): Array<BiomaFacturaEmisionEntity & { hasPdfCached: boolean; pdfSyncing: boolean }> {
+    const now = Date.now();
+    return rows.map((row) => {
+      const hasPdfCached =
+        !!row.pdfPublicUrl || !!(row.siiCodigo && cached.has(row.siiCodigo));
+      const emittedMs = row.emittedAt ? new Date(row.emittedAt).getTime() : 0;
+      const pdfReciente =
+        emittedMs > 0 && now - emittedMs < BiomaFacturacionService.PDF_RECENT_MS;
+      const pdfSyncing =
+        pdfReciente && !hasPdfCached && !!(row.siiFolio || row.siiCodigo);
+      return { ...row, hasPdfCached, pdfSyncing };
+    });
+  }
+
+  /** Crea stubs en sii_facturas y encola descarga en background de PDFs faltantes. */
+  static startBackgroundPdfSyncForBioma(opts?: { sessionId?: string }): void {
+    void (async () => {
+      try {
+        const empresaRut = BiomaFacturacionService.getEmpresaRutConfig();
+        const rows = await BiomaFacturacionService.repo.find({
+          where: { empresaRut, status: 'emitted' },
+          order: { emittedAt: 'DESC' },
+          take: 120,
+        });
+        for (const row of rows) {
+          const codigo = row.siiCodigo;
+          if (!codigo) continue;
+          if (await SiiFacturacionService.getPdfData(codigo)) continue;
+          await SiiFacturacionService.ensureFacturaRowStub(empresaRut, codigo, {
+            folio: row.siiFolio ?? undefined,
+            rutReceptor: row.rutReceptor ?? undefined,
+            tipoCodigo: row.tipoCodigo ?? 33,
+          });
+        }
+
+        let session = opts?.sessionId
+          ? SiiFacturacionService.getSession(opts.sessionId)
+          : null;
+        if (!session?.context) {
+          try {
+            const sid = await SiiFacturacionService.createSession(empresaRut);
+            session = SiiFacturacionService.getSession(sid) ?? null;
+          } catch (e: any) {
+            console.warn('[bioma] background PDF sync session:', e?.message || e);
+            return;
+          }
+        }
+        const ctx =
+          session?.context ??
+          (session ? await SiiFacturacionService.ensureBrowserForSession(session) : null);
+        if (ctx) SiiFacturacionService.startBackgroundPdfDownload(ctx, empresaRut);
+      } catch (e: any) {
+        console.warn('[bioma] background PDF sync:', e?.message || e);
+      }
+    })();
   }
 
   /** Boletas pendientes de emitir (tipo 39). Sincroniza desde Shopify si sync=true. */
@@ -784,6 +863,15 @@ export class BiomaFacturacionService {
   ): Promise<{ codigo: string | null; pdfCached: boolean; row?: BiomaFacturaEmisionEntity | null }> {
     const row = await BiomaFacturacionService.findEmision(shopifyOrderId);
     if (!row) return { codigo: null, pdfCached: false, row: null };
+    if (row.pdfPublicUrl) {
+      return { codigo: row.siiCodigo, pdfCached: true, row };
+    }
+    if (row.siiCodigo) {
+      const existing = await SiiFacturacionService.getPdfData(row.siiCodigo);
+      if (existing) {
+        return { codigo: row.siiCodigo, pdfCached: true, row };
+      }
+    }
     const empresaRut = BiomaFacturacionService.getEmpresaRutConfig();
     let session = opts?.sessionId ? SiiFacturacionService.getSession(opts.sessionId) : null;
     if (!session?.axiosClient) {
