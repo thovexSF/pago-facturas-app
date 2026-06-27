@@ -29,8 +29,8 @@ import {
   SII_FMA_PAGO_LABEL,
   type FormaPagoMipyme,
 } from '../utils/biomaFormaPago';
-
-// ─── Tipos ─────────────────────────────────────────────────────────────────
+import { SiiGlobalMutex } from './SiiGlobalMutex';
+import { SiiSharedCoordination, type SharedSiiSessionSnapshot } from './SiiSharedCoordination';
 
 export interface SiiEmpresa {
   value: string;   // RUT empresa ej. "99515150-2"
@@ -4722,6 +4722,7 @@ export class SiiFacturacionService {
         if (probe.ok) {
           console.log(`[SII] createSession: reutilizando sesión existente ${id} para ${rutNorm}`);
           s.ts = Date.now();
+          SiiSharedCoordination.notifySessionChanged();
           return id;
         }
         console.warn(`[SII] createSession: sesión ${id} caducó en SII — creando una nueva`);
@@ -4806,6 +4807,7 @@ export class SiiFacturacionService {
         empresaRut: rutNorm, ts: now, startedAt: now, playwrightReady: true,
         listadoVerifiedAt: now,
       });
+      SiiSharedCoordination.notifySessionChanged();
       return sessionId2;
     }
 
@@ -4816,6 +4818,7 @@ export class SiiFacturacionService {
       browser, context, axiosClient, cookieHeader, empresaRut: rutNorm, ts: now, startedAt: now,
       listadoVerifiedAt: now,
     });
+    SiiSharedCoordination.notifySessionChanged();
     return sessionId;
   }
 
@@ -4928,6 +4931,26 @@ export class SiiFacturacionService {
     return s;
   }
 
+  /** Sesión MiPyme más reciente aún vigente (para compartir cookies con Proveedores). */
+  static getActiveSessionSnapshot(): SharedSiiSessionSnapshot | null {
+    let best: { id: string; s: SiiSession } | null = null;
+    for (const [id, s] of sessions.entries()) {
+      const started = s.startedAt ?? s.ts;
+      if (Date.now() - started >= SII_SESSION_MAX_AGE_MS) continue;
+      if (!best || s.ts > best.s.ts) best = { id, s };
+    }
+    if (!best) return null;
+    const expiresAt = SiiFacturacionService.sessionExpiresAt(best.s);
+    if (Date.now() >= expiresAt) return null;
+    return {
+      sessionId: best.id,
+      cookieHeader: best.s.cookieHeader,
+      context: best.s.context,
+      expiresAt,
+      expiresInMs: Math.max(0, expiresAt - Date.now()),
+    };
+  }
+
   /**
    * Notifica al SII el cierre de sesión (Zeusr) para liberar cupos de sesiones concurrentes.
    */
@@ -4966,6 +4989,7 @@ export class SiiFacturacionService {
     if (s.context) await s.context.close().catch(() => {});
     if (s.browser) await s.browser.close().catch(() => {});
     sessions.delete(sessionId);
+    SiiSharedCoordination.notifySessionChanged();
   }
 
   /** Cierra TODAS las sesiones activas (browsers Playwright incluidos). Llamar en shutdown. */
@@ -5432,30 +5456,22 @@ export class SiiFacturacionService {
   // ── Background job: descarga silenciosa de PDFs pendientes ───────────────
 
   private static _bgJobs = new Set<string>(); // evita jobs duplicados por empresaRut
-  private static _heavySiiOps = 0;
 
   /** Bloquea sync histórico y descarga masiva de PDFs mientras hay emisión/firma activa. */
   static beginHeavySiiOp(label: string): void {
-    this._heavySiiOps++;
-    console.log(`[SII] heavy op +1 (${label}) depth=${this._heavySiiOps}`);
+    SiiGlobalMutex.beginOp(`clientes:${label}`);
   }
 
   static endHeavySiiOp(label: string): void {
-    this._heavySiiOps = Math.max(0, this._heavySiiOps - 1);
-    console.log(`[SII] heavy op -1 (${label}) depth=${this._heavySiiOps}`);
+    SiiGlobalMutex.endOp(`clientes:${label}`);
   }
 
   static isHeavySiiOpInProgress(): boolean {
-    return this._heavySiiOps > 0;
+    return SiiGlobalMutex.isBusy();
   }
 
   static async waitForHeavySiiOpSlot(pollMs = 2000, maxWaitMs = 600000): Promise<boolean> {
-    const t0 = Date.now();
-    while (this.isHeavySiiOpInProgress()) {
-      if (Date.now() - t0 > maxWaitMs) return false;
-      await new Promise((r) => setTimeout(r, pollMs));
-    }
-    return true;
+    return SiiGlobalMutex.waitForSlot(pollMs, maxWaitMs);
   }
 
   static startBackgroundPdfDownload(

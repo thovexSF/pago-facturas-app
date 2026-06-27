@@ -4,6 +4,7 @@ import { SiiFacturacionController } from '../controllers/SiiFacturacionControlle
 const router = Router();
 
 router.post('/session/create', SiiFacturacionController.createSession);
+router.get('/shared/status', SiiFacturacionController.sharedSessionStatus);
 router.get('/session/:sessionId/status', SiiFacturacionController.sessionStatus);
 router.post('/session/beacon-close', SiiFacturacionController.beaconCloseSession);
 router.delete('/session/:sessionId', SiiFacturacionController.closeSession);

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { SII_SESSION_MAX_AGE_MS, SiiFacturacionService } from '../services/SiiFacturacionService';
 import { SiiCredentialsService } from '../services/SiiCredentialsService';
+import { SiiSharedCoordination } from '../services/SiiSharedCoordination';
 
 // ── Background jobs (sync histórico) ────────────────────────────────────────
 interface SyncJob {
@@ -72,6 +73,16 @@ export class SiiFacturacionController {
       const msg = err?.message || 'Error al crear sesión';
       console.error('[SII] createSession error:', msg, err?.stack?.split('\n')[1] || '');
       return res.status(500).json({ success: false, error: msg });
+    }
+  }
+
+  // GET /api/sii-facturacion/shared/status — sesión compartida Clientes ↔ Proveedores
+  static async sharedSessionStatus(_req: Request, res: Response) {
+    try {
+      const status = await SiiSharedCoordination.getSharedStatus();
+      return res.json({ success: true, ...status });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || String(err) });
     }
   }
 

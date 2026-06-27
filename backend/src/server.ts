@@ -11,6 +11,7 @@ import eboletaRoutes from './routes/eboleta.routes';
 import { BiomaShopifyWebhookController } from './controllers/BiomaShopifyWebhookController';
 import { SiiFacturacionService } from './services/SiiFacturacionService';
 import { EBoletaSessionService } from './services/EBoletaSessionService';
+import { SiiSharedCoordination } from './services/SiiSharedCoordination';
 
 const MONOREPO_ROOT = path.join(__dirname, '..', '..');
 const PAGO_DIR = path.join(MONOREPO_ROOT, 'apps', 'pago-facturas');
@@ -64,6 +65,10 @@ async function main() {
   app.use('/api/eboleta', eboletaRoutes);
   app.use('/api/bioma', biomaFacturacionRoutes);
 
+  SiiSharedCoordination.registerSessionProvider(() =>
+    SiiFacturacionService.getActiveSessionSnapshot(),
+  );
+
   // UI emisión SII (Vite build con base /sii/)
   if (fs.existsSync(FRONTEND_DIST)) {
     app.use('/sii', express.static(FRONTEND_DIST, { index: 'index.html' }));
@@ -76,7 +81,12 @@ async function main() {
   const pagoPath = path.join(PAGO_DIR, 'server-postgres.js');
   if (fs.existsSync(pagoPath)) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { app: pagoApp, initPagoFacturas } = require(path.join(__dirname, 'mount-pago.cjs'));
+    const pago = require(path.join(__dirname, 'mount-pago.cjs'));
+    const { app: pagoApp, initPagoFacturas, setSiiSharedBridge } = pago;
+    if (typeof setSiiSharedBridge === 'function') {
+      setSiiSharedBridge(SiiSharedCoordination.createPagoBridge());
+      console.log('[server] Puente sesión SII compartida → pago-facturas');
+    }
     app.use(pagoApp);
     await initPagoFacturas();
     console.log('[server] Módulo pago-facturas montado en /');

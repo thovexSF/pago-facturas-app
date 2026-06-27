@@ -75,6 +75,33 @@ function limpiarFiltrosLista() {
   renderTabla();
 }
 
+// ─── Sesión SII compartida (Clientes ↔ Proveedores) ───────────────────────────
+
+async function refreshSharedSessionChip() {
+  const el = document.getElementById('sii-shared-chip');
+  if (!el) return;
+  try {
+    const st = await fetch('/api/sii/shared-status').then(r => r.json());
+    el.hidden = false;
+    if (st.globalBusy) {
+      el.textContent = `⏳ SII: ${st.busyLabel || 'ocupado'}`;
+      el.className = 'sii-shared-chip busy';
+      el.title = 'Hay una operación SII en curso (Clientes o Proveedores)';
+    } else if (st.clientesSessionActive) {
+      const min = Math.max(0, Math.floor((st.expiresInMs || 0) / 60000));
+      el.textContent = min > 0 ? `🔗 Sesión Clientes · ${min}m` : '🔗 Sesión Clientes';
+      el.className = 'sii-shared-chip';
+      el.title = 'Reutilizando la sesión MiPyme abierta en la pestaña Clientes';
+    } else {
+      el.textContent = 'Sesión propia';
+      el.className = 'sii-shared-chip inactive';
+      el.title = 'Abre sesión MiPyme en Clientes para compartir login con Proveedores';
+    }
+  } catch {
+    el.hidden = true;
+  }
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -84,6 +111,8 @@ document.addEventListener('DOMContentLoaded', () => {
   cargarTodo();
   syncAuto();
   cargarBannerVencimientos();
+  void refreshSharedSessionChip();
+  window.setInterval(() => void refreshSharedSessionChip(), 30000);
 
   document.getElementById('btn-sync').addEventListener('click', sincronizarHistorico);
   document.getElementById('btn-pdf-sync').addEventListener('click', descargarPdfsPendientes);

@@ -14,6 +14,25 @@ html.embed .app { max-width: none; padding: 0; }
 html.embed .header-left { display: none; }
 html.embed .btn-sii-nav { display: none !important; }
 html.embed .header { margin-bottom: 16px; }
+.sii-shared-chip {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #ebf8ff;
+  color: #2b6cb0;
+  border: 1px solid #bee3f8;
+  white-space: nowrap;
+}
+.sii-shared-chip.busy {
+  background: #fffaf0;
+  color: #c05621;
+  border-color: #fbd38d;
+}
+.sii-shared-chip.inactive {
+  background: #f7fafc;
+  color: #718096;
+  border-color: #e2e8f0;
+}
 
 /* ── Header ── */
 .header {

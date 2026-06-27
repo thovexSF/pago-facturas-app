@@ -509,6 +509,57 @@ const SII_AUTH_CACHE_TTL_MS = 10 * 60 * 1000;
 let siiAuthCache = null;
 let siiAuthCacheAt = 0;
 let siiAuthInFlight = null;
+let siiSharedBridge = null;
+// Mutex local legacy + puente global (Clientes ↔ Proveedores)
+let siiEnCurso = false;
+let pdfEnCurso = false;
+
+function setSiiSharedBridge(bridge) {
+  siiSharedBridge = bridge;
+  if (bridge?.setOnSessionChanged) {
+    bridge.setOnSessionChanged(() => invalidarCacheSII());
+  }
+}
+
+function isGlobalSiiBusy() {
+  return !!(siiSharedBridge?.isBusy?.()) || siiEnCurso || pdfEnCurso;
+}
+
+async function withSiiOp(label, fn, maxWaitMs = 120000) {
+  if (siiSharedBridge?.runExclusive) {
+    return siiSharedBridge.runExclusive(`proveedores:${label}`, fn, maxWaitMs);
+  }
+  const start = Date.now();
+  while ((pdfEnCurso || siiEnCurso) && Date.now() - start < maxWaitMs) {
+    await sleep(1500);
+  }
+  if (pdfEnCurso || siiEnCurso) {
+    throw new Error('Ya hay una operación SII en curso, intenta en unos minutos');
+  }
+  pdfEnCurso = true;
+  try {
+    return await fn();
+  } finally {
+    pdfEnCurso = false;
+  }
+}
+
+async function beginSiiOp(label) {
+  if (siiSharedBridge) {
+    const ok = await siiSharedBridge.waitForSlot(120000);
+    if (!ok) throw new Error('Ya hay una operación SII en curso, espera unos minutos');
+    siiSharedBridge.beginOp(`proveedores:${label}`);
+  } else if (isGlobalSiiBusy()) {
+    throw new Error('Ya hay una operación SII en curso, espera unos minutos');
+  }
+  siiEnCurso = true;
+}
+
+function endSiiOp(label) {
+  siiEnCurso = false;
+  pdfEnCurso = false;
+  if (siiSharedBridge) siiSharedBridge.endOp(`proveedores:${label}`);
+}
 
 async function obtenerReferenciasGesDoc(cookies, codigo) {
   const launchUrl = 'https://www1.sii.cl/cgi-bin/Portal001/mipeLaunchPage.cgi?OPCION=1&TIPO=4';
@@ -711,6 +762,21 @@ async function autenticarSIIdirecto(force = false) {
   if (!force && siiAuthInFlight) return siiAuthInFlight;
 
   const doAuth = async () => {
+    if (!force && siiSharedBridge) {
+      try {
+        const shared = await siiSharedBridge.getSharedCookies();
+        if (shared?.length) {
+          const out = await seleccionarEmpresaHTTP(shared);
+          siiAuthCache = out;
+          siiAuthCacheAt = Date.now();
+          console.log('[SII auth] Reutilizando cookies sesión compartida (Clientes)');
+          return out;
+        }
+      } catch (err) {
+        console.warn(`[SII auth] Cookies compartidas fallaron (${err.message}), login propio...`);
+      }
+    }
+
     // Intento 1: HTTP directo (rápido, funciona desde IPs no bloqueadas)
     try {
       const cookies = await autenticarHTTP();
@@ -902,11 +968,6 @@ async function descargarPdfPorCodigo(cookies, codigo, yaPreparado = false) {
   console.error(`[PDF] CODIGO ${codigo} no devolvió PDF:`, failPreview);
   throw new Error(`SII no devolvió PDF para este documento`);
 }
-
-// Mutex global: SII bloquea sesiones concurrentes del mismo RUT
-let siiEnCurso = false;
-// Alias para compatibilidad con rutas que chequeaban pdfEnCurso
-let pdfEnCurso = false;
 
 async function ngSelect(page, selector, value) {
   await page.evaluate(({ sel, val }) => {
@@ -1135,8 +1196,7 @@ async function inyectarCookiesEnContexto(context, cookies) {
 }
 
 async function abrirSesionSII() {
-  if (siiEnCurso) throw new Error('Ya hay una operación SII en curso, espera unos minutos');
-  siiEnCurso = true;
+  await beginSiiOp('www4-open');
 
   const { chromium } = require('playwright');
   const browser = await chromium.launch({ headless: true });
@@ -1180,7 +1240,7 @@ async function abrirSesionSII() {
     // siiEnCurso permanece true — el LLAMADOR debe liberarlo al cerrar browser
     return { browser, context, conversationId };
   } catch (err) {
-    siiEnCurso = false;
+    endSiiOp('www4-open');
     await browser.close().catch(() => {});
     throw err;
   }
@@ -1190,13 +1250,7 @@ async function abrirSesionSII() {
 // Descarga el PDF de UNA factura — intenta HTTP, cae a Playwright si falla
 // tipoDte: '33' | '61' | null — necesario para buscar CODIGO en mipeAdmin cuando no hay código en BD.
 async function descargarPdfSII(folio, rutEmisor, codigoBd = null, tipoDte = null) {
-  const startWait = Date.now();
-  while ((pdfEnCurso || siiEnCurso) && Date.now() - startWait < 90000) {
-    await sleep(1500);
-  }
-  if (pdfEnCurso || siiEnCurso) throw new Error('Ya hay una operación SII en curso, intenta en unos minutos');
-  pdfEnCurso = true;
-  try {
+  return withSiiOp('pdf', async () => {
     let cookies = await autenticarSIIdirecto();
     cookies = await prepararPortalDocsRecibidos(cookies);
     siiAuthCache = cookies;
@@ -1223,9 +1277,7 @@ async function descargarPdfSII(folio, rutEmisor, codigoBd = null, tipoDte = null
     }
 
     return await descargarPdfViaBrowser(folio, rutEmisor, codigo, tipoDte, cookies);
-  } finally {
-    pdfEnCurso = false;
-  }
+  });
 }
 
 // Fallback: Playwright con cookies cacheadas (solo login completo si la sesión no sirve).
@@ -1313,16 +1365,16 @@ async function descargarPdfViaBrowser(folio, rutEmisor, codigoBd = null, tipoDte
 
 // Descarga PDFs en lote reutilizando una sola sesión HTTP.
 async function descargarPdfsBulkSII() {
-  if (pdfEnCurso || siiEnCurso) {
+  if (isGlobalSiiBusy()) {
     console.warn('[PDF bulk] Ya hay una operación SII en curso, abortando');
     return { descargadas: 0, errores: 0, total: 0 };
   }
-  pdfEnCurso = true;
 
+  return withSiiOp('pdf-bulk', async () => {
   const { rows: sinPdf } = await pool.query(
     `SELECT id, folio, rut_emisor, codigo, tipo_doc FROM facturas_recibidas WHERE pdf_data IS NULL ORDER BY fecha_emision DESC`
   );
-  if (!sinPdf.length) { pdfEnCurso = false; return { descargadas: 0, errores: 0, total: 0 }; }
+  if (!sinPdf.length) { return { descargadas: 0, errores: 0, total: 0 }; }
 
   let descargadas = 0, errores = 0;
   try {
@@ -1406,12 +1458,13 @@ async function descargarPdfsBulkSII() {
         }
       }
     }
-  } finally {
-    pdfEnCurso = false;
+  } catch (bulkErr) {
+    console.error('[PDF bulk] Error general:', bulkErr.message);
   }
 
   console.log(`[PDF bulk] Completado: ${descargadas} OK, ${errores} errores`);
   return { descargadas, errores, total: sinPdf.length };
+  });
 }
 
 async function getFacturasMesEstado(context, conversationId, ptributario, estadoContab, codTipoDoc = '33') {
@@ -1561,7 +1614,7 @@ app.post('/api/facturas/:id/pdf', async (req, res) => {
 
 // POST /api/facturas/:id/resolver-ref-nc — ref desde HTML SII solo si aún falta en BD (el RCV ya trae detTipoDocRef)
 app.post('/api/facturas/:id/resolver-ref-nc', async (req, res) => {
-  if (pdfEnCurso || siiEnCurso) return res.status(409).json({ error: 'Operación SII en curso, espera' });
+  if (isGlobalSiiBusy()) return res.status(409).json({ error: 'Operación SII en curso, espera' });
   try {
     const { rows } = await pool.query('SELECT * FROM facturas_recibidas WHERE id=$1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'No encontrado' });
@@ -1663,7 +1716,7 @@ app.get('/api/facturas/:id/pdf', async (req, res) => {
 // POST /api/pdf/sync — descarga en background todos los PDFs faltantes
 app.post('/api/pdf/sync', async (req, res) => {
   try {
-    if (pdfEnCurso || siiEnCurso) return res.json({ ok: false, mensaje: 'Ya hay una operación SII en curso, espera unos minutos', pendientes: 0 });
+    if (isGlobalSiiBusy()) return res.json({ ok: false, mensaje: 'Ya hay una operación SII en curso, espera unos minutos', pendientes: 0 });
 
     const { rows } = await pool.query(
       `SELECT COUNT(*) FROM facturas_recibidas WHERE pdf_data IS NULL`
@@ -1681,7 +1734,7 @@ app.post('/api/pdf/sync', async (req, res) => {
 
 // GET /api/pdf/test/:folio — prueba de descarga con UNA factura (debug)
 app.get('/api/pdf/test/:folio', async (req, res) => {
-  if (pdfEnCurso || siiEnCurso) return res.status(409).json({ error: 'Operación SII en curso, espera' });
+  if (isGlobalSiiBusy()) return res.status(409).json({ error: 'Operación SII en curso, espera' });
   const { rows } = await pool.query(
     `SELECT id, folio, rut_emisor, codigo, tipo_doc FROM facturas_recibidas WHERE folio=$1 LIMIT 1`,
     [req.params.folio]
@@ -1865,7 +1918,7 @@ app.post('/api/sync/auto', async (req, res) => {
       );
       resultado.push({ mes, total: docs.length, insertadas, actualizadas });
     }
-  } finally { siiEnCurso = false; await sesion.browser.close(); }
+  } finally { endSiiOp('www4-sync'); await sesion.browser.close(); }
 
   try {
     const ck = await autenticarSIIdirecto();
@@ -1912,7 +1965,7 @@ app.post('/api/sync/historico', async (req, res) => {
     } catch (e) { console.warn('[NC ref] post-sync:', e.message); }
     console.log('[historico] Completado');
   } catch (err) { console.error('[historico] Error:', err.message); }
-  finally { siiEnCurso = false; sesion?.browser?.close(); }
+  finally { endSiiOp('www4-historico'); sesion?.browser?.close(); }
 });
 
 // ─── Notificaciones de vencimiento ───────────────────────────────────────────
@@ -2021,10 +2074,23 @@ cron.schedule('0 8 * * 1-5', async () => {
   } catch (err) { console.error('[CRON notif] Error:', err.message); }
 });
 
+// GET /api/sii/shared-status — sesión compartida con pestaña Clientes
+app.get('/api/sii/shared-status', async (req, res) => {
+  try {
+    if (!siiSharedBridge) {
+      return res.json({ shared: false, clientesSessionActive: false, globalBusy: isGlobalSiiBusy() });
+    }
+    const status = await siiSharedBridge.getStatus();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Libera el mutex si quedó trabado por un error previo
 app.post('/api/sii/reset-mutex', (req, res) => {
-  siiEnCurso = false;
-  pdfEnCurso = false;
+  endSiiOp('reset');
+  if (siiSharedBridge?.forceReset) siiSharedBridge.forceReset();
   res.json({ ok: true });
 });
 
@@ -2049,5 +2115,5 @@ if (require.main === module) {
   });
   server.on('error', err => console.error('[SERVER] Error:', err));
 } else {
-  module.exports = { app, initPagoFacturas };
+  module.exports = { app, initPagoFacturas, setSiiSharedBridge };
 }

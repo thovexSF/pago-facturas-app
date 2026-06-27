@@ -1,4 +1,4 @@
-import { Component, useCallback, useState, type ReactNode } from 'react';
+import { Component, useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
   ThemeProvider,
   CssBaseline,
@@ -18,7 +18,40 @@ import {
 } from './utils/modulePreference';
 
 const EMPRESA_LABEL = 'Bioma Coffee · 78015129-3';
-const PROVEEDORES_EMBED_SRC = `${API_CONFIG.BASE_URL}/?embed=1`;
+
+function proveedoresEmbedSrc(): string {
+  const url = new URL(API_CONFIG.BASE_URL);
+  url.pathname = '/';
+  url.search = '';
+  url.searchParams.set('embed', '1');
+  const sid = localStorage.getItem('biomaSiiSessionId');
+  if (sid) url.searchParams.set('siiSessionId', sid);
+  return url.toString();
+}
+
+function ProveedoresEmbed() {
+  const [src, setSrc] = useState(proveedoresEmbedSrc);
+
+  useEffect(() => {
+    setSrc(proveedoresEmbedSrc());
+  }, []);
+
+  return (
+    <Box
+      component="iframe"
+      title="Facturas por pagar — proveedores"
+      src={src}
+      sx={{
+        display: 'block',
+        width: '100%',
+        minHeight: 'calc(100vh - 180px)',
+        border: 'none',
+        borderRadius: 1,
+        bgcolor: 'background.paper',
+      }}
+    />
+  );
+}
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null };
@@ -54,9 +87,11 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 function FacturacionApp() {
   const [activeModule, setActiveModule] = useState<FacturacionModule>(resolveInitialModule);
   const [defaultModule, setDefaultModuleState] = useState<FacturacionModule>(getDefaultModule);
+  const [proveedoresKey, setProveedoresKey] = useState(0);
 
   const handleModuleChange = useCallback((mod: FacturacionModule) => {
     setActiveModule(mod);
+    if (mod === 'proveedores') setProveedoresKey((k) => k + 1);
     const url = new URL(window.location.href);
     if (mod === getDefaultModule()) {
       url.searchParams.delete('mod');
@@ -90,19 +125,7 @@ function FacturacionApp() {
       {activeModule === 'clientes' ? (
         <BiomaFacturacion />
       ) : (
-        <Box
-          component="iframe"
-          title="Facturas por pagar — proveedores"
-          src={PROVEEDORES_EMBED_SRC}
-          sx={{
-            display: 'block',
-            width: '100%',
-            minHeight: 'calc(100vh - 180px)',
-            border: 'none',
-            borderRadius: 1,
-            bgcolor: 'background.paper',
-          }}
-        />
+        <ProveedoresEmbed key={proveedoresKey} />
       )}
     </Box>
   );

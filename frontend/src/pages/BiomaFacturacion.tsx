@@ -1501,6 +1501,11 @@ export default function BiomaFacturacion() {
           ) : (
             <Chip label="Sin sesión" size="small" variant="outlined" />
           )}
+          {sessionReady && moduleTab !== 'boletas' && (
+            <Typography variant="caption" color="text.secondary">
+              Compartida con Proveedores
+            </Typography>
+          )}
         </Stack>
         <Stack direction="row" spacing={1} alignItems="center">
           {sessionReady ? (
