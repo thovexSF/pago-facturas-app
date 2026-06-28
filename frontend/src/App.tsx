@@ -90,6 +90,20 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 
 const SII_API = `${API_CONFIG.BASE_URL}/api/sii-facturacion`;
 
+const BUSY_LABEL_MAP: Record<string, string> = {
+  'proveedores:www4-open': 'Abriendo portal SII',
+  'proveedores:www4-sync': 'Sincronizando facturas',
+  'proveedores:www4-historico': 'Sync histórico',
+  'proveedores:pdf': 'Descargando PDF',
+  'proveedores:pdf-bulk': 'Descargando PDFs',
+  'clientes:emitir': 'Emitiendo DTE',
+};
+
+function humanBusyLabel(raw: string | null): string {
+  if (!raw) return 'Operación en curso';
+  return BUSY_LABEL_MAP[raw] || raw;
+}
+
 interface GlobalSiiStatus {
   sessionActive: boolean;
   expiresInMs: number;
@@ -163,23 +177,28 @@ function FacturacionApp() {
           </Typography>
           <Typography variant="caption">{EMPRESA_LABEL}</Typography>
         </Box>
-        <Chip
-          size="small"
-          label={
-            siiStatus.globalBusy
-              ? `⏳ ${siiStatus.busyLabel ?? 'SII ocupado'}`
-              : siiStatus.sessionActive
-                ? `Sesión SII · ${formatSessionExpiresIn(siiStatus.expiresInMs)}`
+        <Stack direction="row" spacing={0.75} alignItems="center">
+          {siiStatus.globalBusy && (
+            <Chip
+              size="small"
+              label={`⏳ ${humanBusyLabel(siiStatus.busyLabel)}`}
+              color="warning"
+              variant="filled"
+              sx={{ fontWeight: 500 }}
+            />
+          )}
+          <Chip
+            size="small"
+            label={
+              siiStatus.sessionActive
+                ? `SII · ${formatSessionExpiresIn(siiStatus.expiresInMs)}`
                 : 'Sin sesión SII'
-          }
-          color={
-            siiStatus.globalBusy ? 'warning'
-              : siiStatus.sessionActive ? 'success'
-                : 'default'
-          }
-          variant={siiStatus.sessionActive || siiStatus.globalBusy ? 'filled' : 'outlined'}
-          sx={{ fontWeight: 500 }}
-        />
+            }
+            color={siiStatus.sessionActive ? 'success' : 'default'}
+            variant={siiStatus.sessionActive ? 'filled' : 'outlined'}
+            sx={{ fontWeight: 500 }}
+          />
+        </Stack>
       </Stack>
 
       <FacturacionModuleTabs
