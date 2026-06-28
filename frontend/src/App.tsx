@@ -20,7 +20,8 @@ import {
 const EMPRESA_LABEL = 'Bioma Coffee · 78015129-3';
 
 function proveedoresEmbedSrc(): string {
-  const url = new URL(API_CONFIG.BASE_URL);
+  const base = API_CONFIG.BASE_URL || window.location.origin;
+  const url = new URL(base);
   url.pathname = '/';
   url.search = '';
   url.searchParams.set('embed', '1');
