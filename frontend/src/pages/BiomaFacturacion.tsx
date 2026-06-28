@@ -1465,69 +1465,26 @@ export default function BiomaFacturacion() {
         </Alert>
       )}
 
-      <Paper
-        variant="outlined"
-        sx={{
-          mb: 2,
-          px: 2,
-          py: 1,
-          bgcolor: '#fff',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 1.5,
-          flexWrap: 'wrap',
-        }}
-      >
-        <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
-          <Typography variant="body2" fontWeight={600}>
-            {moduleTab === 'boletas' ? 'e-Boleta' : 'MiPyme'}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {empresaRut ? formatRut(empresaRut) : '…'}
-          </Typography>
-          {sessionReady ? (
-            <Chip
-              label={
-                moduleTab !== 'boletas' && siiSession.status?.valid
-                  ? `Sesión OK · ${formatSessionExpiresIn(siiSession.status.expiresInMs)}`
-                  : 'Sesión OK'
-              }
-              color={siiSession.expiresSoon ? 'warning' : 'success'}
-              size="small"
-            />
-          ) : sessionId && moduleTab !== 'boletas' ? (
-            <Chip label="Sesión inválida" color="error" size="small" />
-          ) : (
-            <Chip label="Sin sesión" size="small" variant="outlined" />
-          )}
-          {sessionReady && moduleTab !== 'boletas' && (
-            <Typography variant="caption" color="text.secondary">
-              Compartida con Proveedores
-            </Typography>
-          )}
-        </Stack>
-        <Stack direction="row" spacing={1} alignItems="center">
-          {sessionReady ? (
-            <Button size="small" color="warning" onClick={closeSession}>
-              Cerrar sesión
-            </Button>
-          ) : (
-            <Button
-              variant="contained"
-              size="small"
-              onClick={createSession}
-              disabled={creatingSession || !empresaRut || (moduleTab !== 'boletas' && siiBlocked.blocked)}
-            >
-              {creatingSession
-                ? 'Conectando…'
-                : moduleTab === 'boletas'
-                  ? 'Abrir e-Boleta'
-                  : 'Abrir MiPyme'}
-            </Button>
-          )}
-        </Stack>
-      </Paper>
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
+        {sessionReady ? (
+          <Button size="small" color="warning" variant="outlined" onClick={closeSession}>
+            Cerrar sesión {moduleTab === 'boletas' ? 'e-Boleta' : 'MiPyme'}
+          </Button>
+        ) : (
+          <Button
+            variant="contained"
+            size="small"
+            onClick={createSession}
+            disabled={creatingSession || !empresaRut || (moduleTab !== 'boletas' && siiBlocked.blocked)}
+          >
+            {creatingSession
+              ? 'Conectando…'
+              : moduleTab === 'boletas'
+                ? 'Abrir e-Boleta'
+                : 'Abrir MiPyme'}
+          </Button>
+        )}
+      </Stack>
 
       {moduleTab !== 'boletas' && sessionId && siiSession.status && !siiSession.status.valid && (
         <Alert severity="error" sx={{ mb: 2 }}>
