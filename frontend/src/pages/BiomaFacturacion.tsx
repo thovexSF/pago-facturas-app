@@ -1630,7 +1630,7 @@ export default function BiomaFacturacion() {
                           disabled={(!row.siiFolio && !row.siiCodigo) || busyOrderId === row.shopifyOrderId}
                           onClick={() => verPdf(row.shopifyOrderId, row)}
                         >
-                          {row.hasPdfCached ? 'Ver PDF' : row.pdfSyncing ? 'PDF…' : 'PDF'}
+                          {row.hasPdfCached ? 'Ver PDF' : row.pdfSyncing ? 'Descargando…' : 'Descargar PDF'}
                         </Button>
                       </span>
                     </Tooltip>
