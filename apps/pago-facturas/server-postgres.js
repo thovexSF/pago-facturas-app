@@ -1926,6 +1926,10 @@ app.post('/api/sync/auto', async (req, res) => {
   } catch (e) { console.warn('[NC ref] post-sync:', e.message); }
 
   res.json({ ok: true, meses: resultado });
+
+  descargarPdfsBulkSII()
+    .then(r => console.log(`[PDF auto-sync] ${r.descargadas}/${r.total} OK, ${r.errores} errores`))
+    .catch(err => console.error('[PDF auto-sync]', err.message));
 });
 
 // POST /api/sync/historico
@@ -1964,6 +1968,9 @@ app.post('/api/sync/historico', async (req, res) => {
       await resolverReferenciasNotasCredito(ck);
     } catch (e) { console.warn('[NC ref] post-sync:', e.message); }
     console.log('[historico] Completado');
+    descargarPdfsBulkSII()
+      .then(r => console.log(`[PDF auto-sync] ${r.descargadas}/${r.total} OK, ${r.errores} errores`))
+      .catch(err => console.error('[PDF auto-sync]', err.message));
   } catch (err) { console.error('[historico] Error:', err.message); }
   finally { endSiiOp('www4-historico'); sesion?.browser?.close(); }
 });
