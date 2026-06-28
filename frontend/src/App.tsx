@@ -5,11 +5,14 @@ import {
   Box,
   Typography,
   Button,
+  Chip,
+  Stack,
 } from '@mui/material';
 import { biomaTheme } from './theme';
 import BiomaFacturacion from './pages/BiomaFacturacion';
 import FacturacionModuleTabs from './components/FacturacionModuleTabs';
 import { API_CONFIG } from './config/api';
+import { formatSessionExpiresIn } from './hooks/useSiiSessionMonitor';
 import {
   getDefaultModule,
   resolveInitialModule,
@@ -85,10 +88,51 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
+const SII_API = `${API_CONFIG.BASE_URL}/api/sii-facturacion`;
+
+function useGlobalSessionStatus() {
+  const [sessionId, setSessionId] = useState<string | null>(
+    () => typeof window !== 'undefined' ? localStorage.getItem('biomaSiiSessionId') : null,
+  );
+  const [status, setStatus] = useState<{ valid: boolean; expiresInMs: number } | null>(null);
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'biomaSiiSessionId') setSessionId(e.newValue);
+    };
+    window.addEventListener('storage', onStorage);
+    const poll = setInterval(() => {
+      const cur = localStorage.getItem('biomaSiiSessionId');
+      if (cur !== sessionId) setSessionId(cur);
+    }, 3000);
+    return () => { window.removeEventListener('storage', onStorage); clearInterval(poll); };
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) { setStatus(null); return; }
+    let active = true;
+    const check = async () => {
+      try {
+        const r = await fetch(`${SII_API}/session/${sessionId}/status?probe=0`);
+        const d = await r.json();
+        if (active) setStatus({ valid: !!d.valid, expiresInMs: d.expiresInMs ?? 0 });
+      } catch {
+        if (active) setStatus(null);
+      }
+    };
+    check();
+    const t = setInterval(check, 30_000);
+    return () => { active = false; clearInterval(t); };
+  }, [sessionId]);
+
+  return { sessionId, status };
+}
+
 function FacturacionApp() {
   const [activeModule, setActiveModule] = useState<FacturacionModule>(resolveInitialModule);
   const [defaultModule, setDefaultModuleState] = useState<FacturacionModule>(getDefaultModule);
   const [proveedoresKey, setProveedoresKey] = useState(0);
+  const globalSession = useGlobalSessionStatus();
 
   const handleModuleChange = useCallback((mod: FacturacionModule) => {
     setActiveModule(mod);
@@ -109,12 +153,31 @@ function FacturacionApp() {
 
   return (
     <Box sx={{ maxWidth: 1200, mx: 'auto', px: { xs: 2, sm: 2.5 }, py: 3 }}>
-      <Box sx={{ mb: 0.5 }}>
-        <Typography variant="h5" sx={{ mb: 0.25 }}>
-          Facturación
-        </Typography>
-        <Typography variant="caption">{EMPRESA_LABEL}</Typography>
-      </Box>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
+        <Box>
+          <Typography variant="h5" sx={{ mb: 0.25 }}>
+            Facturación
+          </Typography>
+          <Typography variant="caption">{EMPRESA_LABEL}</Typography>
+        </Box>
+        <Chip
+          size="small"
+          label={
+            globalSession.status?.valid
+              ? `Sesión SII · ${formatSessionExpiresIn(globalSession.status.expiresInMs)}`
+              : globalSession.sessionId
+                ? 'Sesión SII inválida'
+                : 'Sin sesión SII'
+          }
+          color={
+            globalSession.status?.valid ? 'success'
+              : globalSession.sessionId ? 'error'
+                : 'default'
+          }
+          variant={globalSession.status?.valid ? 'filled' : 'outlined'}
+          sx={{ fontWeight: 500 }}
+        />
+      </Stack>
 
       <FacturacionModuleTabs
         value={activeModule}
