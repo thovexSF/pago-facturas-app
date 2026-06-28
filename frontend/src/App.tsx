@@ -90,49 +90,52 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 
 const SII_API = `${API_CONFIG.BASE_URL}/api/sii-facturacion`;
 
+interface GlobalSiiStatus {
+  sessionActive: boolean;
+  expiresInMs: number;
+  globalBusy: boolean;
+  busyLabel: string | null;
+}
+
 function useGlobalSessionStatus() {
-  const [sessionId, setSessionId] = useState<string | null>(
-    () => typeof window !== 'undefined' ? localStorage.getItem('biomaSiiSessionId') : null,
-  );
-  const [status, setStatus] = useState<{ valid: boolean; expiresInMs: number } | null>(null);
+  const [status, setStatus] = useState<GlobalSiiStatus>({
+    sessionActive: false,
+    expiresInMs: 0,
+    globalBusy: false,
+    busyLabel: null,
+  });
 
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'biomaSiiSessionId') setSessionId(e.newValue);
-    };
-    window.addEventListener('storage', onStorage);
-    const poll = setInterval(() => {
-      const cur = localStorage.getItem('biomaSiiSessionId');
-      if (cur !== sessionId) setSessionId(cur);
-    }, 3000);
-    return () => { window.removeEventListener('storage', onStorage); clearInterval(poll); };
-  }, [sessionId]);
-
-  useEffect(() => {
-    if (!sessionId) { setStatus(null); return; }
     let active = true;
     const check = async () => {
       try {
-        const r = await fetch(`${SII_API}/session/${sessionId}/status?probe=0`);
+        const r = await fetch(`${SII_API}/shared/status`);
         const d = await r.json();
-        if (active) setStatus({ valid: !!d.valid, expiresInMs: d.expiresInMs ?? 0 });
+        if (active) {
+          setStatus({
+            sessionActive: !!d.clientesSessionActive,
+            expiresInMs: d.expiresInMs ?? 0,
+            globalBusy: !!d.globalBusy,
+            busyLabel: d.busyLabel ?? null,
+          });
+        }
       } catch {
-        if (active) setStatus(null);
+        if (active) setStatus((s) => ({ ...s, sessionActive: false }));
       }
     };
     check();
-    const t = setInterval(check, 30_000);
+    const t = setInterval(check, 10_000);
     return () => { active = false; clearInterval(t); };
-  }, [sessionId]);
+  }, []);
 
-  return { sessionId, status };
+  return status;
 }
 
 function FacturacionApp() {
   const [activeModule, setActiveModule] = useState<FacturacionModule>(resolveInitialModule);
   const [defaultModule, setDefaultModuleState] = useState<FacturacionModule>(getDefaultModule);
   const [proveedoresKey, setProveedoresKey] = useState(0);
-  const globalSession = useGlobalSessionStatus();
+  const siiStatus = useGlobalSessionStatus();
 
   const handleModuleChange = useCallback((mod: FacturacionModule) => {
     setActiveModule(mod);
@@ -163,18 +166,18 @@ function FacturacionApp() {
         <Chip
           size="small"
           label={
-            globalSession.status?.valid
-              ? `Sesión SII · ${formatSessionExpiresIn(globalSession.status.expiresInMs)}`
-              : globalSession.sessionId
-                ? 'Sesión SII inválida'
+            siiStatus.globalBusy
+              ? `⏳ ${siiStatus.busyLabel ?? 'SII ocupado'}`
+              : siiStatus.sessionActive
+                ? `Sesión SII · ${formatSessionExpiresIn(siiStatus.expiresInMs)}`
                 : 'Sin sesión SII'
           }
           color={
-            globalSession.status?.valid ? 'success'
-              : globalSession.sessionId ? 'error'
+            siiStatus.globalBusy ? 'warning'
+              : siiStatus.sessionActive ? 'success'
                 : 'default'
           }
-          variant={globalSession.status?.valid ? 'filled' : 'outlined'}
+          variant={siiStatus.sessionActive || siiStatus.globalBusy ? 'filled' : 'outlined'}
           sx={{ fontWeight: 500 }}
         />
       </Stack>
