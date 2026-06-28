@@ -762,7 +762,8 @@ async function autenticarSIIdirecto(force = false) {
   if (!force && siiAuthInFlight) return siiAuthInFlight;
 
   const doAuth = async () => {
-    if (!force && siiSharedBridge) {
+    // Reutilizar cookies de sesión compartida (Clientes) — nunca hacer login propio
+    if (siiSharedBridge) {
       try {
         const shared = await siiSharedBridge.getSharedCookies();
         if (shared?.length) {
@@ -773,28 +774,11 @@ async function autenticarSIIdirecto(force = false) {
           return out;
         }
       } catch (err) {
-        console.warn(`[SII auth] Cookies compartidas fallaron (${err.message}), login propio...`);
+        console.warn(`[SII auth] Cookies compartidas fallaron: ${err.message}`);
       }
     }
 
-    // Intento 1: HTTP directo (rápido, funciona desde IPs no bloqueadas)
-    try {
-      const cookies = await autenticarHTTP();
-      if (cookies) {
-        const out = await seleccionarEmpresaHTTP(cookies);
-        siiAuthCache = out;
-        siiAuthCacheAt = Date.now();
-        return out;
-      }
-      console.warn('[SII auth] CAutInicio HTTP sin TOKEN, usando browser...');
-    } catch (err) {
-      console.warn(`[SII auth] CAutInicio HTTP error (${err.message}), usando browser...`);
-    }
-    // Intento 2: formulario browser → extraer cookies → HTTP Portal001
-    const out = await autenticarViaBrowser();
-    siiAuthCache = out;
-    siiAuthCacheAt = Date.now();
-    return out;
+    throw new Error('Sin sesión SII activa. Abre sesión desde Facturación → Abrir MiPyme.');
   };
 
   siiAuthInFlight = doAuth().finally(() => { siiAuthInFlight = null; });
@@ -1214,19 +1198,10 @@ async function abrirSesionSII() {
   });
 
   try {
-    // Intentar auth HTTP directo primero (más rápido)
-    let authViaBrowser = false;
-    try {
-      const httpCookies = await autenticarSIIdirecto();
-      await inyectarCookiesEnContexto(context, httpCookies);
-      console.log('[SII www4] Cookies HTTP inyectadas en Playwright');
-    } catch (httpErr) {
-      console.warn(`[SII www4] Auth HTTP falló (${httpErr.message}), usando formulario browser...`);
-      await loginSII(page);
-      await seleccionarEmpresa(page);
-      authViaBrowser = true;
-      console.log('[SII www4] Auth browser completado');
-    }
+    // Solo reutilizar cookies de sesión existente — nunca hacer login propio
+    const httpCookies = await autenticarSIIdirecto();
+    await inyectarCookiesEnContexto(context, httpCookies);
+    console.log('[SII www4] Cookies HTTP inyectadas en Playwright');
 
     await page.goto('https://www4.sii.cl/consdcvinternetui/', { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(3000);
@@ -1301,32 +1276,24 @@ async function descargarPdfViaBrowser(folio, rutEmisor, codigoBd = null, tipoDte
       return null;
     };
 
-    if (cookies?.length) {
-      await inyectarCookiesEnContexto(ctx, cookies);
-      if (codigoBd) {
-        const bufDirecto = await tryHttpDesdeCtx(codigoBd);
-        if (bufDirecto) return bufDirecto;
-      }
-      await page.goto(launchUrl, { waitUntil: 'commit', timeout: 45000 }).catch(() => {});
-      let html = '';
-      try {
-        html = await safePageContent(page);
-      } catch (e) {
-        console.warn(`[SII pdf] safePageContent launch: ${e.message}`);
-        if (codigoBd) {
-          await loginSII(page);
-          await seleccionarEmpresa(page);
-        } else {
-          throw e;
-        }
-      }
-      if (page.url().includes('zeusr.sii.cl') || tituloHtmlEsErrorContribuyente(html)) {
-        console.warn('[SII pdf] Cookies cacheadas inválidas en browser, seleccionando empresa...');
-        await seleccionarEmpresa(page);
-      }
-    } else {
-      await loginSII(page);
-      await seleccionarEmpresa(page);
+    if (!cookies?.length) {
+      throw new Error('Sin sesión SII activa. Abre sesión desde Facturación → Abrir MiPyme.');
+    }
+    await inyectarCookiesEnContexto(ctx, cookies);
+    if (codigoBd) {
+      const bufDirecto = await tryHttpDesdeCtx(codigoBd);
+      if (bufDirecto) return bufDirecto;
+    }
+    await page.goto(launchUrl, { waitUntil: 'commit', timeout: 45000 }).catch(() => {});
+    let html = '';
+    try {
+      html = await safePageContent(page);
+    } catch (e) {
+      console.warn(`[SII pdf] safePageContent launch: ${e.message}`);
+      throw new Error('Sesión SII expirada. Abre sesión de nuevo desde Facturación → Abrir MiPyme.');
+    }
+    if (page.url().includes('zeusr.sii.cl') || tituloHtmlEsErrorContribuyente(html)) {
+      throw new Error('Sesión SII expirada. Abre sesión de nuevo desde Facturación → Abrir MiPyme.')
     }
 
     let codigo = codigoBd;
