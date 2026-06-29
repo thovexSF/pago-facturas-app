@@ -18,9 +18,11 @@ export class CertificateService {
   static load(): CertificateData {
     if (cached) return cached;
 
-    const certPath = MercadoConfig.getCertPath();
     const certPass = MercadoConfig.getCertPass();
-    const p12Buffer = fs.readFileSync(certPath);
+    const certBase64Env = process.env.SII_CERT_BASE64;
+    const p12Buffer = certBase64Env
+      ? Buffer.from(certBase64Env, 'base64')
+      : fs.readFileSync(MercadoConfig.getCertPath());
     const p12Asn1 = forge.asn1.fromDer(forge.util.createBuffer(p12Buffer));
     const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, certPass);
 

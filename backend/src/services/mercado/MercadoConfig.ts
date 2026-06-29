@@ -16,7 +16,7 @@ export class MercadoConfig {
 
   static getCertPath(): string {
     const p = process.env.SII_CERT_PATH;
-    if (!p) throw new Error('SII_CERT_PATH no configurado (ruta al archivo .p12/.pfx)');
+    if (!p) throw new Error('SII_CERT_PATH o SII_CERT_BASE64 no configurado');
     return p;
   }
 
