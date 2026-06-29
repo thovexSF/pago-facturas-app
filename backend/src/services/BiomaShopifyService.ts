@@ -305,7 +305,6 @@ const DRAFT_ORDERS_QUERY_LITE = `#graphql
         node {
           id
           name
-          note
           createdAt
           status
           tags

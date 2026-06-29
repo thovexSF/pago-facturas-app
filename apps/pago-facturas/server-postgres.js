@@ -1352,13 +1352,15 @@ async function descargarPdfsBulkSII() {
     console.log(`[PDF bulk] Sesión lista. Descargando ${sinPdf.length} PDFs...`);
 
     let sesionErrores = 0;
+    const MAX_ERRORES_CONSECUTIVOS = 10;
     for (const f of sinPdf) {
-      // Pausa cortés entre documentos para no saturar SII
+      if (sesionErrores >= MAX_ERRORES_CONSECUTIVOS) {
+        console.warn(`[PDF bulk] ${MAX_ERRORES_CONSECUTIVOS} errores consecutivos → abortando bulk`);
+        break;
+      }
       await sleep(400);
       let codigo = null;
       try {
-        // Usar CODIGO guardado en BD directamente (viene de detCodigo al sincronizar)
-        // Fallback: buscar en mipeAdminDocsRcp si no está en BD (documentos antiguos)
         codigo = f.codigo;
         if (!codigo) {
           codigo = await buscarCodigoPdf(cookies, f.folio, f.rut_emisor, f.tipo_doc || null);
@@ -1366,6 +1368,7 @@ async function descargarPdfsBulkSII() {
         if (!codigo) {
           errores++;
           console.warn(`[PDF bulk] ✗ Folio ${f.folio}: sin CODIGO en BD ni en SII`);
+          sesionErrores++;
           continue;
         }
 
@@ -1383,7 +1386,11 @@ async function descargarPdfsBulkSII() {
       } catch (err) {
         sesionErrores++;
         errores++;
+        const isContribuyenteError = err.message?.includes('no devolvió PDF');
         console.error(`[PDF bulk] ✗ Folio ${f.folio}: ${err.message}`);
+
+        // No intentar browser fallback si es "Error al contribuyente" — no es problema de sesión
+        if (isContribuyenteError) continue;
 
         if (codigo) {
           try {
@@ -1408,8 +1415,8 @@ async function descargarPdfsBulkSII() {
           }
         }
 
-        // Si 3 errores seguidos, la sesión probablemente expiró → re-autenticar
-        if (sesionErrores >= 3) {
+        // Re-autenticar tras 3 errores de sesión seguidos
+        if (sesionErrores >= 3 && !isContribuyenteError) {
           console.warn('[PDF bulk] 3 errores seguidos → re-autenticando sesión SII...');
           try {
             cookies = await autenticarSIIdirecto(true);
@@ -1419,7 +1426,8 @@ async function descargarPdfsBulkSII() {
             sesionErrores = 0;
             console.log('[PDF bulk] Re-autenticación OK');
           } catch (e) {
-            console.error(`[PDF bulk] Re-auth fallida: ${e.message}`);
+            console.error(`[PDF bulk] Re-auth fallida: ${e.message} → abortando`);
+            break;
           }
           await sleep(2000);
         }
