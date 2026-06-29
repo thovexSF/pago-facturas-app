@@ -8,6 +8,7 @@ import { AppDataSource } from './config/database';
 import siiFacturacionRoutes from './routes/sii-facturacion.routes';
 import biomaFacturacionRoutes from './routes/bioma-facturacion.routes';
 import eboletaRoutes from './routes/eboleta.routes';
+import mercadoRoutes from './routes/mercado.routes';
 import { BiomaShopifyWebhookController } from './controllers/BiomaShopifyWebhookController';
 import { SiiFacturacionService } from './services/SiiFacturacionService';
 import { EBoletaSessionService } from './services/EBoletaSessionService';
@@ -64,6 +65,7 @@ async function main() {
   app.use('/api/sii-facturacion', siiFacturacionRoutes);
   app.use('/api/eboleta', eboletaRoutes);
   app.use('/api/bioma', biomaFacturacionRoutes);
+  app.use('/api/mercado', mercadoRoutes);
 
   SiiSharedCoordination.registerSessionProvider(() =>
     SiiFacturacionService.getActiveSessionSnapshot(),

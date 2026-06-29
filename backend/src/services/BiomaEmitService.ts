@@ -9,6 +9,9 @@ import { EBoletaService } from './EBoletaService';
 import { EBoletaSessionService } from './EBoletaSessionService';
 import { boletaReceptorForSii, boletaViaEBoleta } from '../utils/biomaOrderAttrs';
 import { normalizeFormaPagoMipyme, type FormaPagoMipyme } from '../utils/biomaFormaPago';
+import { MercadoConfig } from './mercado/MercadoConfig';
+import { MercadoEmitService, type MercadoEmitParams } from './mercado/MercadoEmitService';
+import { CertificateService } from './mercado/CertificateService';
 
 export interface BiomaEmitItemOverride {
   numero: number;
@@ -73,6 +76,10 @@ export class BiomaEmitService {
     const row = await BiomaFacturacionService.upsertFromShopify(order);
     const tipoCodigo = opts.tipoCodigo || row.tipoCodigo || 33;
     const isBoleta = tipoCodigo === 39 || tipoCodigo === 41;
+
+    if (MercadoConfig.isMercadoMode()) {
+      return this.emitViaMercado(orderId, order, row, tipoCodigo, opts);
+    }
 
     if (isBoleta && boletaViaEBoleta()) {
       return this.emitBoletaEBoleta(orderId, order, row, opts.sessionId, scraperStep, tipoCodigo);
@@ -399,5 +406,108 @@ export class BiomaEmitService {
       pdfUrl,
       channel: 'eboleta',
     };
+  }
+
+  private static async emitViaMercado(
+    orderId: string,
+    order: Awaited<ReturnType<typeof BiomaShopifyService.getOrder>>,
+    row: Awaited<ReturnType<typeof BiomaFacturacionService.upsertFromShopify>>,
+    tipoCodigo: number,
+    opts: BiomaEmitOrderOpts,
+  ): Promise<BiomaEmitResult> {
+    const isBoleta = tipoCodigo === 39 || tipoCodigo === 41;
+    await BiomaFacturacionService.setStatus(orderId, 'emitting');
+
+    const shopifyItems = BiomaFacturacionService.buildItemsFromOrder(order!, tipoCodigo);
+    const items = shopifyItems.map((si) => ({
+      descripcion: si.descripcion,
+      cantidad: si.cantidad,
+      precioUnitario: si.precioUnitario,
+    }));
+
+    const descuentoGlobal = BiomaFacturacionService.buildDescuentoGlobal(order!, shopifyItems, tipoCodigo);
+
+    const receptorRut = isBoleta ? '66666666-6' : (opts.rutReceptor?.trim() || row.rutReceptor || '');
+    const receptorRazon = isBoleta ? 'Varios' : (opts.razonSocial?.trim() || row.razonSocial || '');
+
+    const emisorRut = MercadoConfig.getEmisorRut();
+    const fchResol = process.env.SII_FCH_RESOL || '2014-08-22';
+    const nroResol = Number(process.env.SII_NRO_RESOL || (MercadoConfig.getEnv() === 'cert' ? 0 : 80));
+
+    const params: MercadoEmitParams = {
+      tipoCodigo,
+      fechaEmision: opts.fechaEmision || new Date().toISOString().split('T')[0],
+      emisor: {
+        rut: emisorRut,
+        razonSocial: process.env.SII_EMISOR_RAZON_SOCIAL || '',
+        giro: process.env.SII_EMISOR_GIRO || '',
+        acteco: process.env.SII_EMISOR_ACTECO || '',
+        dirOrigen: process.env.SII_EMISOR_DIR || '',
+        cmnaOrigen: process.env.SII_EMISOR_COMUNA || '',
+        ciudadOrigen: process.env.SII_EMISOR_CIUDAD || '',
+      },
+      receptor: {
+        rut: receptorRut,
+        razonSocial: receptorRazon,
+        giro: isBoleta ? undefined : (opts.giroReceptor?.trim() || row.giroReceptor || undefined),
+        dirRecep: isBoleta ? undefined : (opts.dirReceptor?.trim() || row.dirReceptor || undefined),
+        cmnaRecep: isBoleta ? undefined : (opts.comunaReceptor?.trim() || row.comunaReceptor || undefined),
+        ciudadRecep: isBoleta ? undefined : (opts.ciudadReceptor?.trim() || row.ciudadReceptor || undefined),
+      },
+      items,
+      descuentoGlobal,
+      fmaPago: opts.formaPago === 'credito' ? 2 : 1,
+      fchResol,
+      nroResol,
+    };
+
+    try {
+      const result = await MercadoEmitService.emitir(params);
+
+      if (!result.success) {
+        await BiomaFacturacionService.setStatus(orderId, 'error', {
+          lastError: result.error || 'Emisión mercado falló',
+        });
+        return {
+          success: false,
+          step: 'emitir',
+          error: result.error,
+          channel: 'mipyme',
+        };
+      }
+
+      const updated = await BiomaFacturacionService.setStatus(orderId, 'emitted', {
+        siiFolio: result.folio,
+        siiCodigo: `MKT-${tipoCodigo}-${result.folio}`,
+        siiTrackId: result.trackId,
+        emittedAt: new Date(),
+        lastError: null,
+      });
+
+      try {
+        if (result.folio) {
+          await BiomaShopifyService.markDteEmitted(orderId, tipoCodigo, result.folio);
+        }
+      } catch (tagErr: any) {
+        console.error('[bioma emit mercado] tag swap failed:', tagErr?.message || tagErr);
+      }
+
+      return {
+        success: true,
+        step: 'emitir',
+        row: updated ?? undefined,
+        channel: 'mipyme',
+      };
+    } catch (err: any) {
+      await BiomaFacturacionService.setStatus(orderId, 'error', {
+        lastError: err.message || 'Error inesperado en emisión mercado',
+      });
+      return {
+        success: false,
+        step: 'emitir',
+        error: err.message,
+        channel: 'mipyme',
+      };
+    }
   }
 }

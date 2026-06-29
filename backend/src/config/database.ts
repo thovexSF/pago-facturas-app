@@ -9,6 +9,8 @@ import { SiiFacturaEntity } from '../entities/SiiFacturaEntity';
 import { SiiContactoEntity } from '../entities/SiiContactoEntity';
 import { WorkbenchClient } from '../entities/WorkbenchClient';
 import { BiomaFacturaEmisionEntity } from '../entities/BiomaFacturaEmisionEntity';
+import { CafEntity } from '../entities/CafEntity';
+import { DteMercadoEntity } from '../entities/DteMercadoEntity';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -20,5 +22,5 @@ export const AppDataSource = new DataSource({
   url,
   synchronize: process.env.TYPEORM_SYNC !== 'false',
   logging: process.env.TYPEORM_LOGGING === 'true',
-  entities: [SiiFacturaEntity, SiiContactoEntity, WorkbenchClient, BiomaFacturaEmisionEntity],
+  entities: [SiiFacturaEntity, SiiContactoEntity, WorkbenchClient, BiomaFacturaEmisionEntity, CafEntity, DteMercadoEntity],
 });
