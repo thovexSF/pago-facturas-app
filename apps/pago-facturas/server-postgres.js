@@ -706,8 +706,11 @@ async function seleccionarEmpresaHTTP(cookies) {
 }
 
 // Sesión lista para mipeAdmin / mipeGesDocRcp / mipeShowPdf (evita "Error al contribuyente").
+// Fuerza re-selección de empresa en Portal001 para docs recibidos — las cookies
+// compartidas de Clientes (MiPyme) vienen con contexto de docs emitidos.
 async function prepararPortalDocsRecibidos(cookies) {
-  return seleccionarEmpresaHTTP(cookies);
+  const ck = cookies.filter(c => c.name !== 'NETSCAPE_LIVEWIRE.rcmp');
+  return seleccionarEmpresaHTTP(ck);
 }
 
 function invalidarCacheSII() {
