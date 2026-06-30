@@ -4,6 +4,7 @@ import { CafService } from '../services/mercado/CafService';
 import { MercadoEmitService } from '../services/mercado/MercadoEmitService';
 import { SiiAuthService } from '../services/mercado/SiiAuthService';
 import { DteUploadService } from '../services/mercado/DteUploadService';
+import { CertificacionService } from '../services/mercado/CertificacionService';
 
 const router = Router();
 
@@ -77,6 +78,25 @@ router.post('/dte/estado', async (req: Request, res: Response) => {
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Certificación ───────────────────────────────────────────
+router.post('/cert/set-basico', async (_req: Request, res: Response) => {
+  try {
+    const result = await CertificacionService.ejecutarSetBasico();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/cert/set-factura-exenta', async (_req: Request, res: Response) => {
+  try {
+    const result = await CertificacionService.ejecutarSetFacturaExenta();
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
